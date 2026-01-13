@@ -58,7 +58,7 @@ const OrganizationSchema = new Schema<IOrganization>({
 });
 
 // Index for faster lookups
-OrganizationSchema.index({ slug: 1 });
+// Note: slug already has unique: true which creates an index, so we don't need to index it again
 OrganizationSchema.index({ ownerId: 1 });
 
 export default mongoose.model<IOrganization>('Organization', OrganizationSchema);

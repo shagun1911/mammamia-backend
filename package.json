@@ -55,7 +55,7 @@
     "redis": "^4.6.12",
     "socket.io": "^4.8.1",
     "svix": "^1.81.0",
-    "uuid": "^13.0.0"
+    "uuid": "^8.3.2"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

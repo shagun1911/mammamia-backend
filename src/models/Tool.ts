@@ -49,7 +49,7 @@ const ToolSchema = new Schema<ITool>(
       type: Schema.Types.ObjectId,
       ref: 'User',
       required: true,
-      index: true,
+      // Note: index removed here since compound index below covers userId queries
     },
     tool_id: {
       type: String,
