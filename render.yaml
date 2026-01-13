@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: kepleroai-backend
+    runtime: node
+    buildCommand: npm install && npm install typescript @types/node --save-dev && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        sync: false
+    healthCheckPath: /api/v1/health
+
