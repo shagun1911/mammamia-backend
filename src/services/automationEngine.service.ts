@@ -180,25 +180,39 @@ export class AutomationEngine {
 
     // Create Contact Action
     this.actions.set('keplero_create_contact', {
-      execute: async (config, triggerData) => {
+      execute: async (config, triggerData, context) => {
         const { name, email, phone, tags = [], lists = [] } = config;
 
-        // Check if contact already exists
-        let contact;
+        // Get organizationId from context or triggerData
+        const organizationId = context?.organizationId || triggerData?.organizationId;
+        if (!organizationId) {
+          throw new Error('Organization ID is required to create contact');
+        }
+
+        // Check if contact already exists (by email and organizationId, or phone and organizationId)
+        const duplicateQuery: any = { organizationId };
         if (email) {
-          contact = await Customer.findOne({ email });
+          duplicateQuery.email = email.toLowerCase().trim();
+        } else if (phone) {
+          duplicateQuery.phone = phone;
+        }
+
+        let contact;
+        if (email || phone) {
+          contact = await Customer.findOne(duplicateQuery);
         }
 
         if (contact) {
           return { success: false, message: 'Contact already exists', contactId: contact._id };
         }
 
-        // Create new contact
+        // Create new contact with organizationId
         contact = await Customer.create({
           name,
-          email,
+          email: email ? email.toLowerCase().trim() : undefined,
           phone,
-          tags
+          tags,
+          organizationId
         });
 
         // Add to lists
@@ -453,9 +467,9 @@ export class AutomationEngine {
 
     // Email Sending Action
     this.actions.set('keplero_send_email', {
-      execute: async (config, triggerData) => {
+      execute: async (config, triggerData, context) => {
         const contactId = triggerData.contactId || config.contactId;
-        const { subject, body, template } = config;
+        const { subject, body, template, is_html } = config;
 
         if (!contactId) {
           throw new Error('Contact ID is required for email');
@@ -466,15 +480,33 @@ export class AutomationEngine {
           throw new Error('Contact not found or email missing');
         }
 
-        // TODO: Implement actual email sending via external API
-        // For now, return success placeholder
-        return {
-          success: true,
-          contactId: contact._id,
-          email: contact.email,
-          subject,
-          sentAt: new Date()
-        };
+        // Use external API for email sending (same as campaign service)
+        try {
+          console.log(`[Automation] Sending email to ${contact.email}...`);
+          const emailResponse = await axios.post(`${COMM_API}/email/send`, {
+            receiver_email: contact.email,
+            subject: subject || 'Notification',
+            body: body || template || '',
+            is_html: is_html || false,
+          }, {
+            timeout: 30000, // 30 seconds timeout
+          });
+
+          const success = emailResponse.data.status === 'success';
+          console.log(`[Automation] Email to ${contact.email} ${success ? 'sent successfully' : 'failed'}`);
+
+          return {
+            success,
+            contactId: contact._id,
+            email: contact.email,
+            subject: subject || 'Notification',
+            messageId: emailResponse.data.messageId,
+            sentAt: new Date()
+          };
+        } catch (error: any) {
+          console.error(`[Automation] Email to ${contact.email} failed:`, error.response?.data?.detail || error.message);
+          throw new Error(`Email sending failed: ${error.response?.data?.detail || error.message}`);
+        }
       }
     });
 
@@ -512,25 +544,61 @@ export class AutomationEngine {
     });
 
     this.actions.set('save_to_crm', {
-      execute: async (config, triggerData) => {
-        return { saved: true };
+      execute: async (config, triggerData, context) => {
+        // This is a placeholder action - CRM integration would go here
+        // For now, we consider the contact already saved in our database as the "CRM"
+        const contactId = triggerData.contactId;
+        const contact = await Customer.findById(contactId);
+        
+        if (!contact) {
+          throw new Error('Contact not found');
+        }
+
+        console.log(`[Automation] Contact ${contact.name} (${contactId}) saved to CRM`);
+        
+        return { 
+          saved: true,
+          contactId: contact._id,
+          contactName: contact.name,
+          message: 'Contact already exists in system (CRM)'
+        };
       }
     });
 
     this.actions.set('add_tag', {
-      execute: async (config, triggerData) => {
+      execute: async (config, triggerData, context) => {
         const contact = await Customer.findById(triggerData.contactId);
         if (contact) {
-          contact.tags.push(config.tag);
-          await contact.save();
-          return { added: true, tag: config.tag };
+          // Validate organization match if context provided
+          const organizationId = context?.organizationId || triggerData?.organizationId;
+          if (organizationId && (contact as any).organizationId?.toString() !== organizationId.toString()) {
+            throw new Error('Contact does not belong to this organization');
+          }
+
+          if (!contact.tags.includes(config.tag)) {
+            contact.tags.push(config.tag);
+            await contact.save();
+            return { added: true, tag: config.tag };
+          }
+          return { added: false, message: 'Tag already exists' };
         }
-        return { added: false };
+        return { added: false, message: 'Contact not found' };
       }
     });
 
     this.actions.set('add_to_list', {
-      execute: async (config, triggerData) => {
+      execute: async (config, triggerData, context) => {
+        // Validate contact exists and belongs to organization
+        const contact = await Customer.findById(triggerData.contactId);
+        if (!contact) {
+          throw new Error('Contact not found');
+        }
+
+        const organizationId = context?.organizationId || triggerData?.organizationId || (contact as any).organizationId;
+        if (organizationId && (contact as any).organizationId?.toString() !== organizationId.toString()) {
+          throw new Error('Contact does not belong to this organization');
+        }
+
         await ContactListMember.create({
           contactId: triggerData.contactId,
           listId: config.listId
@@ -546,6 +614,11 @@ export class AutomationEngine {
     if (!automation || !automation.isActive) {
       throw new AppError(400, 'VALIDATION_ERROR', 'Automation not found or inactive');
     }
+
+    console.log(`[Automation Engine] Executing automation: ${automation.name} (${automationId})`, {
+      organizationId: context?.organizationId || automation.organizationId,
+      nodeCount: automation.nodes.length
+    });
 
     const execution = await AutomationExecution.create({
       automationId,
@@ -589,12 +662,30 @@ export class AutomationEngine {
             throw new Error(`Action handler not found: ${node.service}`);
           }
 
-          const actionResult = await actionHandler.execute(node.config, triggerData, context);
-          actionResults.push({
-            nodeId: node.id,
-            service: node.service,
-            result: actionResult
-          });
+          console.log(`[Automation Engine] Executing action: ${node.service} (nodeId: ${node.id})`);
+          try {
+            const actionResult = await actionHandler.execute(node.config, triggerData, context);
+            console.log(`[Automation Engine] ✅ Action ${node.service} completed:`, {
+              success: actionResult?.success !== false,
+              result: actionResult
+            });
+            actionResults.push({
+              nodeId: node.id,
+              service: node.service,
+              result: actionResult
+            });
+          } catch (actionError: any) {
+            console.error(`[Automation Engine] ❌ Action ${node.service} failed:`, actionError.message);
+            // Continue with other actions even if one fails
+            actionResults.push({
+              nodeId: node.id,
+              service: node.service,
+              result: {
+                success: false,
+                error: actionError.message
+              }
+            });
+          }
         }
       }
 
@@ -624,8 +715,25 @@ export class AutomationEngine {
 
   // Method to trigger automation based on event
   async triggerByEvent(event: string, eventData: any, context?: any) {
-    // Find all active automations with this trigger
-    const automations = await Automation.find({ isActive: true });
+    // Build query to find active automations
+    const query: any = { isActive: true };
+    
+    // Filter by organizationId if provided in context or eventData
+    const organizationId = context?.organizationId || eventData?.organizationId;
+    if (organizationId) {
+      query.organizationId = organizationId;
+    }
+    
+    console.log(`[Automation Engine] Triggering event: ${event}`, {
+      organizationId,
+      hasContext: !!context,
+      eventDataKeys: Object.keys(eventData || {})
+    });
+    
+    // Find all active automations matching the organization
+    const automations = await Automation.find(query);
+    
+    console.log(`[Automation Engine] Found ${automations.length} active automation(s) for organization ${organizationId}`);
 
     const results = [];
 
@@ -643,10 +751,15 @@ export class AutomationEngine {
         
         if (isValid) {
           const automationId = (automation._id as any).toString();
+          console.log(`[Automation Engine] ✅ Trigger matched for automation: ${automation.name} (${automationId})`);
+          
           // Execute automation asynchronously
           this.executeAutomation(automationId, eventData, context)
+            .then(result => {
+              console.log(`[Automation Engine] ✅ Automation ${automation.name} executed successfully`);
+            })
             .catch(err => {
-              console.error(`Error executing automation ${automationId}:`, err);
+              console.error(`[Automation Engine] ❌ Error executing automation ${automationId}:`, err.message);
             });
           
           results.push({
@@ -654,9 +767,11 @@ export class AutomationEngine {
             name: automation.name,
             triggered: true
           });
+        } else {
+          console.log(`[Automation Engine] ⏭️  Trigger validation failed for automation: ${automation.name}`);
         }
-      } catch (error) {
-        console.error(`Error validating trigger for automation ${automation._id}:`, error);
+      } catch (error: any) {
+        console.error(`[Automation Engine] ❌ Error validating trigger for automation ${automation._id}:`, error.message);
       }
     }
 

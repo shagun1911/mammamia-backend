@@ -168,15 +168,20 @@ export class ContactService {
     }
 
     // Trigger automation for contact created (non-blocking)
-    automationEngine.triggerByEvent('contact_created', {
+    // Pass context with organizationId so automations can filter correctly
+    automationEngine.triggerByEvent('keplero_contact_created', {
       event: 'contact_created',
       contactId: contact._id,
+      organizationId: organizationId,
       contact: {
         name: contact.name,
         email: contact.email,
         phone: contact.phone,
         tags: contact.tags
       }
+    }, {
+      userId: (contact as any).userId, // If available
+      organizationId: organizationId
     }).catch(err => console.error('Automation trigger error:', err));
 
     return contact;
@@ -240,14 +245,19 @@ export class ContactService {
     }
 
     // Trigger automation for contact deleted (before deletion)
-    automationEngine.triggerByEvent('contact_deleted', {
+    // Get organizationId from contact before deletion
+    const contactOrgId = (contact as any).organizationId;
+    automationEngine.triggerByEvent('keplero_contact_deleted', {
       event: 'contact_deleted',
       contactId: contact._id,
+      organizationId: contactOrgId,
       contact: {
         name: contact.name,
         email: contact.email,
         phone: contact.phone
       }
+    }, {
+      organizationId: contactOrgId
     }).catch(err => console.error('Automation trigger error:', err));
 
     // Delete the contact
@@ -295,10 +305,15 @@ export class ContactService {
 
     // Trigger automation for each contact moved to list
     for (const contactId of contactIds) {
-      automationEngine.triggerByEvent('contact_moved', {
+      const contact = await Customer.findById(contactId);
+      const contactOrgId = contact ? (contact as any).organizationId : null;
+      automationEngine.triggerByEvent('keplero_contact_moved', {
         event: 'contact_moved',
+        organizationId: contactOrgId,
         contactId,
         listId
+      }, {
+        organizationId: contactOrgId
       }).catch(err => console.error('Automation trigger error:', err));
     }
 

@@ -10,8 +10,12 @@ export class AutomationService {
     this.engine = new AutomationEngine();
   }
 
-  async findAll() {
-    const automations = await Automation.find().sort({ createdAt: -1 }).lean();
+  async findAll(organizationId?: string) {
+    const query: any = {};
+    if (organizationId) {
+      query.organizationId = organizationId;
+    }
+    const automations = await Automation.find(query).sort({ createdAt: -1 }).lean();
     return automations;
   }
 

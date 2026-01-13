@@ -12,7 +12,9 @@ export class AutomationController {
 
   getAll = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const automations = await this.automationService.findAll();
+      // Get organizationId from user
+      const organizationId = req.user?.organizationId || req.user?._id;
+      const automations = await this.automationService.findAll(organizationId?.toString());
       res.json(successResponse(automations));
     } catch (error) {
       next(error);
@@ -30,7 +32,20 @@ export class AutomationController {
 
   create = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const automation = await this.automationService.create(req.body);
+      // Get organizationId from user
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new Error('Organization ID not found');
+      }
+
+      // Add organizationId and userId to automation data
+      const automationData = {
+        ...req.body,
+        organizationId: organizationId.toString(),
+        userId: req.user?._id
+      };
+
+      const automation = await this.automationService.create(automationData);
       res.status(201).json(successResponse(automation, 'Automation created'));
     } catch (error) {
       next(error);
@@ -99,10 +114,14 @@ export class AutomationController {
 
   trigger = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
+      const organizationId = req.user?.organizationId || req.user?._id;
       const result = await this.automationService.triggerAutomation(
         req.params.automationId,
         req.body.triggerData,
-        { userId: req.user?.userId }
+        { 
+          userId: req.user?._id,
+          organizationId: organizationId?.toString()
+        }
       );
       res.json(successResponse(result, 'Automation triggered successfully'));
     } catch (error) {
@@ -113,10 +132,14 @@ export class AutomationController {
   triggerByEvent = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const { event, eventData } = req.body;
+      const organizationId = req.user?.organizationId || req.user?._id;
       const result = await this.automationService.triggerByEvent(
         event,
         eventData,
-        { userId: req.user?.userId }
+        { 
+          userId: req.user?._id,
+          organizationId: organizationId?.toString()
+        }
       );
       res.json(successResponse(result, `${result.length} automation(s) triggered`));
     } catch (error) {
