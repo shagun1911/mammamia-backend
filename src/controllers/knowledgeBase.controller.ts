@@ -2,7 +2,7 @@ import { Response, NextFunction } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { KnowledgeBaseService } from '../services/knowledgeBase.service';
 import { WebScraperService } from '../services/webScraper.service';
-import { S3Service } from '../services/s3.service';
+import { GCSService } from '../services/gcs.service';
 import { DocumentProcessorService } from '../services/documentProcessor.service';
 import { successResponse, paginatedResponse } from '../utils/response.util';
 import { AppError } from '../middleware/error.middleware';
@@ -10,13 +10,13 @@ import { AppError } from '../middleware/error.middleware';
 export class KnowledgeBaseController {
   private kbService: KnowledgeBaseService;
   private scraperService: WebScraperService;
-  private s3Service: S3Service;
+  private gcsService: GCSService;
   private docProcessor: DocumentProcessorService;
 
   constructor() {
     this.kbService = new KnowledgeBaseService();
     this.scraperService = new WebScraperService();
-    this.s3Service = new S3Service();
+    this.gcsService = new GCSService();
     this.docProcessor = new DocumentProcessorService();
   }
 
@@ -282,8 +282,8 @@ export class KnowledgeBaseController {
       const isPdf = req.file.mimetype === 'application/pdf';
       const isExcel = req.file.mimetype.includes('spreadsheet') || req.file.mimetype.includes('excel');
 
-      // Upload to S3
-      const url = await this.s3Service.uploadFile(
+      // Upload to GCS
+      const url = await this.gcsService.uploadFile(
         req.file.buffer,
         req.file.originalname,
         req.file.mimetype
@@ -338,8 +338,8 @@ export class KnowledgeBaseController {
     try {
       const result = await this.kbService.deleteFile(req.params.fileId);
       
-      // Delete from S3
-      await this.s3Service.deleteFile(result.file.url);
+      // Delete from GCS
+      await this.gcsService.deleteFile(result.file.url);
 
       res.json(successResponse({ message: result.message }));
     } catch (error) {

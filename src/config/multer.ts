@@ -3,6 +3,7 @@ import { AppError } from '../middleware/error.middleware';
 
 const storage = multer.memoryStorage();
 
+// File filter for knowledge base uploads (strict - only documents)
 const fileFilter = (req: any, file: any, cb: any) => {
   const allowedTypes = [
     'application/pdf',
@@ -19,11 +20,56 @@ const fileFilter = (req: any, file: any, cb: any) => {
   }
 };
 
+// File filter for conversation attachments (permissive - images, documents, etc.)
+const attachmentFileFilter = (req: any, file: any, cb: any) => {
+  // Allow images
+  const imageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'];
+  // Allow documents
+  const documentTypes = [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'text/plain',
+    'text/csv'
+  ];
+  // Allow audio/video
+  const mediaTypes = [
+    'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/webm',
+    'video/mp4', 'video/webm', 'video/ogg'
+  ];
+  // Allow archives
+  const archiveTypes = [
+    'application/zip', 'application/x-rar-compressed', 'application/x-7z-compressed'
+  ];
+
+  const allAllowedTypes = [...imageTypes, ...documentTypes, ...mediaTypes, ...archiveTypes];
+
+  if (allAllowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new AppError(400, 'INVALID_FILE_TYPE', `Unsupported file type: ${file.mimetype}`), false);
+  }
+};
+
+// Multer for knowledge base uploads (strict)
 export const upload = multer({
   storage,
   fileFilter,
   limits: {
     fileSize: 5 * 1024 * 1024 // 5MB
+  }
+});
+
+// Multer for conversation attachments (permissive)
+export const attachmentUpload = multer({
+  storage,
+  fileFilter: attachmentFileFilter,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB for attachments
   }
 });
 

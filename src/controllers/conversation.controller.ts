@@ -2,6 +2,8 @@ import { Request, Response, NextFunction } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { ConversationService } from '../services/conversation.service';
 import { successResponse, paginatedResponse } from '../utils/response.util';
+import { gcsService } from '../services/gcs.service';
+import { AppError } from '../middleware/error.middleware';
 
 export class ConversationController {
   private conversationService: ConversationService;
@@ -54,12 +56,44 @@ export class ConversationController {
       const { text, sender } = req.body;
       const operatorId = sender === 'operator' ? req.user._id : null;
       
+      // Handle file attachments if any
+      let attachments: any[] = [];
+      if (req.files && Array.isArray(req.files) && req.files.length > 0) {
+        const files = req.files as Express.Multer.File[];
+        try {
+          attachments = await Promise.all(
+            files.map(async (file) => {
+              const fileUrl = await gcsService.uploadFile(
+                file.buffer,
+                file.originalname,
+                file.mimetype,
+                'conversations/attachments'
+              );
+              return {
+                type: file.mimetype,
+                url: fileUrl,
+                filename: file.originalname,
+                size: file.size
+              };
+            })
+          );
+        } catch (gcsError: any) {
+          console.error('[Conversation Controller] GCS upload error:', gcsError);
+          throw new AppError(
+            500,
+            'FILE_UPLOAD_FAILED',
+            gcsError.message || 'Failed to upload file. Please check GCS configuration.'
+          );
+        }
+      }
+      
       // Use sendReply for operator messages to send via appropriate channel (WhatsApp/Instagram/Facebook)
-      if (sender === 'operator' && text) {
+      if (sender === 'operator' && (text || attachments.length > 0)) {
         const message = await this.conversationService.sendReply(
           req.params.conversationId,
-          text,
-          operatorId
+          text || (attachments.length > 0 ? '[File attachment]' : ''),
+          operatorId,
+          attachments
         );
         res.json(successResponse(message, 'Message sent'));
       } else {
@@ -68,7 +102,8 @@ export class ConversationController {
           req.params.conversationId,
           {
             ...req.body,
-            operatorId
+            operatorId,
+            attachments
           }
         );
         res.json(successResponse(message, 'Message added'));

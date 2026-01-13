@@ -43,10 +43,10 @@ const MessageSchema = new Schema<IMessage>({
     default: 'message'
   },
   attachments: [{
-    type: String,
-    url: String,
-    filename: String,
-    size: Number
+    type: { type: String, required: true }, // 'type' is a reserved word, so we need to wrap it
+    url: { type: String, required: true },
+    filename: { type: String, required: true },
+    size: { type: Number, required: true }
   }],
   sourcesUsed: [String],
   topics: [String],

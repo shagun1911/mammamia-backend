@@ -49,7 +49,19 @@ export class ContactController {
 
   create = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const contact = await this.contactService.create(req.body);
+      // Get organizationId from user
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+
+      // Add organizationId to contact data
+      const contactData = {
+        ...req.body,
+        organizationId: organizationId.toString()
+      };
+
+      const contact = await this.contactService.create(contactData);
       res.status(201).json(successResponse(contact, 'Contact created'));
     } catch (error) {
       next(error);

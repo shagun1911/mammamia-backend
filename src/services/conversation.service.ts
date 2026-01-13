@@ -162,11 +162,46 @@ export class ConversationService {
     }
     await conversation.save();
 
+    // Emit Socket.io events for real-time updates (only for messages, not internal notes)
+    if (messageData.type === 'message') {
+      try {
+        const { emitToConversation, emitToOrganization } = await import('../config/socket');
+        
+        const messagePayload = {
+          id: message._id.toString(),
+          conversationId: conversationId.toString(),
+          text: messageData.text || '',
+          sender: messageData.sender,
+          timestamp: message.timestamp,
+          type: 'message',
+          attachments: messageData.attachments || []
+        };
+
+        // Emit to conversation room
+        emitToConversation(conversationId.toString(), 'message-received', messagePayload);
+        
+        // Emit to organization room
+        emitToOrganization(
+          conversation.organizationId.toString(),
+          'new-message',
+          {
+            conversationId: conversationId.toString(),
+            message: messagePayload
+          }
+        );
+
+        console.log(`[Conversation Service] Emitted message-received event for conversation ${conversationId}`);
+      } catch (socketError: any) {
+        console.error('[Conversation Service] Failed to emit Socket.io event:', socketError.message);
+        // Don't throw - message was saved successfully
+      }
+    }
+
     return message;
   }
 
   // Send reply to customer (via appropriate channel)
-  async sendReply(conversationId: string, messageText: string, operatorId?: string) {
+  async sendReply(conversationId: string, messageText: string, operatorId?: string, attachments: any[] = []) {
     const conversation = await Conversation.findById(conversationId)
       .populate('customerId')
       .lean();
@@ -186,7 +221,8 @@ export class ConversationService {
       text: messageText,
       type: 'message',
       timestamp: new Date(),
-      operatorId: operatorId || undefined
+      operatorId: operatorId || undefined,
+      attachments: attachments || []
     });
 
     // Send via appropriate channel
@@ -254,6 +290,39 @@ export class ConversationService {
       updatedAt: new Date(),
       unread: false
     });
+
+    // Emit Socket.io events for real-time updates
+    try {
+      const { emitToConversation, emitToOrganization } = await import('../config/socket');
+      
+      const messageData = {
+        id: message._id.toString(),
+        conversationId: conversationId.toString(),
+        text: messageText,
+        sender: operatorId ? 'operator' : 'ai',
+        timestamp: message.timestamp,
+        type: 'message',
+        attachments: attachments || []
+      };
+
+      // Emit to conversation room
+      emitToConversation(conversationId.toString(), 'message-received', messageData);
+      
+      // Emit to organization room
+      emitToOrganization(
+        conversation.organizationId.toString(),
+        'new-message',
+        {
+          conversationId: conversationId.toString(),
+          message: messageData
+        }
+      );
+
+      console.log(`[Conversation Service] Emitted message-received event for conversation ${conversationId}`);
+    } catch (socketError: any) {
+      console.error('[Conversation Service] Failed to emit Socket.io event:', socketError.message);
+      // Don't throw - message was saved successfully
+    }
 
     return message;
   }

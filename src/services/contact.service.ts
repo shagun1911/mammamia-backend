@@ -112,24 +112,62 @@ export class ContactService {
   }
 
   async create(contactData: any) {
-    const { lists, ...customerData } = contactData;
+    const { lists, organizationId, ...customerData } = contactData;
 
-    // Check if contact already exists
+    // Validate required fields
+    if (!customerData.name) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Contact name is required');
+    }
+
+    if (!organizationId) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Organization ID is required');
+    }
+
+    // Check if contact already exists (by email and organizationId, or phone and organizationId)
+    const duplicateQuery: any = { organizationId };
     if (contactData.email) {
-      const existing = await Customer.findOne({ email: contactData.email });
+      duplicateQuery.email = contactData.email.toLowerCase().trim();
+    } else if (contactData.phone) {
+      duplicateQuery.phone = contactData.phone;
+    }
+
+    if (contactData.email || contactData.phone) {
+      const existing = await Customer.findOne(duplicateQuery);
       if (existing) {
-        throw new AppError(409, 'DUPLICATE', 'Contact with this email already exists');
+        throw new AppError(409, 'DUPLICATE', 'Contact with this email or phone already exists in this organization');
       }
     }
 
-    const contact = await Customer.create(customerData);
-
-    // Add to lists
+    // Validate lists exist before creating contact (to prevent partial saves)
     if (lists && lists.length > 0) {
-      await this.addToLists((contact._id as any).toString(), lists);
+      const existingLists = await ContactList.find({ 
+        _id: { $in: lists },
+        organizationId 
+      });
+      if (existingLists.length !== lists.length) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'One or more contact lists not found');
+      }
     }
 
-    // Trigger automation for contact created
+    // Create contact with organizationId
+    const contact = await Customer.create({
+      ...customerData,
+      organizationId,
+      email: customerData.email ? customerData.email.toLowerCase().trim() : undefined
+    });
+
+    // Add to lists (only after contact is successfully created)
+    if (lists && lists.length > 0) {
+      try {
+        await this.addToLists((contact._id as any).toString(), lists);
+      } catch (listError: any) {
+        // If adding to lists fails, delete the contact to maintain consistency
+        await Customer.findByIdAndDelete(contact._id);
+        throw new AppError(500, 'LIST_ERROR', `Failed to add contact to lists: ${listError.message}`);
+      }
+    }
+
+    // Trigger automation for contact created (non-blocking)
     automationEngine.triggerByEvent('contact_created', {
       event: 'contact_created',
       contactId: contact._id,
@@ -153,7 +191,30 @@ export class ContactService {
       throw new AppError(404, 'NOT_FOUND', 'Contact not found');
     }
 
+    // Check for duplicate email/phone in the same organization (excluding current contact)
+    const organizationId = contact.organizationId || updateData.organizationId;
+    if (updateData.email || updateData.phone) {
+      const duplicateQuery: any = { 
+        organizationId,
+        _id: { $ne: contactId }
+      };
+      
+      if (updateData.email) {
+        duplicateQuery.email = updateData.email.toLowerCase().trim();
+      } else if (updateData.phone) {
+        duplicateQuery.phone = updateData.phone;
+      }
+
+      const existing = await Customer.findOne(duplicateQuery);
+      if (existing) {
+        throw new AppError(409, 'DUPLICATE', 'Contact with this email or phone already exists in this organization');
+      }
+    }
+
     // Update fields
+    if (updateData.email) {
+      updateData.email = updateData.email.toLowerCase().trim();
+    }
     Object.assign(contact, updateData);
     await contact.save();
 

@@ -466,7 +466,7 @@ export class AutomationEngine {
           throw new Error('Contact not found or email missing');
         }
 
-        // TODO: Implement actual email sending
+        // TODO: Implement actual email sending via external API
         // For now, return success placeholder
         return {
           success: true,

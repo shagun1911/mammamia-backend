@@ -47,10 +47,16 @@ const corsOrigin = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
   : 'http://localhost:3000';
 
+// CORS configuration - supports multiple origins and file uploads
 app.use(cors({ 
   origin: corsOrigin,
-  credentials: true 
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
+
+// Body parsers - but note: multer will handle multipart/form-data
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
