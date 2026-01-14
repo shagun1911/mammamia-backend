@@ -13,7 +13,13 @@ router.get('/', socialIntegrationController.getAll.bind(socialIntegrationControl
 // Get specific platform integration
 router.get('/:platform', socialIntegrationController.getByPlatform.bind(socialIntegrationController));
 
-// Connect/update integration
+// OAuth flow - initiate OAuth
+router.get('/:platform/oauth', socialIntegrationController.initiateOAuth.bind(socialIntegrationController));
+
+// OAuth callback - handle OAuth redirect
+router.get('/:platform/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
+
+// Connect/update integration (manual method - kept for backward compatibility)
 router.post('/:platform/connect', socialIntegrationController.connect.bind(socialIntegrationController));
 
 // Test connection

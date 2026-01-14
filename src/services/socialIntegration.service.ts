@@ -16,19 +16,25 @@ export class SocialIntegrationService {
     wabaId?: string;
     instagramAccountId?: string;
     facebookPageId?: string;
+    credentials?: any; // For OAuth-based connections
+    skipVerification?: boolean; // Skip verification for OAuth connections
   }): Promise<ISocialIntegration> {
     try {
-      // Verify the credentials work
-      const dialog360 = new Dialog360Service({
-        apiKey: data.apiKey,
-        phoneNumberId: data.phoneNumberId,
-        instagramAccountId: data.instagramAccountId,
-        facebookPageId: data.facebookPageId
-      });
+      // For OAuth connections, skip 360dialog verification (they use Meta Graph API)
+      // Only verify if it's a manual 360dialog connection
+      if (!data.skipVerification) {
+        // Verify the credentials work (for 360dialog API)
+        const dialog360 = new Dialog360Service({
+          apiKey: data.apiKey,
+          phoneNumberId: data.phoneNumberId,
+          instagramAccountId: data.instagramAccountId,
+          facebookPageId: data.facebookPageId
+        });
 
-      const isValid = await dialog360.verifyConnection();
-      if (!isValid) {
-        throw new AppError(400, 'INVALID_CREDENTIALS', 'Invalid credentials - could not verify connection with 360dialog');
+        const isValid = await dialog360.verifyConnection();
+        if (!isValid) {
+          throw new AppError(400, 'INVALID_CREDENTIALS', 'Invalid credentials - could not verify connection with 360dialog');
+        }
       }
 
       // Update or create integration
@@ -39,7 +45,7 @@ export class SocialIntegrationService {
         },
         {
           $set: {
-            credentials: {
+            credentials: data.credentials || {
               apiKey: data.apiKey, // Will be encrypted by pre-save hook
               clientId: data.clientId,
               phoneNumberId: data.phoneNumberId,
