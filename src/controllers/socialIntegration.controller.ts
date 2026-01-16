@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { AuthRequest } from '../middleware/auth.middleware';
 import socialIntegrationService from '../services/socialIntegration.service';
 import { AppError } from '../middleware/error.middleware';
 import { MetaOAuthService } from '../services/metaOAuth.service';
@@ -247,9 +248,9 @@ export class SocialIntegrationController {
   /**
    * Initiate OAuth flow for Meta platforms
    */
-  async initiateOAuth(req: Request, res: Response, next: NextFunction) {
+  async initiateOAuth(req: AuthRequest, res: Response, next: NextFunction) {
     try {
-      const organizationId = (req as any).user?.organizationId || (req as any).user?._id;
+      const organizationId = req.user?.organizationId || req.user?._id;
       const { platform } = req.params;
 
       if (!organizationId) {
@@ -284,7 +285,7 @@ export class SocialIntegrationController {
 
       // Generate state with user info
       const state = Buffer.from(JSON.stringify({
-        userId: (req as any).user?._id,
+        userId: req.user?._id,
         organizationId,
         platform,
         redirectUrl: `${frontendUrl}/settings/socials`
@@ -310,7 +311,7 @@ export class SocialIntegrationController {
       // Handle OAuth errors
       if (error) {
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-        const errorMessage = error_description || error_reason || 'OAuth authorization failed';
+        const errorMessage = String(error_description || error_reason || 'OAuth authorization failed');
         return res.redirect(
           `${frontendUrl}/settings/socials?error=${encodeURIComponent(errorMessage)}&platform=${platform}`
         );

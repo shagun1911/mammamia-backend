@@ -4,7 +4,10 @@ import { authenticate } from '../middleware/auth.middleware';
 
 const router = Router();
 
-// All routes require authentication
+// OAuth callback - handle OAuth redirect (public - no auth required, Meta redirects here)
+router.get('/:platform/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
+
+// All other routes require authentication
 router.use(authenticate);
 
 // Get all integrations
@@ -13,11 +16,8 @@ router.get('/', socialIntegrationController.getAll.bind(socialIntegrationControl
 // Get specific platform integration
 router.get('/:platform', socialIntegrationController.getByPlatform.bind(socialIntegrationController));
 
-// OAuth flow - initiate OAuth
-router.get('/:platform/oauth', socialIntegrationController.initiateOAuth.bind(socialIntegrationController));
-
-// OAuth callback - handle OAuth redirect
-router.get('/:platform/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
+// OAuth flow - initiate OAuth (POST endpoint as frontend expects)
+router.post('/:platform/oauth/initiate', socialIntegrationController.initiateOAuth.bind(socialIntegrationController));
 
 // Connect/update integration (manual method - kept for backward compatibility)
 router.post('/:platform/connect', socialIntegrationController.connect.bind(socialIntegrationController));

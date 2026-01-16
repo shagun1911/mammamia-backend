@@ -16,10 +16,31 @@ export class GoogleIntegrationController {
     try {
       const { services } = req.body; // ['sheets', 'drive', 'calendar']
       
+      const clientId = process.env.GOOGLE_CLIENT_ID;
+      const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+      const redirectUri = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5001/api/v1/integrations/google/callback';
+
+      // Log configuration for debugging
+      console.log('[Google OAuth] Configuration:', {
+        clientId: clientId ? `${clientId.substring(0, 20)}...` : 'MISSING',
+        clientSecret: clientSecret ? 'SET' : 'MISSING',
+        redirectUri,
+        hasClientId: !!clientId,
+        hasClientSecret: !!clientSecret
+      });
+
+      if (!clientId || !clientSecret) {
+        console.error('[Google OAuth] Missing credentials:', {
+          hasClientId: !!clientId,
+          hasClientSecret: !!clientSecret
+        });
+        throw new AppError(500, 'CONFIGURATION_ERROR', 'Google OAuth credentials not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in environment variables.');
+      }
+      
       const oauth2Client = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID,
-        process.env.GOOGLE_CLIENT_SECRET,
-        process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5001/api/v1/integrations/google/callback'
+        clientId,
+        clientSecret,
+        redirectUri
       );
 
       // Define scopes based on requested services
@@ -56,8 +77,16 @@ export class GoogleIntegrationController {
         prompt: 'consent' // Force consent to get refresh token
       });
 
+      console.log('[Google OAuth] Generated auth URL:', {
+        redirectUri,
+        scopesCount: scopes.length,
+        authUrlLength: authUrl.length,
+        authUrlPreview: authUrl.substring(0, 100) + '...'
+      });
+
       res.json(successResponse({ authUrl }, 'Authorization URL generated'));
     } catch (error) {
+      console.error('[Google OAuth] Connect error:', error);
       next(error);
     }
   };
@@ -67,31 +96,96 @@ export class GoogleIntegrationController {
    */
   callback = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { code, state } = req.query;
+      const { code, state, error, error_description } = req.query;
+
+      console.log('[Google OAuth] Callback received:', {
+        hasCode: !!code,
+        hasState: !!state,
+        error,
+        error_description,
+        query: req.query
+      });
+
+      // Handle OAuth errors
+      if (error) {
+        console.error('[Google OAuth] OAuth error:', { error, error_description });
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const errorMessage = String(error_description || error || 'OAuth authorization failed');
+        return res.redirect(
+          `${frontendUrl}/settings/integrations?error=${encodeURIComponent(errorMessage)}`
+        );
+      }
 
       if (!code || !state) {
+        console.error('[Google OAuth] Missing code or state:', { hasCode: !!code, hasState: !!state });
         throw new AppError(400, 'INVALID_REQUEST', 'Missing authorization code or state');
       }
 
       // Decode state
-      const stateData = JSON.parse(Buffer.from(state as string, 'base64').toString());
+      let stateData;
+      try {
+        stateData = JSON.parse(Buffer.from(state as string, 'base64').toString());
+        console.log('[Google OAuth] Decoded state:', { userId: stateData.userId, organizationId: stateData.organizationId, services: stateData.services });
+      } catch (e) {
+        console.error('[Google OAuth] Failed to decode state:', e);
+        throw new AppError(400, 'INVALID_REQUEST', 'Invalid state parameter');
+      }
+
       const { userId, organizationId, services } = stateData;
 
+      const clientId = process.env.GOOGLE_CLIENT_ID;
+      const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+      const redirectUri = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5001/api/v1/integrations/google/callback';
+
+      console.log('[Google OAuth] Exchanging code for token:', {
+        redirectUri,
+        hasClientId: !!clientId,
+        hasClientSecret: !!clientSecret
+      });
+
       const oauth2Client = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID,
-        process.env.GOOGLE_CLIENT_SECRET,
-        process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5001/api/v1/integrations/google/callback'
+        clientId,
+        clientSecret,
+        redirectUri
       );
 
       // Exchange code for tokens
-      const { tokens } = await oauth2Client.getToken(code as string);
+      let tokens;
+      try {
+        const tokenResponse = await oauth2Client.getToken(code as string);
+        tokens = tokenResponse.tokens;
+        console.log('[Google OAuth] Token exchange successful:', {
+          hasAccessToken: !!tokens.access_token,
+          hasRefreshToken: !!tokens.refresh_token,
+          expiryDate: tokens.expiry_date
+        });
+      } catch (error: any) {
+        console.error('[Google OAuth] Token exchange failed:', {
+          error: error.message,
+          response: error.response?.data
+        });
+        throw new AppError(400, 'OAUTH_ERROR', error.response?.data?.error_description || error.message || 'Failed to exchange authorization code');
+      }
+
       oauth2Client.setCredentials(tokens);
 
       // Get user profile
       const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
       const userInfo = await oauth2.userinfo.get();
+      console.log('[Google OAuth] User info retrieved:', {
+        email: userInfo.data.email,
+        name: userInfo.data.name
+      });
 
       // Save or update integration
+      console.log('[Google OAuth] Saving integration:', {
+        userId,
+        organizationId,
+        services,
+        hasAccessToken: !!tokens.access_token,
+        hasRefreshToken: !!tokens.refresh_token
+      });
+
       const integration = await GoogleIntegration.findOneAndUpdate(
         { userId, organizationId },
         {
@@ -116,11 +210,27 @@ export class GoogleIntegrationController {
         { upsert: true, new: true }
       );
 
+      console.log('[Google OAuth] Integration saved successfully:', {
+        integrationId: integration._id,
+        email: integration.googleProfile.email
+      });
+
       // Redirect to frontend success page
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      console.log('[Google OAuth] Redirecting to frontend:', `${frontendUrl}/settings/integrations?success=google&services=${services.join(',')}`);
       res.redirect(`${frontendUrl}/settings/integrations?success=google&services=${services.join(',')}`);
-    } catch (error) {
-      next(error);
+    } catch (error: any) {
+      console.error('[Google OAuth] Callback error:', {
+        error: error.message,
+        stack: error.stack,
+        statusCode: error.statusCode,
+        code: error.code
+      });
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const errorMessage = error.message || 'OAuth callback failed';
+      res.redirect(
+        `${frontendUrl}/settings/integrations?error=${encodeURIComponent(errorMessage)}`
+      );
     }
   };
 

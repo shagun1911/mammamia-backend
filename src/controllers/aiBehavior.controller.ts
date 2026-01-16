@@ -232,24 +232,61 @@ export class AIBehaviorController {
       // Normalize phone number
       const normalizedPhone = phoneNumber.startsWith('+') ? phoneNumber : '+' + phoneNumber;
 
-      // Get default knowledge bases from settings
+      // Get knowledge bases - check multiple sources with fallbacks
       let collectionNames: string[] = [];
       try {
         const Settings = (await import('../models/Settings')).default;
+        const KnowledgeBase = (await import('../models/KnowledgeBase')).default;
         const settings = await Settings.findOne({ userId: req.user!.id });
+        
         if (settings) {
-          // Prefer multiple knowledge bases (new format)
+          // Priority 1: Use collection names from Settings (new format - multiple KBs)
           if (settings.defaultKnowledgeBaseNames && settings.defaultKnowledgeBaseNames.length > 0) {
             collectionNames = settings.defaultKnowledgeBaseNames;
-          } 
-          // Fallback to single knowledge base (legacy format)
+            console.log(`[Test Call] Using knowledge bases from Settings.defaultKnowledgeBaseNames:`, collectionNames);
+          }
+          // Priority 2: Resolve knowledge base IDs from Settings to collection names
+          else if (settings.defaultKnowledgeBaseIds && settings.defaultKnowledgeBaseIds.length > 0) {
+            const knowledgeBases = await KnowledgeBase.find({ 
+              _id: { $in: settings.defaultKnowledgeBaseIds } 
+            }).select('collectionName').lean();
+            collectionNames = knowledgeBases.map((kb: any) => kb.collectionName).filter(Boolean);
+            console.log(`[Test Call] Resolved knowledge base IDs to collection names:`, collectionNames);
+          }
+          // Priority 3: Use single knowledge base name from Settings (legacy format)
           else if (settings.defaultKnowledgeBaseName) {
             collectionNames = [settings.defaultKnowledgeBaseName];
+            console.log(`[Test Call] Using knowledge base from Settings.defaultKnowledgeBaseName:`, collectionNames);
+          }
+          // Priority 4: Resolve single knowledge base ID from Settings (legacy format)
+          else if (settings.defaultKnowledgeBaseId) {
+            const kb = await KnowledgeBase.findById(settings.defaultKnowledgeBaseId).select('collectionName').lean();
+            if (kb && kb.collectionName) {
+              collectionNames = [kb.collectionName];
+              console.log(`[Test Call] Resolved knowledge base ID from Settings:`, collectionNames);
+            }
           }
         }
-        console.log(`[Test Call] Using ${collectionNames.length} knowledge base(s):`, collectionNames);
+        
+        // Priority 5: Use knowledge base from AI Behavior (if settings didn't have one)
+        if (collectionNames.length === 0 && aiBehavior.knowledgeBaseId) {
+          const kb = await KnowledgeBase.findById(aiBehavior.knowledgeBaseId).select('collectionName').lean();
+          if (kb && kb.collectionName) {
+            collectionNames = [kb.collectionName];
+            console.log(`[Test Call] Using knowledge base from AI Behavior:`, collectionNames);
+          }
+        }
+        
+        // Final fallback: use 'default' if nothing found
+        if (collectionNames.length === 0) {
+          collectionNames = ['default'];
+          console.warn(`[Test Call] No knowledge base configured - using 'default' collection`);
+        } else {
+          console.log(`[Test Call] Using ${collectionNames.length} knowledge base(s):`, collectionNames);
+        }
       } catch (error: any) {
-        console.warn(`[Test Call] Could not fetch knowledge bases:`, error.message);
+        console.error(`[Test Call] Error fetching knowledge bases:`, error.message);
+        collectionNames = ['default']; // Fallback on error
       }
 
       // Prepare call request
@@ -267,7 +304,10 @@ export class AIBehaviorController {
         greeting_message: phoneSettings.greetingMessage || 'Hello! How can I help you today?' // Greeting message from settings
       };
       
-      console.log('📝 [Test Call] Using greeting message:', callRequestBody.greeting_message);
+      console.log('📝 [Test Call] Call Configuration:');
+      console.log('   - Greeting:', callRequestBody.greeting_message);
+      console.log('   - Knowledge Bases (collection_names):', JSON.stringify(callRequestBody.collection_names));
+      console.log('   - Collection Count:', callRequestBody.collection_names.length);
 
       // Add transfer_to and escalation_condition from settings
       if (phoneSettings.humanOperatorPhone) {
@@ -281,6 +321,13 @@ export class AIBehaviorController {
       
       console.log('\n========== TEST VOICE AGENT - OUTBOUND CALL ==========');
       console.log('📞 [AI Behavior Test] URL:', callUrl);
+      console.log('📦 [AI Behavior Test] Request Summary:');
+      console.log('   - Phone:', normalizedPhone);
+      console.log('   - Collection Names:', JSON.stringify(callRequestBody.collection_names));
+      console.log('   - Collection Count:', callRequestBody.collection_names.length);
+      console.log('   - Greeting:', callRequestBody.greeting_message);
+      console.log('   - Provider:', callRequestBody.provider);
+      console.log('   - API Key:', callRequestBody.api_key ? '✅ Set' : '❌ Missing');
       console.log('📦 [AI Behavior Test] Full Request Body:', JSON.stringify({
         ...callRequestBody,
         api_key: callRequestBody.api_key ? `${callRequestBody.api_key.substring(0, 10)}...***` : 'NOT_SET'

@@ -21,6 +21,7 @@ const createUsers = async () => {
         status: 'active' as const,
         provider: 'local' as const
       },
+      
       {
         email: 'infoitaliaia@gmail.com',
         password: '12345678',

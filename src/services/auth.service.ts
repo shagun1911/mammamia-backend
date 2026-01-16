@@ -63,22 +63,37 @@ export class AuthService {
 
   // Login
   async login(email: string, password: string) {
+    console.log('[Auth] Login attempt:', { email, hasPassword: !!password });
+    
     const user = await User.findOne({ email, status: 'active' });
     
     if (!user) {
+      console.log('[Auth] User not found or inactive:', { email });
       throw new AppError(401, 'UNAUTHORIZED', 'Invalid credentials');
     }
 
+    console.log('[Auth] User found:', {
+      userId: user._id,
+      email: user.email,
+      provider: user.provider,
+      hasPassword: !!(user.password || user.passwordHash),
+      status: user.status
+    });
+
     // Check if user is OAuth user (no password)
     if (!user.password && !user.passwordHash && user.provider !== 'local') {
+      console.log('[Auth] OAuth user attempting password login:', { provider: user.provider });
       throw new AppError(401, 'UNAUTHORIZED', `Please sign in with ${user.provider}`);
     }
 
     const isPasswordValid = await user.comparePassword(password);
     
     if (!isPasswordValid) {
+      console.log('[Auth] Invalid password for user:', { email });
       throw new AppError(401, 'UNAUTHORIZED', 'Invalid credentials');
     }
+
+    console.log('[Auth] Login successful:', { email, userId: user._id });
 
     const userId = (user._id as any).toString();
     const accessToken = this.generateAccessToken(userId);
