@@ -10,6 +10,7 @@ import { Dialog360Message } from '../services/dialog360.service';
 import { emitToOrganization, emitToConversation } from '../config/socket';
 import { pythonRagService } from '../services/pythonRag.service';
 import { SocialIntegrationService } from '../services/socialIntegration.service';
+import { getEcommerceCredentials } from '../utils/ecommerce.util';
 import axios from 'axios';
 
 const socialIntegrationService = new SocialIntegrationService();
@@ -257,6 +258,9 @@ export class WebhookController {
       const collectionName = settings.defaultKnowledgeBaseName;
       console.log(`[AI Auto-Reply] Using knowledge base collection: ${collectionName}`);
       
+      // Get e-commerce credentials if available
+      const ecommerceCredentials = await getEcommerceCredentials(organization.ownerId.toString());
+      
       // Get recent conversation history for context
       const recentMessages = await Message.find({ conversationId: conversation._id })
         .sort({ timestamp: -1 })
@@ -269,7 +273,8 @@ export class WebhookController {
         collectionNames: [collectionName], // Updated to array for multiple collections support
         topK: 5,
         threadId: conversation._id.toString(),
-        systemPrompt: 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.'
+        systemPrompt: 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.',
+        ecommerceCredentials
       });
 
       const aiResponse = ragResponse.answer;

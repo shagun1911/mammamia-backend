@@ -148,6 +148,13 @@ export class PythonRagService {
     systemPrompt?: string;
     provider?: string;
     apiKey?: string;
+    ecommerceCredentials?: {
+      platform?: string;
+      base_url?: string;
+      api_key?: string;
+      api_secret?: string;
+      access_token?: string;
+    };
   }): Promise<{
     query: string;
     answer: string;
@@ -159,7 +166,7 @@ export class PythonRagService {
       console.log(`[Python RAG] Chat query in collections:`, params.collectionNames);
       console.log(`[Python RAG] Collections count: ${params.collectionNames.length}`);
       
-      const response = await axios.post(`${PYTHON_RAG_BASE_URL}/rag/chat`, {
+      const requestBody: any = {
         query: params.query,
         collection_names: params.collectionNames, // Updated to support multiple collections
         top_k: params.topK || 5,
@@ -167,7 +174,14 @@ export class PythonRagService {
         system_prompt: params.systemPrompt,
         provider: params.provider,
         api_key: params.apiKey
-      });
+      };
+
+      // Add e-commerce credentials if provided
+      if (params.ecommerceCredentials) {
+        requestBody.ecommerce_credentials = params.ecommerceCredentials;
+      }
+      
+      const response = await axios.post(`${PYTHON_RAG_BASE_URL}/rag/chat`, requestBody);
 
       console.log(`[Python RAG] Chat response received`);
       return response.data;

@@ -343,6 +343,19 @@ export class AutomationEngine {
         if (config.transferTo || phoneSettings.humanOperatorPhone) {
           callRequestBody.transfer_to = config.transferTo || phoneSettings.humanOperatorPhone;
         }
+
+        // Get e-commerce credentials if available
+        if (context?.userId) {
+          try {
+            const { getEcommerceCredentials } = await import('../utils/ecommerce.util');
+            const ecommerceCredentials = await getEcommerceCredentials(context.userId);
+            if (ecommerceCredentials) {
+              callRequestBody.ecommerce_credentials = ecommerceCredentials;
+            }
+          } catch (error: any) {
+            console.warn('[Automation] Could not fetch e-commerce credentials:', error.message);
+          }
+        }
         
         // Get escalation conditions from AIBehavior if not set
         if (!config.escalationCondition && context?.userId) {

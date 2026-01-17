@@ -5,6 +5,7 @@ import { pythonRagService } from '../services/pythonRag.service';
 import { successResponse } from '../utils/response.util';
 import { AppError } from '../middleware/error.middleware';
 import KnowledgeBase from '../models/KnowledgeBase';
+import { getEcommerceCredentials } from '../utils/ecommerce.util';
 
 export class ChatbotController {
   /**
@@ -45,12 +46,16 @@ export class ChatbotController {
       const systemPrompt = aiBehavior.chatAgent.systemPrompt || 
         'You are a helpful AI assistant designed to provide excellent customer service. Be friendly, professional, and helpful.';
 
+      // Get e-commerce credentials if available
+      const ecommerceCredentials = await getEcommerceCredentials(userId);
+
       // Chat with RAG system
       const response = await pythonRagService.chat({
         query,
         collectionNames: [collectionName || 'default'], // Updated to array for multiple collections support
         threadId,
-        systemPrompt
+        systemPrompt,
+        ecommerceCredentials
       });
 
       res.json(successResponse(response));
@@ -97,12 +102,16 @@ export class ChatbotController {
       const systemPrompt = aiBehavior.voiceAgent.systemPrompt || 
         'You are a helpful AI voice assistant. Speak clearly, be empathetic, and provide concise answers.';
 
+      // Get e-commerce credentials if available
+      const ecommerceCredentials = await getEcommerceCredentials(userId);
+
       // Chat with RAG system
       const response = await pythonRagService.chat({
         query,
         collectionNames: [collectionName || 'default'], // Updated to array for multiple collections support
         threadId,
-        systemPrompt
+        systemPrompt,
+        ecommerceCredentials
       });
 
       res.json(successResponse(response));
