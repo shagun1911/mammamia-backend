@@ -247,55 +247,105 @@ export class SocialIntegrationController {
 
   /**
    * Initiate OAuth flow for Meta platforms
+   * 
+   * This endpoint ONLY validates env vars and generates OAuth URL.
+   * All token exchange and resource fetching happens in the callback.
    */
   async initiateOAuth(req: AuthRequest, res: Response, next: NextFunction) {
     try {
-      const organizationId = req.user?.organizationId || req.user?._id;
+      // Validate authentication
+      if (!req.user) {
+        console.error('[Meta OAuth Initiate] No user in request');
+        throw new AppError(401, 'UNAUTHORIZED', 'Authentication required');
+      }
+
+      // Validate user ID
+      if (!req.user._id) {
+        console.error('[Meta OAuth Initiate] User ID is missing:', req.user);
+        throw new AppError(401, 'UNAUTHORIZED', 'User ID is missing');
+      }
+
+      const organizationId = req.user.organizationId || req.user._id;
       const { platform } = req.params;
 
-      if (!organizationId) {
-        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
-      }
+      console.log('[Meta OAuth Initiate] Request:', {
+        platform,
+        userId: req.user._id?.toString(),
+        organizationId: organizationId?.toString(),
+        hasUser: !!req.user
+      });
 
+      // Validate platform
       if (!['whatsapp', 'instagram', 'facebook'].includes(platform)) {
-        throw new AppError(400, 'INVALID_PLATFORM', 'Invalid platform');
+        throw new AppError(400, 'INVALID_PLATFORM', `Invalid platform: ${platform}. Must be one of: whatsapp, instagram, facebook`);
       }
 
-      // Check if Meta App credentials are configured
+      // Fail-fast validation: Check all required environment variables
       const metaAppId = process.env.META_APP_ID;
       const metaAppSecret = process.env.META_APP_SECRET;
-      const backendUrl = process.env.BACKEND_URL || 'http://localhost:5001';
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const backendUrl = process.env.BACKEND_URL;
+      const frontendUrl = process.env.FRONTEND_URL;
 
-      if (!metaAppId || !metaAppSecret) {
+      const missingVars: string[] = [];
+      if (!metaAppId) missingVars.push('META_APP_ID');
+      if (!metaAppSecret) missingVars.push('META_APP_SECRET');
+      if (!backendUrl) missingVars.push('BACKEND_URL');
+      if (!frontendUrl) missingVars.push('FRONTEND_URL');
+
+      if (missingVars.length > 0) {
+        console.error('[Meta OAuth Initiate] Missing env vars:', missingVars);
         throw new AppError(
           500,
           'CONFIGURATION_ERROR',
-          'Meta App credentials not configured. Please set META_APP_ID and META_APP_SECRET environment variables.'
+          `Missing required environment variables: ${missingVars.join(', ')}. Please configure these in your backend .env file.`
         );
       }
 
-      // Create OAuth service instance
+      // Build redirect URI - must match Meta App settings exactly
       const redirectUri = `${backendUrl}/api/v1/social-integrations/${platform}/oauth/callback`;
+      console.log('[Meta OAuth Initiate] Redirect URI:', redirectUri);
+
+      // Initialize OAuth service (metaAppId and metaAppSecret are guaranteed to exist after validation above)
       const metaOAuth = new MetaOAuthService({
-        appId: metaAppId,
-        appSecret: metaAppSecret,
+        appId: metaAppId!,
+        appSecret: metaAppSecret!,
         redirectUri
       });
 
-      // Generate state with user info
-      const state = Buffer.from(JSON.stringify({
-        userId: req.user?._id,
-        organizationId,
+      // Generate state with user info for callback verification
+      const stateData = {
+        userId: req.user._id.toString(),
+        organizationId: organizationId.toString(),
         platform,
         redirectUrl: `${frontendUrl}/settings/socials`
-      })).toString('base64');
+      };
 
-      // Generate authorization URL
+      console.log('[Meta OAuth Initiate] State data:', {
+        userId: stateData.userId,
+        organizationId: stateData.organizationId,
+        platform: stateData.platform
+      });
+
+      const state = Buffer.from(JSON.stringify(stateData)).toString('base64');
+
+      // Generate Meta OAuth authorization URL
       const authUrl = metaOAuth.getAuthorizationUrl(platform as 'whatsapp' | 'instagram' | 'facebook', state);
 
-      res.json(successResponse({ authUrl }, 'OAuth URL generated'));
-    } catch (error) {
+      console.log('[Meta OAuth Initiate] Generated auth URL successfully for platform:', platform);
+      console.log('[Meta OAuth Initiate] Auth URL:', authUrl.substring(0, 100) + '...');
+
+      // Return response in format expected by frontend: { success: true, data: { authUrl } }
+      const response = successResponse({ authUrl }, 'OAuth URL generated');
+      console.log('[Meta OAuth Initiate] Response shape:', JSON.stringify({ success: response.success, hasAuthUrl: !!response.data?.authUrl }));
+      
+      res.json(response);
+    } catch (error: any) {
+      console.error('[Meta OAuth Initiate] Error:', {
+        message: error.message,
+        code: error.code,
+        statusCode: error.statusCode,
+        stack: error.stack
+      });
       next(error);
     }
   }
@@ -308,9 +358,15 @@ export class SocialIntegrationController {
       const { code, state, error, error_reason, error_description } = req.query;
       const { platform } = req.params;
 
-      // Handle OAuth errors
+      // Handle OAuth errors from Meta
       if (error) {
-        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const frontendUrl = process.env.FRONTEND_URL;
+        if (!frontendUrl) {
+          return res.status(500).json({
+            success: false,
+            error: 'FRONTEND_URL not configured'
+          });
+        }
         const errorMessage = String(error_description || error_reason || 'OAuth authorization failed');
         return res.redirect(
           `${frontendUrl}/settings/socials?error=${encodeURIComponent(errorMessage)}&platform=${platform}`
@@ -329,20 +385,24 @@ export class SocialIntegrationController {
         throw new AppError(400, 'INVALID_REQUEST', 'Platform mismatch');
       }
 
-      // Get Meta App credentials
+      // Validate environment variables (fail-fast)
       const metaAppId = process.env.META_APP_ID;
       const metaAppSecret = process.env.META_APP_SECRET;
-      const backendUrl = process.env.BACKEND_URL || 'http://localhost:5001';
+      const backendUrl = process.env.BACKEND_URL;
 
-      if (!metaAppId || !metaAppSecret) {
-        throw new AppError(500, 'CONFIGURATION_ERROR', 'Meta App credentials not configured');
+      if (!metaAppId || !metaAppSecret || !backendUrl) {
+        throw new AppError(
+          500,
+          'CONFIGURATION_ERROR',
+          'Meta OAuth not configured. Missing required environment variables.'
+        );
       }
 
-      // Create OAuth service
+      // Build redirect URI - must match what was used in initiateOAuth
       const redirectUri = `${backendUrl}/api/v1/social-integrations/${platform}/oauth/callback`;
       const metaOAuth = new MetaOAuthService({
-        appId: metaAppId,
-        appSecret: metaAppSecret,
+        appId: metaAppId!, // Guaranteed to exist after validation above
+        appSecret: metaAppSecret!, // Guaranteed to exist after validation above
         redirectUri
       });
 
@@ -448,16 +508,20 @@ export class SocialIntegrationController {
         };
       }
 
-      // Save integration (skip verification for OAuth connections)
+      // Save integration - OAuth tokens are pre-verified by Meta, skip 360dialog verification
       await socialIntegrationService.upsertIntegration({
         ...integrationData,
         skipVerification: true // OAuth tokens are already verified by Meta
       });
 
-      // Redirect to frontend success page
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      // Redirect to frontend with success
+      const frontendUrl = process.env.FRONTEND_URL;
+      if (!frontendUrl) {
+        throw new AppError(500, 'CONFIGURATION_ERROR', 'FRONTEND_URL not configured');
+      }
       res.redirect(`${frontendUrl}/settings/socials?success=true&platform=${platform}`);
     } catch (error: any) {
+      // Redirect to frontend with error - ensure FRONTEND_URL is set
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       const errorMessage = error.message || 'OAuth callback failed';
       res.redirect(

@@ -20,9 +20,9 @@ export class SocialIntegrationService {
     skipVerification?: boolean; // Skip verification for OAuth connections
   }): Promise<ISocialIntegration> {
     try {
-      // For OAuth connections, skip 360dialog verification (they use Meta Graph API)
-      // Only verify if it's a manual 360dialog connection
-      if (!data.skipVerification) {
+      // Only verify 360dialog for WhatsApp manual connections
+      // OAuth connections (Instagram/Facebook) use Meta Graph API, not 360dialog
+      if (!data.skipVerification && data.platform === 'whatsapp') {
         // Verify the credentials work (for 360dialog API)
         const dialog360 = new Dialog360Service({
           apiKey: data.apiKey,
@@ -55,7 +55,7 @@ export class SocialIntegrationService {
             },
             status: 'connected',
             lastSyncedAt: new Date(),
-            webhookVerified: true,
+            webhookVerified: false, // Will be set to true after webhook verification succeeds
             errorMessage: undefined
           }
         },
@@ -66,7 +66,8 @@ export class SocialIntegrationService {
     } catch (error: any) {
       console.error('Error upserting social integration:', error);
       
-      // Save as error state
+      // Save as error state - DO NOT overwrite existing credentials
+      // Only update status and error message to preserve valid tokens
       const integration = await SocialIntegration.findOneAndUpdate(
         {
           organizationId: new mongoose.Types.ObjectId(data.organizationId),
@@ -74,17 +75,10 @@ export class SocialIntegrationService {
         },
         {
           $set: {
-            credentials: {
-              apiKey: data.apiKey,
-              clientId: data.clientId,
-              phoneNumberId: data.phoneNumberId,
-              wabaId: data.wabaId,
-              instagramAccountId: data.instagramAccountId,
-              facebookPageId: data.facebookPageId
-            },
             status: 'error',
             errorMessage: error.message,
             webhookVerified: false
+            // DO NOT touch credentials - preserve existing valid tokens
           }
         },
         { upsert: true, new: true }
