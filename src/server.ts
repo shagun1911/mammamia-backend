@@ -174,6 +174,21 @@ const startServer = async () => {
       logger.info(`Server running on port ${PORT}`);
       logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
       logger.info(`Socket.io enabled for real-time messaging`);
+      
+      // Log webhook endpoints
+      const ngrokBaseUrl = process.env.NGROK_BASE_URL;
+      const basePath = ngrokBaseUrl ? ngrokBaseUrl : `http://localhost:${PORT}`;
+      
+      console.log('\n📡 Meta Webhooks active:');
+      console.log(`   - WhatsApp: ${basePath}/api/v1/social-integrations/whatsapp/webhook`);
+      console.log(`   - Messenger: ${basePath}/api/v1/social-integrations/messenger/webhook`);
+      console.log(`   - Instagram: ${basePath}/api/v1/social-integrations/instagram/webhook`);
+      
+      if (ngrokBaseUrl) {
+        console.log(`\n🔗 Using ngrok base URL: ${ngrokBaseUrl}`);
+      } else {
+        console.log(`\n⚠️  NGROK_BASE_URL not set - using localhost`);
+      }
     });
   } catch (error: any) {
     logger.error('Failed to start server:', error.message);
