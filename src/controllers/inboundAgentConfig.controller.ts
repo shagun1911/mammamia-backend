@@ -161,6 +161,96 @@ export class InboundAgentConfigController {
       next(error);
     }
   }
+
+  /**
+   * Test inbound call
+   * POST /api/v1/inbound-agent-config/test-inbound-call
+   */
+  async testInboundCall(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?._id?.toString();
+      if (!userId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Unauthorized');
+      }
+
+      const { calledNumber } = req.body;
+
+      if (!calledNumber) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'calledNumber is required');
+      }
+
+      // Get inbound agent config for this phone number
+      const config = await inboundAgentConfigService.getByPhoneNumber(userId, calledNumber);
+      
+      if (!config) {
+        throw new AppError(404, 'NOT_FOUND', `No inbound agent config found for phone number: ${calledNumber}`);
+      }
+
+      // Prepare request body for Python backend
+      const requestBody: any = {
+        calledNumber: config.calledNumber,
+        language: config.language || 'en',
+        voice_id: config.voice_id || '21m00Tcm4TlvDq8ikWAM',
+        agent_instruction: config.agent_instruction || 'You are a helpful assistant',
+        collections: config.collections || [],
+        greeting_message: config.greeting_message || 'Hello! How can I help you today?'
+      };
+
+      // Add e-commerce credentials if available
+      if (config.ecommerce_credentials) {
+        requestBody.ecommerce_credentials = config.ecommerce_credentials;
+        console.log('[Test Inbound Call] E-commerce credentials included:', {
+          platform: config.ecommerce_credentials.platform,
+          base_url: config.ecommerce_credentials.base_url
+        });
+      }
+
+      // Add escalation condition if provided
+      if (req.body.escalation_condition) {
+        requestBody.escalation_condition = req.body.escalation_condition;
+      }
+
+      const COMM_API = process.env.COMM_API_URL || 'https://keplerov1-python-2.onrender.com';
+      const testUrl = `${COMM_API}/calls/inbound`;
+
+      console.log('\n========== TEST INBOUND CALL ==========');
+      console.log('📞 [Test Inbound Call] URL:', testUrl);
+      console.log('📦 [Test Inbound Call] Request Body:', JSON.stringify({
+        ...requestBody,
+        ecommerce_credentials: requestBody.ecommerce_credentials ? {
+          ...requestBody.ecommerce_credentials,
+          api_key: requestBody.ecommerce_credentials.api_key ? `${requestBody.ecommerce_credentials.api_key.substring(0, 10)}...***` : undefined,
+          api_secret: requestBody.ecommerce_credentials.api_secret ? '***hidden***' : undefined
+        } : undefined
+      }, null, 2));
+      console.log('========================================\n');
+
+      const axios = require('axios');
+      const response = await axios.post(testUrl, requestBody, {
+        timeout: 360000 // 6 minutes
+      });
+
+      console.log('\n========== TEST INBOUND CALL - RESPONSE ==========');
+      console.log('✅ [Test Inbound Call] Response:', JSON.stringify(response.data, null, 2));
+      console.log('==================================================\n');
+
+      res.json({
+        success: true,
+        message: 'Inbound call test initiated successfully',
+        data: response.data,
+        config: {
+          calledNumber: config.calledNumber,
+          language: config.language,
+          voice_id: config.voice_id,
+          collections: config.collections,
+          has_ecommerce_credentials: !!config.ecommerce_credentials
+        }
+      });
+    } catch (error: any) {
+      console.error('[Test Inbound Call] Error:', error.response?.data || error.message);
+      next(error);
+    }
+  }
 }
 
 export const inboundAgentConfigController = new InboundAgentConfigController();

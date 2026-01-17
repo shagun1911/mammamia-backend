@@ -10,6 +10,7 @@ router.use(authenticate);
 // Chat endpoints
 router.post('/chat', chatbotController.chat);
 router.post('/voice-chat', chatbotController.voiceChat);
+router.post('/test', chatbotController.test);
 
 export default router;
 

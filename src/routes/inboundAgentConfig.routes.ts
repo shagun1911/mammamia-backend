@@ -16,6 +16,9 @@ router.get('/:phoneNumber', (req, res, next) => inboundAgentConfigController.get
 // POST /api/inbound-agent-config/sync - Sync configs from various settings
 router.post('/sync', (req, res, next) => inboundAgentConfigController.sync(req, res, next));
 
+// POST /api/inbound-agent-config/test-inbound-call - Test inbound call
+router.post('/test-inbound-call', (req, res, next) => inboundAgentConfigController.testInboundCall(req, res, next));
+
 // PUT /api/inbound-agent-config - Update inbound agent config
 router.put('/', (req, res, next) => inboundAgentConfigController.update(req, res, next));
 

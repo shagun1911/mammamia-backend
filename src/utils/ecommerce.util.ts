@@ -20,10 +20,17 @@ export async function getEcommerceCredentials(userId: string): Promise<{
 
     const { platform, base_url, api_key, api_secret, access_token } = settings.ecommerceIntegration;
 
+    // For WooCommerce, ensure base_url doesn't include API path
+    let normalizedBaseUrl = base_url;
+    if (platform === 'woocommerce' && base_url) {
+      // Remove WooCommerce API paths if accidentally included
+      normalizedBaseUrl = base_url.replace(/\/wp-json\/wc\/v\d+$/, '').replace(/\/wp-json$/, '');
+    }
+
     // Return in the format expected by Python backend
     return {
       platform,
-      base_url,
+      base_url: normalizedBaseUrl,
       api_key,
       api_secret,
       access_token: access_token || '' // Empty string if not provided

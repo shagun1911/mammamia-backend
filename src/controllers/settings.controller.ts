@@ -85,6 +85,47 @@ export class SettingsController {
       next(error);
     }
   };
+
+  /**
+   * Save e-commerce integration credentials
+   * POST /api/v1/settings/ecommerce-credentials
+   */
+  saveEcommerceCredentials = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user!._id.toString();
+      const { platform, base_url, api_key, api_secret, access_token } = req.body;
+
+      console.log('[Settings Controller] Saving e-commerce credentials:', {
+        userId,
+        platform,
+        base_url,
+        has_api_key: !!api_key,
+        has_api_secret: !!api_secret
+      });
+
+      if (!platform) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Platform is required'
+          }
+        });
+      }
+
+      const settings = await settingsService.saveEcommerceCredentials(userId, {
+        platform,
+        base_url,
+        api_key,
+        api_secret,
+        access_token
+      });
+
+      res.json(successResponse({ settings }, 'E-commerce credentials saved successfully'));
+    } catch (error) {
+      next(error);
+    }
+  };
 }
 
 export const settingsController = new SettingsController();

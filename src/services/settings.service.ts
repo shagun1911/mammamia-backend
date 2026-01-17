@@ -82,6 +82,55 @@ export class SettingsService {
   }
 
   /**
+   * Save e-commerce integration credentials
+   * Also syncs to InboundAgentConfig
+   */
+  async saveEcommerceCredentials(
+    userId: string,
+    credentials: {
+      platform: 'shopify' | 'woocommerce' | 'magento2' | 'prestashop' | 'qapla';
+      base_url?: string;
+      api_key?: string;
+      api_secret?: string;
+      access_token?: string;
+    }
+  ) {
+    console.log('[Settings Service] Saving e-commerce credentials:', {
+      userId,
+      platform: credentials.platform,
+      base_url: credentials.base_url,
+      has_api_key: !!credentials.api_key,
+      has_api_secret: !!credentials.api_secret
+    });
+
+    let settings = await Settings.findOne({ userId });
+    
+    if (!settings) {
+      // Create if doesn't exist
+      settings = await Settings.create({
+        userId,
+        ecommerceIntegration: credentials
+      });
+    } else {
+      // Update e-commerce integration
+      settings.ecommerceIntegration = credentials;
+      await settings.save();
+    }
+    
+    // Sync to InboundAgentConfig for all phone numbers
+    try {
+      console.log('[Settings Service] Syncing e-commerce credentials to InboundAgentConfig...');
+      await inboundAgentConfigService.syncConfig(userId);
+      console.log('[Settings Service] E-commerce credentials synced to InboundAgentConfig successfully');
+    } catch (error) {
+      console.error('[Settings Service] Failed to sync e-commerce credentials to InboundAgentConfig:', error);
+      // Don't throw error, just log it - credentials are saved in Settings
+    }
+    
+    return settings;
+  }
+
+  /**
    * Get all operators (users)
    */
   async getOperators() {
