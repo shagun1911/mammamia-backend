@@ -436,6 +436,17 @@ export class CampaignService {
                 callRequestBody.escalation_condition = escalationCondition;
               }
 
+              // Get e-commerce credentials if available
+              try {
+                const { getEcommerceCredentials } = await import('../utils/ecommerce.util');
+                const ecommerceCredentials = await getEcommerceCredentials(userId);
+                if (ecommerceCredentials) {
+                  callRequestBody.ecommerce_credentials = ecommerceCredentials;
+                }
+              } catch (error: any) {
+                console.warn(`[Campaign ${campaignId}] Could not fetch e-commerce credentials:`, error.message);
+              }
+
               // Get escalation conditions from AIBehavior if not set
               if (!callRequestBody.escalation_condition) {
                 try {

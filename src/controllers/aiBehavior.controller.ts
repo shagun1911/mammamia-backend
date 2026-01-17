@@ -289,6 +289,10 @@ export class AIBehaviorController {
         collectionNames = ['default']; // Fallback on error
       }
 
+      // Get e-commerce credentials if available
+      const { getEcommerceCredentials } = await import('../utils/ecommerce.util');
+      const ecommerceCredentials = await getEcommerceCredentials(req.user!.id);
+
       // Prepare call request
       const COMM_API = process.env.COMM_API_URL || 'https://keplerov1-python-2.onrender.com';
       const callRequestBody: any = {
@@ -303,6 +307,11 @@ export class AIBehaviorController {
         collection_names: collectionNames, // Updated to support multiple collections
         greeting_message: phoneSettings.greetingMessage || 'Hello! How can I help you today?' // Greeting message from settings
       };
+
+      // Add e-commerce credentials if available
+      if (ecommerceCredentials) {
+        callRequestBody.ecommerce_credentials = ecommerceCredentials;
+      }
       
       console.log('📝 [Test Call] Call Configuration:');
       console.log('   - Greeting:', callRequestBody.greeting_message);

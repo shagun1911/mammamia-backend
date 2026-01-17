@@ -40,6 +40,14 @@ export interface ISettings extends Document {
   webhookUrl?: string;
   emailNotifications?: boolean;
   soundNotifications?: boolean;
+  // E-commerce Integration
+  ecommerceIntegration?: {
+    platform: 'shopify' | 'woocommerce' | 'magento2' | 'prestashop' | 'qapla';
+    base_url?: string;
+    api_key?: string;
+    api_secret?: string;
+    access_token?: string;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -113,6 +121,17 @@ const SettingsSchema = new Schema<ISettings>({
   soundNotifications: {
     type: Boolean,
     default: true
+  },
+  // E-commerce Integration
+  ecommerceIntegration: {
+    platform: {
+      type: String,
+      enum: ['shopify', 'woocommerce', 'magento2', 'prestashop', 'qapla']
+    },
+    base_url: String,
+    api_key: String,
+    api_secret: String,
+    access_token: String
   }
 }, { timestamps: true });
 

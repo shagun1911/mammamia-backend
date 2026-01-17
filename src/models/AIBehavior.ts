@@ -83,4 +83,7 @@ const AIBehaviorSchema = new Schema<IAIBehavior>({
   }
 }, { timestamps: true });
 
+// Indexes for faster queries
+AIBehaviorSchema.index({ userId: 1 });
+
 export default mongoose.model<IAIBehavior>('AIBehavior', AIBehaviorSchema);

@@ -8,6 +8,13 @@ export interface IInboundAgentConfig extends Document {
   calledNumber: string; // First inbound phone number from phone settings
   agent_instruction: string; // System prompt from AI behavior
   greeting_message: string; // Greeting message for inbound calls
+  ecommerce_credentials?: {
+    platform?: string;
+    base_url?: string;
+    api_key?: string;
+    api_secret?: string;
+    access_token?: string;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -41,6 +48,13 @@ const InboundAgentConfigSchema = new Schema<IInboundAgentConfig>({
   greeting_message: {
     type: String,
     default: 'Hello! How can I help you today?'
+  },
+  ecommerce_credentials: {
+    platform: String,
+    base_url: String,
+    api_key: String,
+    api_secret: String,
+    access_token: String
   }
 }, { timestamps: true });
 

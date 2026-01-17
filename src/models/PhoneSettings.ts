@@ -125,5 +125,9 @@ const PhoneSettingsSchema = new Schema<IPhoneSettings>({
   }
 }, { timestamps: true });
 
+// Indexes for faster queries
+PhoneSettingsSchema.index({ userId: 1 }); // userId is already unique, but explicit index helps
+PhoneSettingsSchema.index({ isConfigured: 1 }); // Queried in automationEngine.service.ts
+
 export default mongoose.model<IPhoneSettings>('PhoneSettings', PhoneSettingsSchema);
 

@@ -3,6 +3,7 @@ import PhoneSettings from '../models/PhoneSettings';
 import AIBehavior from '../models/AIBehavior';
 import Settings from '../models/Settings';
 import { AppError } from '../middleware/error.middleware';
+import { getEcommerceCredentials } from '../utils/ecommerce.util';
 import mongoose from 'mongoose';
 
 export class InboundAgentConfigService {
@@ -72,8 +73,12 @@ export class InboundAgentConfigService {
     // Get greeting message from phone settings (updated from UI)
     const greeting_message = phoneSettings?.greetingMessage || 'Hello! How can I help you today?';
     
+    // Get e-commerce credentials if available
+    const ecommerceCredentials = await getEcommerceCredentials(userId);
+    
     console.log('[InboundAgentConfig Service] Using greeting_message:', greeting_message);
     console.log('[InboundAgentConfig Service] Using language:', language);
+    console.log('[InboundAgentConfig Service] E-commerce integration:', ecommerceCredentials ? '✅ Available' : '❌ Not configured');
 
     // Get all inbound phone numbers
     const inboundPhoneNumbers = phoneSettings?.inboundPhoneNumbers || [];
@@ -119,13 +124,19 @@ export class InboundAgentConfigService {
           // Update language from phone settings (when user explicitly sets it)
           console.log(`[InboundAgentConfig Service] Updating language from phone settings: ${language}`);
           config.language = language;
+
+          // Update e-commerce credentials if available
+          if (ecommerceCredentials) {
+            config.ecommerce_credentials = ecommerceCredentials;
+            console.log(`[InboundAgentConfig Service] Updated e-commerce credentials for platform: ${ecommerceCredentials.platform}`);
+          }
           
           await config.save();
           console.log(`[InboundAgentConfig Service] Updated config for ${calledNumber}`);
         } else {
           // Create new
           console.log(`[InboundAgentConfig Service] No existing config found, creating new...`);
-          const configData = {
+          const configData: any = {
             userId,
             calledNumber,
             voice_id,
@@ -134,7 +145,17 @@ export class InboundAgentConfigService {
             agent_instruction,
             greeting_message
           };
-          console.log(`[InboundAgentConfig Service] Creating with data:`, JSON.stringify(configData, null, 2));
+
+          // Add e-commerce credentials if available
+          if (ecommerceCredentials) {
+            configData.ecommerce_credentials = ecommerceCredentials;
+            console.log(`[InboundAgentConfig Service] Adding e-commerce credentials for platform: ${ecommerceCredentials.platform}`);
+          }
+
+          console.log(`[InboundAgentConfig Service] Creating with data:`, JSON.stringify({
+            ...configData,
+            ecommerce_credentials: configData.ecommerce_credentials ? { ...configData.ecommerce_credentials, api_key: '***', api_secret: '***' } : undefined
+          }, null, 2));
           
           config = await InboundAgentConfig.create(configData);
           
@@ -181,6 +202,13 @@ export class InboundAgentConfigService {
       language?: string;
       agent_instruction?: string;
       greeting_message?: string;
+      ecommerce_credentials?: {
+        platform?: string;
+        base_url?: string;
+        api_key?: string;
+        api_secret?: string;
+        access_token?: string;
+      };
     }
   ) {
     console.log('[InboundAgentConfig Service] ==========================================');
@@ -223,6 +251,12 @@ export class InboundAgentConfigService {
       if (data.greeting_message !== undefined) {
         config.greeting_message = data.greeting_message;
         console.log('[InboundAgentConfig Service] Updated greeting_message:', data.greeting_message);
+      }
+      
+      // Update e-commerce credentials if provided
+      if (data.ecommerce_credentials !== undefined) {
+        config.ecommerce_credentials = data.ecommerce_credentials;
+        console.log('[InboundAgentConfig Service] Updated e-commerce credentials');
       }
       
       await config.save();
