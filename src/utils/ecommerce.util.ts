@@ -12,29 +12,88 @@ export async function getEcommerceCredentials(userId: string): Promise<{
   access_token?: string;
 } | undefined> {
   try {
+    console.log('[E-commerce Util] Fetching e-commerce credentials for userId:', userId);
     const settings = await Settings.findOne({ userId });
     
-    if (!settings || !settings.ecommerceIntegration || !settings.ecommerceIntegration.platform) {
+    if (!settings) {
+      console.log('[E-commerce Util] ⚠️  No settings found for userId:', userId);
+      return undefined;
+    }
+    
+    if (!settings.ecommerceIntegration) {
+      console.log('[E-commerce Util] ⚠️  No ecommerceIntegration in settings');
+      return undefined;
+    }
+    
+    if (!settings.ecommerceIntegration.platform) {
+      console.log('[E-commerce Util] ⚠️  ecommerceIntegration exists but platform is missing');
+      console.log('[E-commerce Util] ecommerceIntegration object:', JSON.stringify(settings.ecommerceIntegration, null, 2));
       return undefined;
     }
 
+    // Log the full ecommerceIntegration object for debugging
+    console.log('[E-commerce Util] Raw ecommerceIntegration object:', JSON.stringify(settings.ecommerceIntegration, null, 2));
+    
     const { platform, base_url, api_key, api_secret, access_token } = settings.ecommerceIntegration;
+    
+    // Also check for WooCommerce-specific field names as fallback
+    const woocommerceBaseUrl = (settings.ecommerceIntegration as any).store_url || base_url;
+    const woocommerceApiKey = (settings.ecommerceIntegration as any).consumer_key || api_key;
+    const woocommerceApiSecret = (settings.ecommerceIntegration as any).consumer_secret || api_secret;
+    
+    console.log('[E-commerce Util] Extracted credentials:', {
+      platform,
+      base_url: base_url || 'MISSING',
+      store_url: woocommerceBaseUrl || 'MISSING',
+      api_key: api_key ? `${api_key.substring(0, 10)}...***` : 'MISSING',
+      consumer_key: woocommerceApiKey ? `${woocommerceApiKey.substring(0, 10)}...***` : 'MISSING',
+      api_secret: api_secret ? 'PRESENT' : 'MISSING',
+      consumer_secret: woocommerceApiSecret ? 'PRESENT' : 'MISSING',
+      has_access_token: !!access_token
+    });
 
+    // Handle WooCommerce-specific field names (consumer_key/consumer_secret → api_key/api_secret)
+    const finalBaseUrl = woocommerceBaseUrl || base_url;
+    const finalApiKey = woocommerceApiKey || api_key;
+    const finalApiSecret = woocommerceApiSecret || api_secret;
+    
     // For WooCommerce, ensure base_url doesn't include API path
-    let normalizedBaseUrl = base_url;
-    if (platform === 'woocommerce' && base_url) {
+    let normalizedBaseUrl = finalBaseUrl;
+    if (platform === 'woocommerce' && finalBaseUrl) {
       // Remove WooCommerce API paths if accidentally included
-      normalizedBaseUrl = base_url.replace(/\/wp-json\/wc\/v\d+$/, '').replace(/\/wp-json$/, '');
+      normalizedBaseUrl = finalBaseUrl.replace(/\/wp-json\/wc\/v\d+$/, '').replace(/\/wp-json$/, '');
+    }
+
+    // Validate that we have required fields for WooCommerce
+    if (platform === 'woocommerce') {
+      if (!normalizedBaseUrl || !finalApiKey || !finalApiSecret) {
+        console.log('[E-commerce Util] ⚠️  WooCommerce credentials incomplete:', {
+          has_base_url: !!normalizedBaseUrl,
+          has_api_key: !!finalApiKey,
+          has_api_secret: !!finalApiSecret
+        });
+        return undefined;
+      }
     }
 
     // Return in the format expected by Python backend
-    return {
+    const credentials = {
       platform,
       base_url: normalizedBaseUrl,
-      api_key,
-      api_secret,
+      api_key: finalApiKey,
+      api_secret: finalApiSecret,
       access_token: access_token || '' // Empty string if not provided
     };
+    
+    console.log('[E-commerce Util] ✅ Returning credentials object:', {
+      platform: credentials.platform,
+      base_url: credentials.base_url,
+      has_api_key: !!credentials.api_key,
+      has_api_secret: !!credentials.api_secret,
+      has_access_token: !!credentials.access_token
+    });
+    
+    return credentials;
   } catch (error: any) {
     console.error('[E-commerce Util] Error fetching e-commerce credentials:', error.message);
     return undefined;

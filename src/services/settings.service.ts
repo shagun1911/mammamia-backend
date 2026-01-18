@@ -62,7 +62,9 @@ export class SettingsService {
       });
     } else {
       // Update existing
-      Object.assign(settings, data);
+      const { ecommerceIntegration, ...safeData } = data;
+Object.assign(settings, safeData);
+
       await settings.save();
     }
     

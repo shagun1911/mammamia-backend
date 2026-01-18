@@ -258,23 +258,19 @@ export class WebhookController {
       const collectionName = settings.defaultKnowledgeBaseName;
       console.log(`[AI Auto-Reply] Using knowledge base collection: ${collectionName}`);
       
-      // Get e-commerce credentials if available
-      const ecommerceCredentials = await getEcommerceCredentials(organization.ownerId.toString());
-      
       // Get recent conversation history for context
       const recentMessages = await Message.find({ conversationId: conversation._id })
         .sort({ timestamp: -1 })
         .limit(5)
         .lean();
       
-      // Call Python RAG service to generate response
+      // Call Python RAG service to generate response - simple payload only
       const ragResponse = await pythonRagService.chat({
         query: userMessage,
-        collectionNames: [collectionName], // Updated to array for multiple collections support
+        collectionNames: [collectionName],
         topK: 5,
         threadId: conversation._id.toString(),
-        systemPrompt: 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.',
-        ecommerceCredentials
+        systemPrompt: 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.'
       });
 
       const aiResponse = ragResponse.answer;
