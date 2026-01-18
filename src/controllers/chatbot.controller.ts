@@ -378,6 +378,140 @@ export class ChatbotController {
       next(error);
     }
   };
+
+  /**
+   * Test chatbot with ecommerce credentials
+   * POST /api/v1/chatbot/test
+   */
+  test = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user!.id;
+      const { 
+        query = "I need only products name",
+        collection_names = [],
+        top_k = 5,
+        thread_id,
+        system_prompt,
+        provider,
+        api_key,
+        elaborate = false,
+        skip_history = false
+      } = req.body;
+
+      console.log('\n========== TEST CHATBOT - INCOMING REQUEST ==========');
+      console.log('[Test Chatbot] User ID:', userId);
+      console.log('[Test Chatbot] Request Body:', JSON.stringify(req.body, null, 2));
+      console.log('====================================================\n');
+
+      // Get ecommerce credentials automatically
+      const ecommerceCredentials = await getEcommerceCredentials(userId);
+      
+      if (!ecommerceCredentials) {
+        console.log('[Test Chatbot] ⚠️  No e-commerce credentials found');
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'ECOMMERCE_NOT_CONFIGURED',
+            message: 'WooCommerce credentials not found. Please set up WooCommerce integration first.'
+          }
+        });
+      }
+
+      console.log('[Test Chatbot] ✅ E-commerce credentials found:', {
+        platform: ecommerceCredentials.platform,
+        base_url: ecommerceCredentials.base_url,
+        has_api_key: !!ecommerceCredentials.api_key,
+        has_api_secret: !!ecommerceCredentials.api_secret
+      });
+
+      // Get API keys if not provided
+      let finalProvider = provider;
+      let finalApiKey = api_key;
+      
+      if (!finalProvider || !finalApiKey) {
+        try {
+          const { apiKeysService } = await import('../services/apiKeys.service');
+          const apiKeys = await apiKeysService.getApiKeys(userId);
+          finalProvider = finalProvider || apiKeys.llmProvider;
+          finalApiKey = finalApiKey || apiKeys.apiKey;
+          console.log('[Test Chatbot] ✅ API keys fetched:', { provider: finalProvider });
+        } catch (error: any) {
+          console.error('[Test Chatbot] ⚠️  Failed to fetch API keys:', error.message);
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'API_KEYS_NOT_CONFIGURED',
+              message: 'API keys not configured. Please configure API keys in Settings → API Keys.'
+            }
+          });
+        }
+      }
+
+      // Get collection names from settings if not provided
+      let finalCollectionNames = collection_names;
+      if (finalCollectionNames.length === 0) {
+        const collectionNames = await determineCollectionNames(userId);
+        finalCollectionNames = collectionNames.length > 0 ? collectionNames : ['default'];
+        console.log('[Test Chatbot] Using collection names from settings:', finalCollectionNames);
+      }
+
+      // Prepare request body
+      const requestBody: any = {
+        query,
+        collection_name: '',
+        collection_names: finalCollectionNames,
+        top_k,
+        thread_id: thread_id || `test_${Date.now()}`,
+        system_prompt: system_prompt || 'You are a helpful assistant from Aistein',
+        provider: finalProvider,
+        api_key: finalApiKey,
+        elaborate,
+        skip_history,
+        ecommerce_credentials: ecommerceCredentials
+      };
+
+      const PYTHON_RAG_BASE_URL = process.env.PYTHON_RAG_BASE_URL || 'https://keplerov1-python-2.onrender.com';
+      const testUrl = `${PYTHON_RAG_BASE_URL}/rag/chat`;
+
+      console.log('\n========== TEST CHATBOT - PAYLOAD TO PYTHON ==========');
+      console.log('🤖 [Test Chatbot] URL:', testUrl);
+      console.log('📦 [Test Chatbot] Request Body:', JSON.stringify({
+        ...requestBody,
+        ecommerce_credentials: requestBody.ecommerce_credentials ? {
+          ...requestBody.ecommerce_credentials,
+          api_key: requestBody.ecommerce_credentials.api_key ? `${requestBody.ecommerce_credentials.api_key.substring(0, 10)}...***` : undefined,
+          api_secret: '***hidden***'
+        } : undefined
+      }, null, 2));
+      console.log('======================================================\n');
+
+      const axios = require('axios');
+      const response = await axios.post(testUrl, requestBody, {
+        timeout: 60000
+      });
+
+      console.log('\n========== TEST CHATBOT - RESPONSE ==========');
+      console.log('✅ [Test Chatbot] Response:', JSON.stringify(response.data, null, 2));
+      console.log('============================================\n');
+
+      res.json({
+        success: true,
+        message: 'Chatbot test completed successfully',
+        data: response.data,
+        config: {
+          query,
+          collection_names: finalCollectionNames,
+          provider: finalProvider,
+          has_ecommerce_credentials: !!ecommerceCredentials,
+          ecommerce_platform: ecommerceCredentials.platform
+        }
+      });
+    } catch (error: any) {
+      console.error('[Test Chatbot] Error:', error.response?.data || error.message);
+      console.error('[Test Chatbot] Error stack:', error.stack);
+      next(error);
+    }
+  };
 }
 
 export const chatbotController = new ChatbotController();

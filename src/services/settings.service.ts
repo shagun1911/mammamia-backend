@@ -122,13 +122,20 @@ Object.assign(settings, safeData);
     // Sync to InboundAgentConfig for all phone numbers
     try {
       console.log('[Settings Service] Syncing e-commerce credentials to InboundAgentConfig...');
-      await inboundAgentConfigService.syncConfig(userId);
-      console.log('[Settings Service] E-commerce credentials synced to InboundAgentConfig successfully');
+      const syncedConfigs = await inboundAgentConfigService.syncConfig(userId);
+      console.log('[Settings Service] ✅ E-commerce credentials synced to InboundAgentConfig successfully');
+      console.log('[Settings Service] Synced configs count:', syncedConfigs.length);
+      if (syncedConfigs.length > 0) {
+        console.log('[Settings Service] Phone numbers with e-commerce credentials:', syncedConfigs.map(c => c.calledNumber));
+      } else {
+        console.log('[Settings Service] ⚠️  No phone numbers configured. E-commerce credentials will be available when phone numbers are added.');
+      }
     } catch (error) {
-      console.error('[Settings Service] Failed to sync e-commerce credentials to InboundAgentConfig:', error);
+      console.error('[Settings Service] ❌ Failed to sync e-commerce credentials to InboundAgentConfig:', error);
       // Don't throw error, just log it - credentials are saved in Settings
     }
     
+    console.log('[Settings Service] ✅ WooCommerce integration setup complete for user:', userId);
     return settings;
   }
 

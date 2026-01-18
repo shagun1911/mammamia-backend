@@ -121,6 +121,13 @@ export class SettingsController {
         access_token
       });
 
+      console.log('[Settings Controller] ✅ E-commerce credentials saved successfully:', {
+        platform,
+        base_url,
+        has_api_key: !!api_key,
+        has_api_secret: !!api_secret
+      });
+
       res.json(successResponse({ settings }, 'E-commerce credentials saved successfully'));
     } catch (error) {
       next(error);

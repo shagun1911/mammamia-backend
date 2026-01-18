@@ -180,10 +180,17 @@ export class InboundAgentConfigController {
       }
 
       // Get inbound agent config for this phone number
-      const config = await inboundAgentConfigService.getByPhoneNumber(userId, calledNumber);
+      let config = await inboundAgentConfigService.getByPhoneNumber(userId, calledNumber);
       
       if (!config) {
-        throw new AppError(404, 'NOT_FOUND', `No inbound agent config found for phone number: ${calledNumber}`);
+        // Try to sync config first - this will create configs if phone numbers exist
+        console.log('[Test Inbound Call] No config found, attempting to sync...');
+        await inboundAgentConfigService.syncConfig(userId);
+        config = await inboundAgentConfigService.getByPhoneNumber(userId, calledNumber);
+        
+        if (!config) {
+          throw new AppError(404, 'NOT_FOUND', `No inbound agent config found for phone number: ${calledNumber}. Please configure inbound phone numbers in Settings → Phone Settings.`);
+        }
       }
 
       // Prepare request body for Python backend
