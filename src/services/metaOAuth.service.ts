@@ -63,41 +63,30 @@ export class MetaOAuthService {
    * Get required scopes for each platform
    */
   private getScopesForPlatform(platform: 'whatsapp' | 'instagram' | 'facebook'): string[] {
-    const baseScopes = [
-      'business_management', // Required for Business Manager access
-      'pages_read_engagement', // Read page engagement
-      'pages_manage_metadata', // Manage page metadata
-      'pages_messaging', // Send and receive messages
-      'pages_read_user_content', // Read user content
-      'instagram_basic', // Instagram basic access
-      'instagram_manage_messages', // Instagram messaging
-      'whatsapp_business_management', // WhatsApp Business API
-      'whatsapp_business_messaging' // WhatsApp messaging
-    ];
-
     switch (platform) {
       case 'whatsapp':
         return [
-          ...baseScopes,
-          'whatsapp_business_management',
-          'whatsapp_business_messaging',
-          'business_management'
+          'business_management', // Required for Business Manager access
+          'pages_show_list', // List user's pages
+          'pages_read_engagement', // Read page engagement
+          'whatsapp_business_management', // WhatsApp Business API management
+          'whatsapp_business_messaging' // WhatsApp messaging
         ];
       case 'instagram':
         return [
-          ...baseScopes,
-          'instagram_basic',
-          'instagram_manage_messages',
-          'pages_show_list',
-          'pages_read_engagement'
+          'business_management', // Required for Business Manager access
+          'pages_show_list', // List user's pages
+          'pages_read_engagement', // Read page engagement
+          'instagram_basic', // Instagram basic access
+          'instagram_manage_messages' // Instagram messaging
         ];
       case 'facebook':
         return [
-          ...baseScopes,
-          'pages_manage_messaging',
-          'pages_messaging',
-          'pages_show_list',
-          'pages_read_engagement'
+          'business_management', // Required for Business Manager access
+          'pages_show_list', // List user's pages
+          'pages_read_engagement', // Read page engagement
+          'pages_messaging', // Send and receive messages (this is the correct scope for Messenger)
+          'pages_read_user_content' // Read user content
         ];
       default:
         return baseScopes;

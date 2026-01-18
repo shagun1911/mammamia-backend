@@ -304,6 +304,8 @@ export class SocialIntegrationController {
       // Build redirect URI - must match Meta App settings exactly
       const redirectUri = `${backendUrl}/api/v1/social-integrations/${platform}/oauth/callback`;
       console.log('[Meta OAuth Initiate] Redirect URI:', redirectUri);
+      console.log('[Meta OAuth Initiate] ⚠️  IMPORTANT: This redirect URI must EXACTLY match what you added in Meta App settings!');
+      console.log('[Meta OAuth Initiate] Expected in Meta App:', redirectUri);
 
       // Initialize OAuth service (metaAppId and metaAppSecret are guaranteed to exist after validation above)
       const metaOAuth = new MetaOAuthService({
@@ -355,11 +357,30 @@ export class SocialIntegrationController {
    */
   async oauthCallback(req: Request, res: Response, next: NextFunction) {
     try {
-      const { code, state, error, error_reason, error_description } = req.query;
+      const { code, state, error, error_reason, error_description, error_code, error_message } = req.query;
       const { platform } = req.params;
 
-      // Handle OAuth errors from Meta
-      if (error) {
+      console.log('\n========== META OAUTH CALLBACK ==========');
+      console.log('[Meta OAuth Callback] Platform:', platform);
+      console.log('[Meta OAuth Callback] Full URL:', req.url);
+      console.log('[Meta OAuth Callback] Query params:', JSON.stringify(req.query, null, 2));
+      console.log('[Meta OAuth Callback] Has code:', !!code);
+      console.log('[Meta OAuth Callback] Has state:', !!state);
+      console.log('[Meta OAuth Callback] Has error:', !!error);
+      console.log('[Meta OAuth Callback] Has error_code:', !!error_code);
+      console.log('[Meta OAuth Callback] Has error_message:', !!error_message);
+      console.log('==========================================\n');
+
+      // Handle OAuth errors from Meta (check both error formats)
+      // Meta can send either: error/error_description OR error_code/error_message
+      if (error || error_code) {
+        console.error('[Meta OAuth Callback] OAuth error from Meta:', {
+          error,
+          error_code,
+          error_reason,
+          error_description,
+          error_message
+        });
         const frontendUrl = process.env.FRONTEND_URL;
         if (!frontendUrl) {
           return res.status(500).json({
@@ -367,13 +388,38 @@ export class SocialIntegrationController {
             error: 'FRONTEND_URL not configured'
           });
         }
-        const errorMessage = String(error_description || error_reason || 'OAuth authorization failed');
+        
+        // Use error_message if available (new format), otherwise use error_description (old format)
+        const errorMessage = String(
+          error_message || 
+          error_description || 
+          error_reason || 
+          error || 
+          'OAuth authorization failed'
+        );
+        
+        console.log('[Meta OAuth Callback] Redirecting to frontend with error:', errorMessage);
         return res.redirect(
           `${frontendUrl}/settings/socials?error=${encodeURIComponent(errorMessage)}&platform=${platform}`
         );
       }
 
       if (!code || !state) {
+        console.error('[Meta OAuth Callback] Missing code or state:', {
+          hasCode: !!code,
+          hasState: !!state,
+          query: req.query,
+          url: req.url
+        });
+        
+        // Redirect to frontend with error instead of throwing
+        const frontendUrl = process.env.FRONTEND_URL;
+        if (frontendUrl) {
+          return res.redirect(
+            `${frontendUrl}/settings/socials?error=${encodeURIComponent('Missing authorization code or state. Please try connecting again.')}&platform=${platform}`
+          );
+        }
+        
         throw new AppError(400, 'INVALID_REQUEST', 'Missing authorization code or state');
       }
 
@@ -519,8 +565,16 @@ export class SocialIntegrationController {
       if (!frontendUrl) {
         throw new AppError(500, 'CONFIGURATION_ERROR', 'FRONTEND_URL not configured');
       }
+      
+      console.log('[Meta OAuth Callback] ✅ Success! Redirecting to frontend:', `${frontendUrl}/settings/socials?success=true&platform=${platform}`);
       res.redirect(`${frontendUrl}/settings/socials?success=true&platform=${platform}`);
     } catch (error: any) {
+      console.error('\n========== META OAUTH CALLBACK ERROR ==========');
+      console.error('[Meta OAuth Callback] Error:', error.message);
+      console.error('[Meta OAuth Callback] Error stack:', error.stack);
+      console.error('[Meta OAuth Callback] Error code:', error.code);
+      console.error('================================================\n');
+      
       // Redirect to frontend with error - ensure FRONTEND_URL is set
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       const errorMessage = error.message || 'OAuth callback failed';
