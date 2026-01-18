@@ -166,6 +166,82 @@ Object.assign(settings, safeData);
   }
 
   /**
+   * Delete e-commerce integration credentials
+   * Removes from Settings and InboundAgentConfig
+   */
+  async deleteEcommerceCredentials(userId: string) {
+    console.log('[Settings Service] Deleting e-commerce credentials for userId:', userId);
+
+    const settings = await Settings.findOne({ userId });
+    
+    if (!settings) {
+      console.log('[Settings Service] ⚠️  No settings found for userId:', userId);
+      throw new AppError(404, 'NOT_FOUND', 'Settings not found');
+    }
+
+    if (!settings.ecommerceIntegration || !settings.ecommerceIntegration.platform) {
+      console.log('[Settings Service] ⚠️  No e-commerce integration found to delete');
+      throw new AppError(404, 'NOT_FOUND', 'E-commerce integration not found');
+    }
+
+    const platform = settings.ecommerceIntegration.platform;
+    console.log('[Settings Service] Removing e-commerce integration:', platform);
+
+    // Remove e-commerce integration from Settings
+    settings.ecommerceIntegration = undefined as any;
+    await settings.save();
+    
+    // Use $unset to ensure the field is completely removed from MongoDB
+    await Settings.updateOne(
+      { userId },
+      { $unset: { ecommerceIntegration: "" } }
+    );
+
+    console.log('[Settings Service] ✅ E-commerce credentials removed from Settings');
+
+    // Remove from InboundAgentConfig for all phone numbers
+    try {
+      console.log('[Settings Service] Removing e-commerce credentials from InboundAgentConfig...');
+      const configs = await inboundAgentConfigService.get(userId);
+      
+      const InboundAgentConfig = (await import('../models/InboundAgentConfig')).default;
+      
+      for (const config of configs) {
+        if (config.ecommerce_credentials) {
+          // Use $unset to completely remove the field
+          await InboundAgentConfig.updateOne(
+            { _id: config._id },
+            { $unset: { ecommerce_credentials: "" } }
+          );
+          console.log(`[Settings Service] ✅ Removed e-commerce credentials from InboundAgentConfig for ${config.calledNumber}`);
+        }
+      }
+
+      // Also remove from default chatbot config (calledNumber = '')
+      try {
+        const defaultConfig = await inboundAgentConfigService.getByPhoneNumber(userId, '');
+        if (defaultConfig && defaultConfig.ecommerce_credentials) {
+          await InboundAgentConfig.updateOne(
+            { _id: defaultConfig._id },
+            { $unset: { ecommerce_credentials: "" } }
+          );
+          console.log('[Settings Service] ✅ Removed e-commerce credentials from default chatbot config');
+        }
+      } catch (error) {
+        console.log('[Settings Service] No default chatbot config found or error removing:', error);
+      }
+
+      console.log('[Settings Service] ✅ E-commerce credentials removed from all InboundAgentConfig documents');
+    } catch (error) {
+      console.error('[Settings Service] ❌ Failed to remove e-commerce credentials from InboundAgentConfig:', error);
+      // Don't throw error - credentials are removed from Settings, which is the main source
+    }
+
+    console.log('[Settings Service] ✅ E-commerce integration deletion complete for user:', userId);
+    return { message: 'E-commerce integration deleted successfully', platform };
+  }
+
+  /**
    * Get all operators (users)
    */
   async getOperators() {

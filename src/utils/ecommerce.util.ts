@@ -45,6 +45,7 @@ export async function getEcommerceCredentials(userId: string): Promise<{
 
     // Log the full ecommerceIntegration object for debugging
     console.log('[E-commerce Util] Raw ecommerceIntegration object:', JSON.stringify(settings.ecommerceIntegration, null, 2));
+    console.log('[E-commerce Util] Stored base_url in DB:', settings.ecommerceIntegration.base_url);
     
     const { platform, base_url, api_key, api_secret, access_token } = settings.ecommerceIntegration;
     
@@ -69,18 +70,16 @@ export async function getEcommerceCredentials(userId: string): Promise<{
     const finalApiKey = woocommerceApiKey || api_key;
     const finalApiSecret = woocommerceApiSecret || api_secret;
     
-    // For WooCommerce, ensure base_url doesn't include API path
-    let normalizedBaseUrl = finalBaseUrl;
-    if (platform === 'woocommerce' && finalBaseUrl) {
-      // Remove WooCommerce API paths if accidentally included
-      normalizedBaseUrl = finalBaseUrl.replace(/\/wp-json\/wc\/v\d+$/, '').replace(/\/wp-json$/, '');
-    }
+    // Use base_url as-is from database (it should already have /wp-json/wc/v3 appended when stored)
+    // Send the complete URL to Python backend - DO NOT remove the API path
+    console.log('[E-commerce Util] Final base_url to send to Python:', finalBaseUrl);
+    console.log('[E-commerce Util] ⚠️  IMPORTANT: Sending complete URL with /wp-json/wc/v3 path to Python backend');
 
     // Validate that we have required fields for WooCommerce
     if (platform === 'woocommerce') {
-      if (!normalizedBaseUrl || !finalApiKey || !finalApiSecret) {
+      if (!finalBaseUrl || !finalApiKey || !finalApiSecret) {
         console.log('[E-commerce Util] ⚠️  WooCommerce credentials incomplete:', {
-          has_base_url: !!normalizedBaseUrl,
+          has_base_url: !!finalBaseUrl,
           has_api_key: !!finalApiKey,
           has_api_secret: !!finalApiSecret
         });
@@ -89,9 +88,10 @@ export async function getEcommerceCredentials(userId: string): Promise<{
     }
 
     // Return in the format expected by Python backend
+    // Send the complete base_url as stored in database (includes /wp-json/wc/v3)
     const credentials = {
       platform,
-      base_url: normalizedBaseUrl,
+      base_url: finalBaseUrl,
       api_key: finalApiKey,
       api_secret: finalApiSecret,
       access_token: access_token || '' // Empty string if not provided

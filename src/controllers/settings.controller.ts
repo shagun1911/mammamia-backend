@@ -133,6 +133,36 @@ export class SettingsController {
       next(error);
     }
   };
+
+  /**
+   * Delete e-commerce integration credentials
+   * DELETE /api/v1/settings/ecommerce-credentials
+   */
+  deleteEcommerceCredentials = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user?._id.toString();
+
+      console.log('[Settings Controller] Deleting e-commerce credentials for userId:', userId);
+
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'User ID not found'
+          }
+        });
+      }
+
+      const result = await settingsService.deleteEcommerceCredentials(userId);
+
+      console.log('[Settings Controller] ✅ E-commerce credentials deleted successfully:', result);
+
+      res.json(successResponse(result, 'E-commerce integration deleted successfully'));
+    } catch (error) {
+      next(error);
+    }
+  };
 }
 
 export const settingsController = new SettingsController();

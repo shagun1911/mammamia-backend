@@ -16,6 +16,7 @@ router.patch('/', settingsController.updateSettings);
 
 // E-commerce credentials
 router.post('/ecommerce-credentials', settingsController.saveEcommerceCredentials);
+router.delete('/ecommerce-credentials', settingsController.deleteEcommerceCredentials);
 
 // Operator management routes
 router.get('/operators', settingsController.getOperators);
