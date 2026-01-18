@@ -51,20 +51,45 @@ export class KnowledgeBaseService {
       
       console.log(`[KB Service] Creating knowledge base: ${name} with collection: ${collectionName}`);
       
-      // Always call data_ingestion endpoint - it creates collection and ingests data
-      // Collection will be created even if no data sources are provided
-      console.log(`[KB Service] Calling /rag/data_ingestion to create collection and ingest data`);
+      // Check if a knowledge base with this collection name already exists
+      const existingKB = await KnowledgeBase.findOne({ collectionName });
+      if (existingKB) {
+        console.log(`[KB Service] ⚠️  Knowledge base with collection name "${collectionName}" already exists`);
+        throw new AppError(
+          409,
+          'DUPLICATE_COLLECTION_NAME',
+          `A knowledge base with the name "${existingKB.name}" already uses the collection "${collectionName}". Please choose a different name.`
+        );
+      }
       
-      await pythonRagService.ingestData({
-        collectionName: collectionName,
-        urlLinks: dataSources?.urlLinks || [],
-        pdfFiles: dataSources?.pdfFiles || [],
-        excelFiles: dataSources?.excelFiles || []
-      });
+      // Check if there are any data sources to ingest
+      const hasUrlLinks = dataSources?.urlLinks && dataSources.urlLinks.length > 0;
+      const hasPdfFiles = dataSources?.pdfFiles && dataSources.pdfFiles.length > 0;
+      const hasExcelFiles = dataSources?.excelFiles && dataSources.excelFiles.length > 0;
+      const hasDataSources = hasUrlLinks || hasPdfFiles || hasExcelFiles;
       
-      console.log(`[KB Service] ✅ Collection created via /rag/data_ingestion`);
-      if (dataSources?.urlLinks?.length || dataSources?.pdfFiles?.length || dataSources?.excelFiles?.length) {
-        console.log(`[KB Service] ✅ Data ingested successfully`);
+      if (hasDataSources) {
+        // If data sources are provided, use data_ingestion endpoint (creates collection and ingests data)
+        console.log(`[KB Service] Calling /rag/data_ingestion to create collection and ingest data`);
+        console.log(`[KB Service] Data sources:`, {
+          urlLinks: dataSources.urlLinks?.length || 0,
+          pdfFiles: dataSources.pdfFiles?.length || 0,
+          excelFiles: dataSources.excelFiles?.length || 0
+        });
+        
+        await pythonRagService.ingestData({
+          collectionName: collectionName,
+          urlLinks: dataSources.urlLinks || [],
+          pdfFiles: dataSources.pdfFiles || [],
+          excelFiles: dataSources.excelFiles || []
+        });
+        
+        console.log(`[KB Service] ✅ Collection created and data ingested successfully`);
+      } else {
+        // If no data sources, just create an empty collection
+        console.log(`[KB Service] No data sources provided, creating empty collection`);
+        await pythonRagService.createCollection(collectionName);
+        console.log(`[KB Service] ✅ Empty collection created successfully`);
       }
       
       // Create knowledge base record in MongoDB

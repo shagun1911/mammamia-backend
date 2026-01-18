@@ -48,7 +48,22 @@ export const errorHandler = (
     statusCode = 409;
     code = 'DUPLICATE';
     message = 'Resource already exists';
-    details = { field: Object.keys(err.keyPattern)[0] };
+    
+    // Safely extract key pattern information
+    if (err.keyPattern && typeof err.keyPattern === 'object') {
+      const keys = Object.keys(err.keyPattern);
+      if (keys.length > 0) {
+        details = { 
+          field: keys[0],
+          duplicateValue: err.keyValue ? err.keyValue[keys[0]] : undefined
+        };
+      }
+    }
+    
+    // If we have a more specific error message from AppError, use it
+    if (err.message && err.message !== 'Resource already exists') {
+      message = err.message;
+    }
   }
 
   // JWT errors

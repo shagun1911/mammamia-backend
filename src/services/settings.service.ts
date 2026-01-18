@@ -115,8 +115,22 @@ Object.assign(settings, safeData);
       });
     } else {
       // Update e-commerce integration
+      console.log('[Settings Service] Updating existing settings with e-commerce credentials');
+      console.log('[Settings Service] Current ecommerceIntegration:', JSON.stringify(settings.ecommerceIntegration, null, 2));
+      console.log('[Settings Service] New credentials:', JSON.stringify(credentials, null, 2));
+      
       settings.ecommerceIntegration = credentials;
       await settings.save();
+      
+      // Verify the save worked
+      const verifySettings = await Settings.findOne({ userId });
+      console.log('[Settings Service] ✅ Settings saved. Verification:', {
+        has_ecommerceIntegration: !!verifySettings?.ecommerceIntegration,
+        platform: verifySettings?.ecommerceIntegration?.platform,
+        has_base_url: !!verifySettings?.ecommerceIntegration?.base_url,
+        has_api_key: !!verifySettings?.ecommerceIntegration?.api_key,
+        has_api_secret: !!verifySettings?.ecommerceIntegration?.api_secret
+      });
     }
     
     // Sync to InboundAgentConfig for all phone numbers
@@ -125,14 +139,26 @@ Object.assign(settings, safeData);
       const syncedConfigs = await inboundAgentConfigService.syncConfig(userId);
       console.log('[Settings Service] ✅ E-commerce credentials synced to InboundAgentConfig successfully');
       console.log('[Settings Service] Synced configs count:', syncedConfigs.length);
+      
       if (syncedConfigs.length > 0) {
         console.log('[Settings Service] Phone numbers with e-commerce credentials:', syncedConfigs.map(c => c.calledNumber));
       } else {
-        console.log('[Settings Service] ⚠️  No phone numbers configured. E-commerce credentials will be available when phone numbers are added.');
+        // No phone numbers configured - create a default InboundAgentConfig for chatbot use
+        console.log('[Settings Service] ⚠️  No phone numbers configured. Creating default InboundAgentConfig for chatbot use...');
+        await inboundAgentConfigService.createDefaultConfigForChatbot(userId, credentials);
+        console.log('[Settings Service] ✅ Default InboundAgentConfig created for chatbot use');
       }
     } catch (error) {
       console.error('[Settings Service] ❌ Failed to sync e-commerce credentials to InboundAgentConfig:', error);
       // Don't throw error, just log it - credentials are saved in Settings
+      // Still try to create default config for chatbot
+      try {
+        console.log('[Settings Service] Attempting to create default InboundAgentConfig for chatbot...');
+        await inboundAgentConfigService.createDefaultConfigForChatbot(userId, credentials);
+        console.log('[Settings Service] ✅ Default InboundAgentConfig created for chatbot use');
+      } catch (defaultConfigError) {
+        console.error('[Settings Service] ❌ Failed to create default InboundAgentConfig:', defaultConfigError);
+      }
     }
     
     console.log('[Settings Service] ✅ WooCommerce integration setup complete for user:', userId);

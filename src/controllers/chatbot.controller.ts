@@ -82,7 +82,13 @@ export class ChatbotController {
   chat = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user!.id;
-      const { query, knowledgeBaseId, threadId } = req.body;
+      const { 
+        query, 
+        knowledgeBaseId, 
+        threadId,
+        elaborate = false,
+        skip_history = false
+      } = req.body;
 
       // Log incoming payload for debugging
       console.log('\n========== CHATBOT /chat ENDPOINT - INCOMING REQUEST ==========');
@@ -91,6 +97,8 @@ export class ChatbotController {
       console.log('[Chatbot] Query:', query);
       console.log('[Chatbot] Knowledge Base ID:', knowledgeBaseId || 'not provided');
       console.log('[Chatbot] Thread ID:', threadId || 'not provided');
+      console.log('[Chatbot] Elaborate:', elaborate);
+      console.log('[Chatbot] Skip History:', skip_history);
       console.log('===============================================================\n');
 
       if (!query) {
@@ -99,6 +107,12 @@ export class ChatbotController {
 
       // Determine collection names from Settings/AI Behavior
       const collectionNames = await determineCollectionNames(userId, knowledgeBaseId);
+      
+      console.log('[Chatbot] Resolved Collection Names:', collectionNames);
+      if (collectionNames.length === 0) {
+        console.warn('[Chatbot] ⚠️  WARNING: No collection names resolved! This will cause "I don\'t have enough information" errors.');
+        console.warn('[Chatbot] ⚠️  Please configure a knowledge base in Settings → AI Behavior or Settings → Knowledge Base');
+      }
 
       // Get AI behavior configuration
       const aiBehavior = await aiBehaviorService.get(userId);
@@ -179,8 +193,20 @@ export class ChatbotController {
         systemPrompt,
         provider,
         apiKey,
-        ecommerceCredentials
+        ecommerceCredentials,
+        topK: 5, // Default top_k
+        elaborate,
+        skipHistory: skip_history
       });
+
+      // Log the response to help debug
+      console.log('\n========== CHATBOT - RESPONSE FROM PYTHON RAG ==========');
+      console.log('[Chatbot] Answer Length:', response.answer?.length || 0);
+      console.log('[Chatbot] Answer Preview:', response.answer?.substring(0, 200) || 'NO ANSWER');
+      console.log('[Chatbot] Retrieved Docs Count:', response.retrieved_docs?.length || 0);
+      console.log('[Chatbot] Context Length:', response.context?.length || 0);
+      console.log('[Chatbot] Thread ID:', response.thread_id);
+      console.log('========================================================\n');
 
       res.json(successResponse(response));
     } catch (error) {
@@ -266,7 +292,10 @@ export class ChatbotController {
         systemPrompt,
         provider,
         apiKey,
-        ecommerceCredentials
+        ecommerceCredentials,
+        topK: 5,
+        elaborate: false,
+        skipHistory: false
       });
 
       res.json(successResponse(response));
@@ -297,13 +326,38 @@ export class ChatbotController {
         throw new AppError(400, 'VALIDATION_ERROR', 'Query is required');
       }
 
-      // Get settings by widgetId (finds first settings for now, can be enhanced to map widgetId to user)
-      const settings = await Settings.findOne();
-      if (!settings || !settings.userId) {
-        throw new AppError(404, 'NOT_FOUND', 'Widget settings not found');
+      // Get settings by widgetId
+      // For now, we'll try to find settings by widgetId if it's a valid ObjectId
+      // Otherwise, find the first settings (legacy behavior)
+      let settings;
+      let userId: string;
+      
+      // Try to use widgetId as userId if it's a valid ObjectId format
+      if (widgetId && /^[0-9a-fA-F]{24}$/.test(widgetId)) {
+        console.log('[Widget Chat] Widget ID looks like ObjectId, trying to use as userId:', widgetId);
+        settings = await Settings.findOne({ userId: widgetId });
+        if (settings && settings.userId) {
+          userId = settings.userId.toString();
+          console.log('[Widget Chat] ✅ Found settings for userId:', userId);
+        }
       }
-
-      const userId = settings.userId.toString();
+      
+      // If not found, try to find by widgetId in a future widget mapping table
+      // For now, fallback to finding first settings (but log a warning)
+      if (!settings) {
+        console.warn('[Widget Chat] ⚠️  Could not find settings for widgetId:', widgetId);
+        console.warn('[Widget Chat] ⚠️  Falling back to first settings document (this may not be correct)');
+        settings = await Settings.findOne().sort({ createdAt: -1 }); // Get most recent
+        if (!settings || !settings.userId) {
+          throw new AppError(404, 'NOT_FOUND', 'Widget settings not found');
+        }
+        userId = settings.userId.toString();
+        console.warn('[Widget Chat] ⚠️  Using settings for userId:', userId, '(may not match widgetId)');
+      } else if (!settings.userId) {
+        throw new AppError(404, 'NOT_FOUND', 'Settings found but userId is missing');
+      } else {
+        userId = settings.userId.toString();
+      }
 
       // Determine collection names from Settings/AI Behavior
       const collectionNames = await determineCollectionNames(userId);
@@ -370,7 +424,10 @@ export class ChatbotController {
         systemPrompt,
         provider,
         apiKey,
-        ecommerceCredentials
+        ecommerceCredentials,
+        topK: 5,
+        elaborate: false,
+        skipHistory: false
       });
 
       res.json(successResponse(response));

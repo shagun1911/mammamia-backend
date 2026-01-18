@@ -148,6 +148,8 @@ export class PythonRagService {
     systemPrompt?: string;
     provider?: string;
     apiKey?: string;
+    elaborate?: boolean;
+    skipHistory?: boolean;
     ecommerceCredentials?: {
       platform?: string;
       base_url?: string;
@@ -161,6 +163,7 @@ export class PythonRagService {
     retrieved_docs: string[];
     context: string;
     thread_id: string;
+    latency_ms?: number;
   }> {
     try {
       console.log(`[Python RAG] Chat query in collections:`, params.collectionNames);
@@ -169,11 +172,21 @@ export class PythonRagService {
       // Build request body - provider and api_key are REQUIRED for LLM generation
       const requestBody: any = {
         query: params.query,
+        collection_name: params.collectionNames.length > 0 ? params.collectionNames[0] : '', // For backward compatibility
         collection_names: params.collectionNames,
         top_k: params.topK || 5,
-        thread_id: params.threadId,
-        system_prompt: params.systemPrompt
+        thread_id: params.threadId || undefined,
+        system_prompt: params.systemPrompt || undefined,
+        elaborate: params.elaborate !== undefined ? params.elaborate : false,
+        skip_history: params.skipHistory !== undefined ? params.skipHistory : false
       };
+      
+      // Remove undefined fields to keep payload clean
+      Object.keys(requestBody).forEach(key => {
+        if (requestBody[key] === undefined) {
+          delete requestBody[key];
+        }
+      });
 
       // Include provider and api_key if provided (REQUIRED for LLM to generate answers)
       if (params.provider) {
@@ -204,21 +217,47 @@ export class PythonRagService {
         console.log(`[Python RAG] ecommerceCredentials value:`, params.ecommerceCredentials);
       }
       
+      // Log the complete payload being sent
+      console.log('\n========== PYTHON RAG - PAYLOAD BEING SENT ==========');
+      console.log('[Python RAG] URL:', `${PYTHON_RAG_BASE_URL}/rag/chat`);
+      console.log('[Python RAG] Request Body:', JSON.stringify({
+        ...requestBody,
+        api_key: requestBody.api_key ? `${requestBody.api_key.substring(0, 10)}...***` : undefined,
+        ecommerce_credentials: requestBody.ecommerce_credentials ? {
+          ...requestBody.ecommerce_credentials,
+          api_key: requestBody.ecommerce_credentials.api_key ? `${requestBody.ecommerce_credentials.api_key.substring(0, 10)}...***` : undefined,
+          api_secret: '***hidden***'
+        } : undefined
+      }, null, 2));
+      console.log('==================================================\n');
+      
       const response = await axios.post(`${PYTHON_RAG_BASE_URL}/rag/chat`, requestBody);
 
       console.log(`[Python RAG] Chat response received`);
       const data = response.data;
 
       // Log response for debugging
-      console.log('[Python RAG] Response data:', {
-        hasAnswer: !!data.answer,
-        answerLength: data.answer?.length || 0,
-        answerPreview: data.answer?.substring(0, 100) || 'NO ANSWER',
-        hasRetrievedDocs: !!data.retrieved_docs,
-        retrievedDocsCount: data.retrieved_docs?.length || 0,
-        hasContext: !!data.context,
-        contextLength: data.context?.length || 0
-      });
+      console.log('\n========== PYTHON RAG - RESPONSE RECEIVED ==========');
+      console.log('[Python RAG] Response Status:', response.status);
+      console.log('[Python RAG] Has Answer:', !!data.answer);
+      console.log('[Python RAG] Answer Length:', data.answer?.length || 0);
+      console.log('[Python RAG] Answer Preview:', data.answer?.substring(0, 200) || 'NO ANSWER');
+      console.log('[Python RAG] Has Retrieved Docs:', !!data.retrieved_docs);
+      console.log('[Python RAG] Retrieved Docs Count:', data.retrieved_docs?.length || 0);
+      console.log('[Python RAG] Has Context:', !!data.context);
+      console.log('[Python RAG] Context Length:', data.context?.length || 0);
+      console.log('[Python RAG] Thread ID:', data.thread_id);
+      console.log('[Python RAG] Latency (ms):', data.latency_ms);
+      
+      // Check if no documents were retrieved
+      if (!data.retrieved_docs || data.retrieved_docs.length === 0) {
+        console.warn('[Python RAG] ⚠️  WARNING: No documents retrieved from collections:', params.collectionNames);
+        console.warn('[Python RAG] ⚠️  This usually means:');
+        console.warn('[Python RAG] ⚠️  1. The collection name(s) don\'t exist in the Python backend');
+        console.warn('[Python RAG] ⚠️  2. The collection is empty (no data ingested)');
+        console.warn('[Python RAG] ⚠️  3. The query doesn\'t match any documents in the collection');
+      }
+      console.log('==================================================\n');
 
       // Check if answer contains error message or is empty
       const isErrorAnswer = 
@@ -226,7 +265,10 @@ export class PythonRagService {
         data.answer.trim() === '' ||
         data.answer.toLowerCase().includes('encountered an error') ||
         data.answer.toLowerCase().includes('error while generating') ||
-        data.answer.toLowerCase().includes('please try again');
+        data.answer.toLowerCase().includes('please try again') ||
+        data.answer.toLowerCase().includes("i don't have enough information") ||
+        data.answer.toLowerCase().includes('i do not have enough information') ||
+        data.answer.toLowerCase().includes('not enough information');
 
       // If LLM failed, try to generate clean fallback answer
       if (isErrorAnswer) {

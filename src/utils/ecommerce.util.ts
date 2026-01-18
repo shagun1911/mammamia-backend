@@ -25,9 +25,21 @@ export async function getEcommerceCredentials(userId: string): Promise<{
       return undefined;
     }
     
+    // Check if ecommerceIntegration is an empty object
+    const ecommerceKeys = Object.keys(settings.ecommerceIntegration || {});
+    if (ecommerceKeys.length === 0) {
+      console.log('[E-commerce Util] ⚠️  ecommerceIntegration exists but is an empty object');
+      console.log('[E-commerce Util] Settings document ID:', settings._id);
+      console.log('[E-commerce Util] Settings userId:', settings.userId);
+      console.log('[E-commerce Util] Full settings object keys:', Object.keys(settings.toObject ? settings.toObject() : {}));
+      return undefined;
+    }
+    
     if (!settings.ecommerceIntegration.platform) {
       console.log('[E-commerce Util] ⚠️  ecommerceIntegration exists but platform is missing');
       console.log('[E-commerce Util] ecommerceIntegration object:', JSON.stringify(settings.ecommerceIntegration, null, 2));
+      console.log('[E-commerce Util] ecommerceIntegration type:', typeof settings.ecommerceIntegration);
+      console.log('[E-commerce Util] ecommerceIntegration keys:', Object.keys(settings.ecommerceIntegration || {}));
       return undefined;
     }
 

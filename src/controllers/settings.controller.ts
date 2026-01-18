@@ -92,8 +92,8 @@ export class SettingsController {
    */
   saveEcommerceCredentials = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const userId = req.user!._id.toString();
-      const { platform, base_url, api_key, api_secret, access_token } = req.body;
+      const userId = req.user?._id.toString();
+      const { platform, base_url, api_key, api_secret, access_token} = req.body;
 
       console.log('[Settings Controller] Saving e-commerce credentials:', {
         userId,

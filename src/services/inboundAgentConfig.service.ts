@@ -287,6 +287,71 @@ export class InboundAgentConfigService {
   async delete(userId: string, calledNumber: string): Promise<void> {
     await InboundAgentConfig.findOneAndDelete({ userId, calledNumber });
   }
+
+  /**
+   * Create a default InboundAgentConfig for chatbot use when no phone numbers are configured
+   * Uses empty string as calledNumber to distinguish from phone-based configs
+   */
+  async createDefaultConfigForChatbot(
+    userId: string,
+    ecommerceCredentials: {
+      platform?: string;
+      base_url?: string;
+      api_key?: string;
+      api_secret?: string;
+      access_token?: string;
+    }
+  ) {
+    console.log('[InboundAgentConfig Service] Creating default config for chatbot...');
+    
+    // Use empty string as calledNumber for chatbot (distinguishes from phone-based configs)
+    const calledNumber = '';
+    
+    // Check if default config already exists
+    let config = await InboundAgentConfig.findOne({ userId, calledNumber });
+    
+    if (config) {
+      // Update existing default config with e-commerce credentials
+      console.log('[InboundAgentConfig Service] Updating existing default config for chatbot...');
+      config.ecommerce_credentials = ecommerceCredentials;
+      await config.save();
+      console.log('[InboundAgentConfig Service] ✅ Updated default config for chatbot');
+    } else {
+      // Create new default config
+      console.log('[InboundAgentConfig Service] Creating new default config for chatbot...');
+      
+      // Fetch settings to get default values
+      const [phoneSettings, aiBehavior, settings] = await Promise.all([
+        PhoneSettings.findOne({ userId }),
+        AIBehavior.findOne({ userId }),
+        Settings.findOne({ userId })
+      ]);
+      
+      // Get default values
+      const voice_id = phoneSettings?.customVoiceId || phoneSettings?.selectedVoice || 'adam';
+      const collections = settings?.defaultKnowledgeBaseNames || [];
+      const language = phoneSettings?.language || aiBehavior?.voiceAgent?.language || 'en';
+      const agent_instruction = aiBehavior?.voiceAgent?.systemPrompt || '';
+      const greeting_message = phoneSettings?.greetingMessage || 'Hello! How can I help you today?';
+      
+      config = await InboundAgentConfig.create({
+        userId,
+        calledNumber, // Empty string for chatbot
+        voice_id,
+        collections,
+        language,
+        agent_instruction,
+        greeting_message,
+        ecommerce_credentials: ecommerceCredentials
+      });
+      
+      console.log('[InboundAgentConfig Service] ✅ Created default config for chatbot with e-commerce credentials');
+      console.log('[InboundAgentConfig Service] Config ID:', config._id);
+      console.log('[InboundAgentConfig Service] Platform:', ecommerceCredentials.platform);
+    }
+    
+    return config;
+  }
 }
 
 export const inboundAgentConfigService = new InboundAgentConfigService();
