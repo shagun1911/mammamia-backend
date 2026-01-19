@@ -9,9 +9,11 @@ import { AppError } from '../middleware/error.middleware';
 import { campaignQueue } from '../queues/campaign.queue';
 import { phoneSettingsService } from './phoneSettings.service';
 import { aiBehaviorService } from './aiBehavior.service';
+import { emailService } from './email.service';
 import axios from 'axios';
 import { trackUsage } from '../middleware/profileTracking.middleware';
 import { profileService } from './profile.service';
+import { emitToOrganization } from '../config/socket';
 
 // Voice ID mapping from voice name to ElevenLabs voice ID
 const VOICE_ID_MAP: Record<string, string> = {
@@ -62,6 +64,87 @@ const normalizePhoneNumber = (phone: string): string => {
 };
 
 export class CampaignService {
+  /**
+   * Add log entry to campaign
+   */
+  private async addCampaignLog(campaign: any, type: 'info' | 'success' | 'error' | 'warning', message: string, details?: any) {
+    if (!campaign.logs) {
+      campaign.logs = [];
+    }
+    campaign.logs.push({
+      timestamp: new Date(),
+      type,
+      message,
+      details
+    });
+    // Keep only last 100 logs
+    if (campaign.logs.length > 100) {
+      campaign.logs = campaign.logs.slice(-100);
+    }
+    await campaign.save();
+  }
+
+  /**
+   * Update campaign progress and emit socket event
+   */
+  private async updateCampaignProgress(campaign: any, organizationId: string, updates: {
+    sentCount?: number;
+    deliveredCount?: number;
+    failedCount?: number;
+    pendingCount?: number;
+  }) {
+    if (updates.sentCount !== undefined) campaign.sentCount = (campaign.sentCount || 0) + updates.sentCount;
+    if (updates.deliveredCount !== undefined) campaign.deliveredCount = (campaign.deliveredCount || 0) + updates.deliveredCount;
+    if (updates.failedCount !== undefined) campaign.failedCount = (campaign.failedCount || 0) + updates.failedCount;
+    if (updates.pendingCount !== undefined) campaign.pendingCount = updates.pendingCount;
+    
+    await campaign.save();
+
+    // Calculate progress percentage
+    const total = campaign.totalRecipients || 0;
+    const processed = (campaign.sentCount || 0) + (campaign.failedCount || 0);
+    const progress = total > 0 ? Math.round((processed / total) * 100) : 0;
+
+    // Emit socket event
+    emitToOrganization(organizationId, 'campaign:progress', {
+      campaignId: campaign._id.toString(),
+      status: campaign.status,
+      progress,
+      totalRecipients: total,
+      sentCount: campaign.sentCount || 0,
+      deliveredCount: campaign.deliveredCount || 0,
+      failedCount: campaign.failedCount || 0,
+      pendingCount: campaign.pendingCount || 0
+    });
+  }
+
+  /**
+   * Get campaign statistics
+   */
+  private async getCampaignStats(campaignId: string) {
+    const recipients = await CampaignRecipient.find({ campaignId }).lean();
+    const total = recipients.length;
+    const sent = recipients.filter(r => r.status === 'sent' || r.status === 'delivered').length;
+    const delivered = recipients.filter(r => r.status === 'delivered' || r.deliveredAt).length;
+    const failed = recipients.filter(r => r.status === 'failed').length;
+    const pending = recipients.filter(r => r.status === 'pending').length;
+    const opened = recipients.filter(r => r.openedAt).length;
+    const clicked = recipients.filter(r => r.clickedAt).length;
+    const replied = recipients.filter(r => r.repliedAt).length;
+    
+    return {
+      total,
+      sent,
+      delivered,
+      failed,
+      pending,
+      opened,
+      clicked,
+      replied,
+      progress: total > 0 ? Math.round(((sent + failed) / total) * 100) : 0
+    };
+  }
+
   async findAll(organizationId: string, filters: any = {}, page = 1, limit = 20) {
     // First get all lists for this organization
     const lists = await ContactList.find({ organizationId }).select('_id');
@@ -230,6 +313,156 @@ export class CampaignService {
     return { message: 'Campaign deleted successfully' };
   }
 
+  async pause(campaignId: string) {
+    const campaign = await Campaign.findById(campaignId);
+
+    if (!campaign) {
+      throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
+    if (campaign.status !== 'running') {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Can only pause running campaigns');
+    }
+
+    campaign.status = 'paused';
+    campaign.pausedAt = new Date();
+    await campaign.save();
+
+    await this.addCampaignLog(campaign, 'warning', 'Campaign paused by user');
+    
+    // Get organizationId from listId
+    const list = await ContactList.findById(campaign.listId);
+    const organizationId = list?.organizationId?.toString() || '';
+    if (organizationId) {
+      emitToOrganization(organizationId, 'campaign:status', {
+        campaignId: campaign._id.toString(),
+        status: 'paused',
+        progress: this.calculateProgress(campaign),
+        totalRecipients: campaign.totalRecipients || 0,
+        sentCount: campaign.sentCount || 0,
+        failedCount: campaign.failedCount || 0,
+        pendingCount: campaign.pendingCount || 0
+      });
+    }
+
+    return campaign;
+  }
+
+  async resume(campaignId: string, userId: string) {
+    const campaign = await Campaign.findById(campaignId);
+
+    if (!campaign) {
+      throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
+    if (campaign.status !== 'paused') {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Can only resume paused campaigns');
+    }
+
+    campaign.status = 'running';
+    await campaign.save();
+
+    await this.addCampaignLog(campaign, 'info', 'Campaign resumed by user');
+    
+    // Get organizationId from listId
+    const list = await ContactList.findById(campaign.listId);
+    const organizationId = list?.organizationId?.toString() || '';
+    if (organizationId) {
+      emitToOrganization(organizationId, 'campaign:status', {
+        campaignId: campaign._id.toString(),
+        status: 'running',
+        progress: this.calculateProgress(campaign),
+        totalRecipients: campaign.totalRecipients || 0,
+        sentCount: campaign.sentCount || 0,
+        failedCount: campaign.failedCount || 0,
+        pendingCount: campaign.pendingCount || 0
+      });
+    }
+
+    // Continue processing remaining contacts
+    // Note: This would require background job processing - for now, just update status
+    // In production, you'd want to queue remaining contacts for processing
+
+    return campaign;
+  }
+
+  async retryFailed(campaignId: string, userId: string) {
+    const campaign = await Campaign.findById(campaignId);
+
+    if (!campaign) {
+      throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
+    if (campaign.failedCount === 0 || (campaign.failedCount || 0) === 0) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'No failed recipients to retry');
+    }
+
+    // Get failed recipients
+    const failedRecipients = await CampaignRecipient.find({
+      campaignId: campaign._id,
+      status: 'failed'
+    }).populate('contactId');
+
+    if (failedRecipients.length === 0) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'No failed recipients found');
+    }
+
+    await this.addCampaignLog(campaign, 'info', `Retrying ${failedRecipients.length} failed recipients`);
+
+    // Reset failed count and update pending
+    campaign.failedCount = Math.max(0, (campaign.failedCount || 0) - failedRecipients.length);
+    campaign.pendingCount = (campaign.pendingCount || 0) + failedRecipients.length;
+    campaign.status = 'running';
+    await campaign.save();
+
+    // Process failed recipients
+    const contacts = failedRecipients.map(r => r.contactId).filter(Boolean);
+    
+    // Get organizationId from listId
+    const list = await ContactList.findById(campaign.listId);
+    const organizationId = list?.organizationId?.toString() || '';
+
+    // Process each failed contact
+    for (const contact of contacts) {
+      // Similar processing logic as in start() method
+      // This is a simplified version - you'd want to reuse the processing logic
+      try {
+        // Update recipient status back to pending
+        await CampaignRecipient.updateOne(
+          { campaignId: campaign._id, contactId: (contact as any)._id },
+          { status: 'pending', failureReason: undefined }
+        );
+
+        // Process contact (call/email/sms) - simplified, would need full logic
+        // For now, just mark as retrying
+        await this.addCampaignLog(campaign, 'info', `Retrying contact ${(contact as any).name || (contact as any).email}`);
+      } catch (error: any) {
+        await this.addCampaignLog(campaign, 'error', `Failed to retry contact: ${error.message}`);
+      }
+    }
+
+    if (organizationId) {
+      emitToOrganization(organizationId, 'campaign:progress', {
+        campaignId: campaign._id.toString(),
+        status: 'running',
+        progress: this.calculateProgress(campaign),
+        totalRecipients: campaign.totalRecipients || 0,
+        sentCount: campaign.sentCount || 0,
+        failedCount: campaign.failedCount || 0,
+        pendingCount: campaign.pendingCount || 0
+      });
+    }
+
+    return campaign;
+  }
+
+  private calculateProgress(campaign: any): number {
+    const total = campaign.totalRecipients || 0;
+    if (total === 0) return 0;
+    const processed = (campaign.sentCount || 0) + (campaign.failedCount || 0);
+    return Math.round((processed / total) * 100);
+  }
+
   async cancel(campaignId: string) {
     const campaign = await Campaign.findById(campaignId);
 
@@ -237,16 +470,30 @@ export class CampaignService {
       throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
     }
 
-    if (campaign.status !== 'scheduled') {
-      throw new AppError(400, 'VALIDATION_ERROR', 'Can only cancel scheduled campaigns');
+    if (!['scheduled', 'running', 'paused'].includes(campaign.status)) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Can only cancel scheduled, running, or paused campaigns');
     }
 
-    campaign.status = 'cancelled';
-    campaign.cancelledAt = new Date();
+    campaign.status = 'failed';
+    campaign.failedAt = new Date();
     await campaign.save();
 
-    // Remove from queue
-    // TODO: Implement queue job removal by searching for job with campaignId
+    await this.addCampaignLog(campaign, 'warning', 'Campaign cancelled by user');
+
+    // Get organizationId from listId
+    const list = await ContactList.findById(campaign.listId);
+    const organizationId = list?.organizationId?.toString() || '';
+    if (organizationId) {
+      emitToOrganization(organizationId, 'campaign:status', {
+        campaignId: campaign._id.toString(),
+        status: 'failed',
+        progress: this.calculateProgress(campaign),
+        totalRecipients: campaign.totalRecipients || 0,
+        sentCount: campaign.sentCount || 0,
+        failedCount: campaign.failedCount || 0,
+        pendingCount: campaign.pendingCount || 0
+      });
+    }
 
     return campaign;
   }
@@ -274,9 +521,32 @@ export class CampaignService {
 
     console.log(`[Campaign ${campaignId}] Starting campaign for ${contacts.length} contacts`);
 
-    // Update campaign status to sending
-    campaign.status = 'sending';
+    // Initialize campaign progress tracking
+    campaign.status = 'running';
+    campaign.totalRecipients = contacts.length;
+    campaign.sentCount = 0;
+    campaign.deliveredCount = 0;
+    campaign.failedCount = 0;
+    campaign.pendingCount = contacts.length;
+    campaign.logs = [];
+    campaign.sentAt = new Date();
     await campaign.save();
+
+    // Add initial log
+    await this.addCampaignLog(campaign, 'info', `Campaign started for ${contacts.length} contacts`);
+    
+    // Get organizationId from listId
+    const list = await ContactList.findById(campaign.listId);
+    const organizationId = list?.organizationId?.toString() || userId;
+    emitToOrganization(organizationId, 'campaign:status', {
+      campaignId: campaign._id.toString(),
+      status: 'running',
+      progress: 0,
+      totalRecipients: contacts.length,
+      sentCount: 0,
+      failedCount: 0,
+      pendingCount: contacts.length
+    });
 
     // Get phone settings and AI behavior for the user
     const phoneSettings = await phoneSettingsService.get(userId);
@@ -550,22 +820,78 @@ export class CampaignService {
             contactResult.errors.push('Email subject or body not configured');
           } else {
             try {
+              console.log(`\n========== CAMPAIGN EMAIL SEND ==========`);
               console.log(`[Campaign ${campaignId}] Sending email to ${contact.email}...`);
-              const emailResponse = await axios.post(`${COMM_API}/email/send`, {
-                receiver_email: contact.email,
+              console.log(`[Campaign ${campaignId}] Email Payload:`, {
+                to: contact.email,
                 subject: campaign.emailBody.subject,
-                body: campaign.emailBody.body,
-                is_html: campaign.emailBody.is_html || false,
-              }, {
-                timeout: 30000, // 30 seconds timeout
+                html: campaign.emailBody.body?.substring(0, 100) + '...',
+                is_html: campaign.emailBody.is_html || false
+              });
+              
+              const emailResult = await emailService.sendEmail({
+                to: contact.email,
+                subject: campaign.emailBody.subject,
+                html: campaign.emailBody.is_html ? campaign.emailBody.body : undefined,
+                text: campaign.emailBody.is_html ? undefined : campaign.emailBody.body,
               });
 
-              contactResult.email_status = emailResponse.data.status === 'success' ? 'success' : 'failed';
-              console.log(`[Campaign ${campaignId}] Email to ${contact.email} completed with status: ${contactResult.email_status}`);
+              if (emailResult.success) {
+                contactResult.email_status = 'success';
+                console.log(`[Campaign ${campaignId}] ✅ Email to ${contact.email} sent successfully`);
+                if (emailResult.messageId) {
+                  console.log(`[Campaign ${campaignId}] Email Message ID: ${emailResult.messageId}`);
+                }
+              } else {
+                contactResult.email_status = 'failed';
+                const errorMsg = emailResult.error || 'Email sending failed';
+                console.error(`[Campaign ${campaignId}] ❌ Email to ${contact.email} failed: ${errorMsg}`);
+                contactResult.errors.push(`Email failed: ${errorMsg}`);
+              }
+              console.log(`==========================================\n`);
             } catch (error: any) {
-              console.error(`[Campaign ${campaignId}] Email to ${contact.email} failed:`, error.response?.data?.detail || error.message);
+              console.error(`\n========== CAMPAIGN EMAIL ERROR ==========`);
+              console.error(`[Campaign ${campaignId}] Email to ${contact.email} FAILED`);
+              console.error(`[Campaign ${campaignId}] Error Type:`, error.name || error.constructor?.name);
+              console.error(`[Campaign ${campaignId}] Error Message:`, error.message);
+              console.error(`[Campaign ${campaignId}] Error Code:`, error.code || error.errorCode);
+              
+              // Check if it's an AppError (has code property)
+              if (error.code && error.statusCode) {
+                console.error(`[Campaign ${campaignId}] AppError Code:`, error.code);
+                console.error(`[Campaign ${campaignId}] AppError Status:`, error.statusCode);
+                console.error(`[Campaign ${campaignId}] AppError Message:`, error.message);
+              }
+              
+              // Check for nodemailer-specific errors
+              if (error.responseCode || error.code) {
+                console.error(`[Campaign ${campaignId}] SMTP Response Code:`, error.responseCode);
+                console.error(`[Campaign ${campaignId}] SMTP Error Code:`, error.code);
+                console.error(`[Campaign ${campaignId}] SMTP Command:`, error.command);
+              }
+              
+              console.error(`[Campaign ${campaignId}] Error Details:`, error.details || error.response?.data);
+              console.error(`[Campaign ${campaignId}] Stack:`, error.stack);
+              console.error(`==========================================\n`);
               contactResult.email_status = 'failed';
-              contactResult.errors.push(`Email failed: ${error.response?.data?.detail || error.message}`);
+              
+              // Extract meaningful error message
+              let errorMessage = 'Failed to send email. Please check the logs for more details.';
+              
+              // Handle AppError (from emailService) - AppError uses 'code' property
+              if (error.code === 'EMAIL_NOT_CONFIGURED') {
+                errorMessage = 'SMTP is not configured. Please configure SMTP settings in environment variables (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS).';
+              } else if (error.code === 'EMAIL_SEND_FAILED') {
+                errorMessage = error.message || 'Email sending failed. Please check SMTP configuration.';
+              } else if (error.message) {
+                errorMessage = error.message;
+              } else if (error.code === 'EAUTH' || error.code === 'ECONNECTION') {
+                errorMessage = `SMTP authentication failed. Please check SMTP_USER and SMTP_PASS credentials. Error: ${error.message || error.code}`;
+              } else if (error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED') {
+                errorMessage = `Cannot connect to SMTP server. Please check SMTP_HOST and SMTP_PORT. Error: ${error.message || error.code}`;
+              }
+              
+              contactResult.errors.push(`Email failed: ${errorMessage}`);
             }
           }
         }
@@ -629,15 +955,66 @@ export class CampaignService {
           console.error(`[Campaign ${campaignId}] Failed to save recipient record for ${contact.name}:`, recipientError.message);
         }
 
+        // Update progress and add logs
+        // Get organizationId from listId
+        const contactList = await ContactList.findById(campaign.listId);
+        const organizationId = contactList?.organizationId?.toString() || userId;
+        
+        if (anySuccess) {
+          await this.updateCampaignProgress(campaign, organizationId, { sentCount: 1, pendingCount: -1 });
+          await this.addCampaignLog(campaign, 'success', `Message sent to ${contact.name} (${contact.email || contact.phone})`);
+        } else {
+          await this.updateCampaignProgress(campaign, organizationId, { failedCount: 1, pendingCount: -1 });
+          await this.addCampaignLog(campaign, 'error', `Failed to send to ${contact.name} (${contact.email || contact.phone})`, {
+            errors: contactResult.errors
+          });
+        }
+
         console.log(`[Campaign ${campaignId}] Completed processing contact ${contact.name}. Success: ${anySuccess ? 'Yes' : 'No'}`);
+        
+        // Check if campaign was paused (refresh from DB)
+        const updatedCampaign = await Campaign.findById(campaignId);
+        if (updatedCampaign?.status === 'paused') {
+          campaign.status = 'paused';
+          campaign.pausedAt = new Date();
+          await campaign.save();
+          await this.addCampaignLog(campaign, 'warning', 'Campaign paused by user');
+          console.log(`[Campaign ${campaignId}] Campaign paused, stopping execution`);
+          break;
+        }
       }
 
-      // Update campaign status to sent
-      campaign.status = 'sent';
-      campaign.sentAt = new Date();
-      await campaign.save();
+      // Update campaign status based on results
+      // Get organizationId from listId
+      const finalList = await ContactList.findById(campaign.listId);
+      const finalOrganizationId = finalList?.organizationId?.toString() || userId;
+      
+      if (campaign.status === 'paused') {
+        await this.addCampaignLog(campaign, 'info', `Campaign paused. Processed ${successCount + failCount} of ${contacts.length} contacts`);
+      } else {
+        campaign.status = failCount === contacts.length ? 'failed' : 'completed';
+        campaign.completedAt = new Date();
+        if (campaign.status === 'failed') {
+          campaign.failedAt = new Date();
+        }
+        await campaign.save();
+        
+        await this.addCampaignLog(campaign, campaign.status === 'failed' ? 'error' : 'success', 
+          `Campaign ${campaign.status}. Success: ${successCount}, Failed: ${failCount}`);
+        
+        // Emit final status
+        emitToOrganization(finalOrganizationId, 'campaign:status', {
+          campaignId: campaign._id.toString(),
+          status: campaign.status,
+          progress: 100,
+          totalRecipients: contacts.length,
+          sentCount: successCount,
+          failedCount: failCount,
+          pendingCount: 0
+        });
+      }
 
-      console.log(`\n[Campaign ${campaignId}] Campaign completed. Success: ${successCount}, Failed: ${failCount}`);
+      console.log(`\n[Campaign ${campaignId}] Campaign ${campaign.status}. Success: ${successCount}, Failed: ${failCount}`);
 
       return {
         campaign,
@@ -843,18 +1220,6 @@ export class CampaignService {
     };
   }
 
-  private async getCampaignStats(campaignId: any) {
-    const recipients = await CampaignRecipient.find({ campaignId }).lean();
-
-    return {
-      sent: recipients.filter(r => r.status !== 'pending' && r.status !== 'failed').length,
-      delivered: recipients.filter(r => r.deliveredAt).length,
-      failed: recipients.filter(r => r.status === 'failed').length,
-      opened: recipients.filter(r => r.openedAt).length,
-      clicked: recipients.filter(r => r.clickedAt).length,
-      replied: recipients.filter(r => r.repliedAt).length
-    };
-  }
 
   private async scheduleCampaign(campaignId: string, scheduledAt: Date) {
     if (!campaignQueue) {

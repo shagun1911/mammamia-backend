@@ -27,14 +27,21 @@ export class EmailService {
     const smtpHost = process.env.SMTP_HOST;
     const smtpPort = process.env.SMTP_PORT;
     const smtpUser = process.env.SMTP_USER;
-    const smtpPass = process.env.SMTP_PASS;
+    // Support both SMTP_PASS and SMTP_PASSWORD for flexibility
+    const smtpPass = process.env.SMTP_PASS || process.env.SMTP_PASSWORD;
     this.appName = process.env.APP_NAME || 'KepleroAI';
     this.appUrl = process.env.APP_URL || 'http://localhost:3000';
 
     // Check if SMTP is configured
     if (!smtpHost || !smtpPort || !smtpUser || !smtpPass) {
       console.warn('[EmailService] SMTP not configured. Email sending will fail.');
-      console.warn('[EmailService] Required environment variables: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS');
+      console.warn('[EmailService] Required environment variables: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS (or SMTP_PASSWORD)');
+      console.warn('[EmailService] Current values:', {
+        SMTP_HOST: smtpHost || 'MISSING',
+        SMTP_PORT: smtpPort || 'MISSING',
+        SMTP_USER: smtpUser || 'MISSING',
+        SMTP_PASS: smtpPass ? 'SET' : 'MISSING'
+      });
       this.transporter = null;
       this.isConfigured = false;
       this.defaultFrom = `${this.appName} <noreply@${this.appName.toLowerCase()}.com>`;

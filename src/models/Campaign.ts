@@ -28,10 +28,25 @@ export interface ICampaign extends Document {
   templateVariables?: Record<string, string>;
   dynamicInstruction?: string;
   language?: string;
-  status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed' | 'cancelled';
+  status: 'draft' | 'scheduled' | 'running' | 'paused' | 'completed' | 'failed';
   scheduledAt?: Date;
   sentAt?: Date;
-  cancelledAt?: Date;
+  pausedAt?: Date;
+  completedAt?: Date;
+  failedAt?: Date;
+  // Progress tracking
+  totalRecipients?: number;
+  sentCount?: number;
+  deliveredCount?: number;
+  failedCount?: number;
+  pendingCount?: number;
+  // Execution logs
+  logs?: Array<{
+    timestamp: Date;
+    type: 'info' | 'success' | 'error' | 'warning';
+    message: string;
+    details?: any;
+  }>;
   followUps: IFollowUp[];
   createdAt: Date;
   updatedAt: Date;
@@ -72,12 +87,27 @@ const CampaignSchema = new Schema<ICampaign>({
   },
   status: {
     type: String,
-    enum: ['draft', 'scheduled', 'sending', 'sent', 'failed', 'cancelled'],
+    enum: ['draft', 'scheduled', 'running', 'paused', 'completed', 'failed'],
     default: 'draft'
   },
   scheduledAt: Date,
   sentAt: Date,
-  cancelledAt: Date,
+  pausedAt: Date,
+  completedAt: Date,
+  failedAt: Date,
+  // Progress tracking
+  totalRecipients: { type: Number, default: 0 },
+  sentCount: { type: Number, default: 0 },
+  deliveredCount: { type: Number, default: 0 },
+  failedCount: { type: Number, default: 0 },
+  pendingCount: { type: Number, default: 0 },
+  // Execution logs
+  logs: [{
+    timestamp: { type: Date, default: Date.now },
+    type: { type: String, enum: ['info', 'success', 'error', 'warning'], default: 'info' },
+    message: String,
+    details: Schema.Types.Mixed
+  }],
   followUps: [{
     templateId: { type: String, required: true },
     condition: {

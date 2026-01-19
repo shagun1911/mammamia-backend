@@ -28,7 +28,7 @@ if (campaignQueue) {
     if (!campaign) return;
 
     // Update status
-    campaign.status = 'sending';
+        campaign.status = 'running';
     await campaign.save();
 
     // Get all contacts from the list
@@ -94,7 +94,7 @@ if (campaignQueue) {
     }
 
     // Update campaign status
-    campaign.status = 'sent';
+        campaign.status = 'completed';
     campaign.sentAt = new Date();
     await campaign.save();
 

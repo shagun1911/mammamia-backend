@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { google } from 'googleapis';
+import axios from 'axios';
 import GoogleIntegration from '../models/GoogleIntegration';
 import { googleSheetsService } from '../services/googleSheets.service';
 import { googleDriveService } from '../services/googleDrive.service';
@@ -44,24 +45,35 @@ export class GoogleIntegrationController {
       );
 
       // Define scopes based on requested services
+      // Using minimal scopes that don't require Google verification
       const scopes: string[] = [
+        'openid',
+        'email',
+        'profile',
         'https://www.googleapis.com/auth/userinfo.email',
         'https://www.googleapis.com/auth/userinfo.profile'
       ];
 
-      if (!services || services.includes('sheets')) {
-        scopes.push('https://www.googleapis.com/auth/spreadsheets');
+      // Always include Drive.file (safer, doesn't require verification)
+      // This allows creating/uploading files but not accessing all Drive files
+      if (!services || services.includes('drive') || services.includes('sheets')) {
         scopes.push('https://www.googleapis.com/auth/drive.file');
       }
 
-      if (!services || services.includes('drive')) {
-        scopes.push('https://www.googleapis.com/auth/drive');
+      // Sheets scope
+      if (!services || services.includes('sheets')) {
+        scopes.push('https://www.googleapis.com/auth/spreadsheets');
       }
 
+      // Calendar scope (using calendar.events instead of full calendar access)
       if (!services || services.includes('calendar')) {
-        scopes.push('https://www.googleapis.com/auth/calendar');
         scopes.push('https://www.googleapis.com/auth/calendar.events');
       }
+
+      // Remove duplicates
+      const uniqueScopes = [...new Set(scopes)];
+      
+      console.log('[Google OAuth] Requested scopes:', uniqueScopes);
 
       // Store user info in state
       const state = Buffer.from(JSON.stringify({
@@ -72,14 +84,15 @@ export class GoogleIntegrationController {
 
       const authUrl = oauth2Client.generateAuthUrl({
         access_type: 'offline',
-        scope: scopes,
+        scope: uniqueScopes,
         state,
-        prompt: 'consent' // Force consent to get refresh token
+        prompt: 'consent' // MANDATORY: Force consent to get refresh token and new scopes
       });
 
       console.log('[Google OAuth] Generated auth URL:', {
         redirectUri,
-        scopesCount: scopes.length,
+        scopesCount: uniqueScopes.length,
+        scopes: uniqueScopes,
         authUrlLength: authUrl.length,
         authUrlPreview: authUrl.substring(0, 100) + '...'
       });
@@ -157,8 +170,22 @@ export class GoogleIntegrationController {
         console.log('[Google OAuth] Token exchange successful:', {
           hasAccessToken: !!tokens.access_token,
           hasRefreshToken: !!tokens.refresh_token,
-          expiryDate: tokens.expiry_date
+          expiryDate: tokens.expiry_date,
+          scope: tokens.scope
         });
+        
+        // Verify token scopes (for debugging)
+        if (tokens.access_token) {
+          try {
+            const tokenInfoResponse = await axios.get(`https://oauth2.googleapis.com/tokeninfo?access_token=${tokens.access_token}`);
+            console.log('[Google OAuth] Token scopes verified:', {
+              scopes: tokenInfoResponse.data.scope,
+              email: tokenInfoResponse.data.email
+            });
+          } catch (scopeError) {
+            console.warn('[Google OAuth] Could not verify token scopes:', scopeError);
+          }
+        }
       } catch (error: any) {
         console.error('[Google OAuth] Token exchange failed:', {
           error: error.message,

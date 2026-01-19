@@ -89,7 +89,12 @@ export class MetaOAuthService {
           'pages_read_user_content' // Read user content
         ];
       default:
-        return baseScopes;
+        // Fallback to common scopes (should never reach here due to TypeScript typing)
+        return [
+          'business_management',
+          'pages_show_list',
+          'pages_read_engagement'
+        ];
     }
   }
 

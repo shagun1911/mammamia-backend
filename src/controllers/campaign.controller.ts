@@ -91,6 +91,56 @@ export class CampaignController {
     }
   };
 
+  pause = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const campaign = await this.campaignService.pause(req.params.campaignId);
+      res.json(successResponse(campaign, 'Campaign paused successfully'));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  resume = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user!.id;
+      const campaign = await this.campaignService.resume(req.params.campaignId, userId);
+      res.json(successResponse(campaign, 'Campaign resumed successfully'));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  retryFailed = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user!.id;
+      const campaign = await this.campaignService.retryFailed(req.params.campaignId, userId);
+      res.json(successResponse(campaign, 'Retrying failed recipients'));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  getProgress = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const campaign = await this.campaignService.findById(req.params.campaignId);
+      const progress = {
+        totalRecipients: campaign.totalRecipients || 0,
+        sentCount: campaign.sentCount || 0,
+        deliveredCount: campaign.deliveredCount || 0,
+        failedCount: campaign.failedCount || 0,
+        pendingCount: campaign.pendingCount || 0,
+        progress: campaign.totalRecipients 
+          ? Math.round(((campaign.sentCount || 0) + (campaign.failedCount || 0)) / campaign.totalRecipients * 100)
+          : 0,
+        status: campaign.status,
+        logs: campaign.logs || []
+      };
+      res.json(successResponse(progress));
+    } catch (error) {
+      next(error);
+    }
+  };
+
   getAnalytics = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const analytics = await this.campaignService.getAnalytics(req.params.campaignId);
