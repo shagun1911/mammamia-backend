@@ -41,10 +41,16 @@ export class MetaOAuthService {
 
   /**
    * Generate OAuth authorization URL
+   * @param platform - Platform type (whatsapp, instagram, facebook)
+   * @param state - OAuth state parameter
+   * @param configId - Optional Business Login configuration ID (only for Facebook Login for Business, NOT for Messenger)
+   * @param useBusinessLogin - Whether to use Facebook Login for Business (with config_id) or standard OAuth
    */
   getAuthorizationUrl(
     platform: 'whatsapp' | 'instagram' | 'facebook',
-    state: string
+    state: string,
+    configId?: string,
+    useBusinessLogin: boolean = false
   ): string {
     const scopes = this.getScopesForPlatform(platform);
     const params = new URLSearchParams({
@@ -52,9 +58,15 @@ export class MetaOAuthService {
       redirect_uri: this.redirectUri,
       state,
       scope: scopes.join(','),
-      response_type: 'code',
-      auth_type: 'rerequest' // Force re-authentication to get fresh permissions
+      response_type: 'code'
     });
+
+    // Only add auth_type and config_id for Business Login (not for standard Messenger OAuth)
+    if (useBusinessLogin && platform === 'facebook' && configId) {
+      params.append('auth_type', 'rerequest');
+      params.append('config_id', configId);
+    }
+    // For standard Facebook OAuth (Messenger), don't include auth_type or config_id
 
     return `https://www.facebook.com/v18.0/dialog/oauth?${params.toString()}`;
   }
@@ -81,12 +93,12 @@ export class MetaOAuthService {
           'instagram_manage_messages' // Instagram messaging
         ];
       case 'facebook':
+        // Standard Messenger OAuth scopes (matching Python reference implementation)
+        // No business_management or other business scopes needed for Messenger
         return [
-          'business_management', // Required for Business Manager access
           'pages_show_list', // List user's pages
-          'pages_read_engagement', // Read page engagement
-          'pages_messaging', // Send and receive messages (this is the correct scope for Messenger)
-          'pages_read_user_content' // Read user content
+          'pages_messaging', // Send and receive messages via Messenger
+          'pages_manage_metadata' // Get Page information
         ];
       default:
         // Fallback to common scopes (should never reach here due to TypeScript typing)
@@ -150,13 +162,14 @@ export class MetaOAuthService {
 
   /**
    * Get user's pages (Facebook Pages)
+   * Returns pages with access tokens for Messenger API
    */
   async getUserPages(accessToken: string): Promise<MetaPage[]> {
     try {
       const response = await axios.get(`${this.baseUrl}/me/accounts`, {
         params: {
           access_token: accessToken,
-          fields: 'id,name,access_token,category,tasks'
+          fields: 'id,name,access_token,category' // Matching Python reference: id,name,access_token,category
         }
       });
 
@@ -240,6 +253,31 @@ export class MetaOAuthService {
     } catch (error: any) {
       console.error('[Meta OAuth] Error getting WhatsApp phone number:', error.response?.data || error.message);
       return null;
+    }
+  }
+
+  /**
+   * Get user profile information
+   * @param accessToken - User access token
+   * @returns User info with id, name, and email
+   */
+  async getUserInfo(accessToken: string): Promise<{ id: string; name?: string; email?: string }> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/me`, {
+        params: {
+          access_token: accessToken,
+          fields: 'id,name,email'
+        }
+      });
+
+      return response.data;
+    } catch (error: any) {
+      console.error('[Meta OAuth] Error getting user info:', error.response?.data || error.message);
+      throw new AppError(
+        400,
+        'OAUTH_ERROR',
+        error.response?.data?.error?.message || 'Failed to get user info'
+      );
     }
   }
 

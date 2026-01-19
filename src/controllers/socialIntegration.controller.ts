@@ -301,6 +301,33 @@ export class SocialIntegrationController {
         );
       }
 
+      // For Messenger (Facebook platform), use standard OAuth (NOT Facebook Login for Business)
+      // Only use Business Login (config_id) if explicitly needed for other use cases
+      const metaConfigId = process.env.META_CONFIG_ID;
+      const useBusinessLogin = false; // Messenger uses standard OAuth, not Business Login
+
+      // Log app configuration for debugging
+      console.log('[Meta OAuth Initiate] App Configuration:', {
+        appId: metaAppId ? `${metaAppId.substring(0, 4)}...${metaAppId.substring(metaAppId.length - 4)}` : 'MISSING',
+        hasAppSecret: !!metaAppSecret,
+        backendUrl,
+        frontendUrl,
+        platform,
+        useBusinessLogin: platform === 'facebook' ? useBusinessLogin : 'N/A'
+      });
+
+      // Log OAuth type for Facebook platform
+      if (platform === 'facebook') {
+        if (useBusinessLogin && metaConfigId) {
+          const maskedConfigId = metaConfigId.length > 8 
+            ? `${metaConfigId.substring(0, 4)}...${metaConfigId.substring(metaConfigId.length - 4)}`
+            : '***';
+          console.log('[Meta OAuth Initiate] Using Facebook Login for Business with config_id:', maskedConfigId);
+        } else {
+          console.log('[Meta OAuth Initiate] Using standard Facebook OAuth for Messenger (no config_id)');
+        }
+      }
+
       // Build redirect URI - must match Meta App settings exactly
       const redirectUri = `${backendUrl}/api/v1/social-integrations/${platform}/oauth/callback`;
       console.log('[Meta OAuth Initiate] Redirect URI:', redirectUri);
@@ -331,7 +358,14 @@ export class SocialIntegrationController {
       const state = Buffer.from(JSON.stringify(stateData)).toString('base64');
 
       // Generate Meta OAuth authorization URL
-      const authUrl = metaOAuth.getAuthorizationUrl(platform as 'whatsapp' | 'instagram' | 'facebook', state);
+      // For Messenger (Facebook), use standard OAuth without config_id
+      // For other platforms or Business Login use cases, pass config_id if needed
+      const authUrl = metaOAuth.getAuthorizationUrl(
+        platform as 'whatsapp' | 'instagram' | 'facebook', 
+        state,
+        useBusinessLogin ? metaConfigId : undefined, // Only pass config_id if using Business Login
+        useBusinessLogin // Flag to indicate Business Login vs standard OAuth
+      );
 
       console.log('[Meta OAuth Initiate] Generated auth URL successfully for platform:', platform);
       console.log('[Meta OAuth Initiate] Auth URL:', authUrl.substring(0, 100) + '...');
@@ -354,11 +388,55 @@ export class SocialIntegrationController {
 
   /**
    * Handle OAuth callback from Meta
+   * Also handles webhook verification requests that Meta may send to this URL
    */
   async oauthCallback(req: Request, res: Response, next: NextFunction) {
     try {
       const { code, state, error, error_reason, error_description, error_code, error_message } = req.query;
       const { platform } = req.params;
+
+      // Check if this is a webhook verification request (Meta sometimes sends this to callback URLs)
+      const hubMode = req.query['hub.mode'];
+      const hubChallenge = req.query['hub.challenge'];
+      const hubVerifyToken = req.query['hub.verify_token'];
+
+      if (hubMode === 'subscribe' && hubChallenge && hubVerifyToken) {
+        console.log('\n========== META WEBHOOK VERIFICATION (via OAuth callback) ==========');
+        console.log('[Meta Webhook Verification] Platform:', platform);
+        console.log('[Meta Webhook Verification] Mode:', hubMode);
+        console.log('[Meta Webhook Verification] Challenge:', hubChallenge);
+        console.log('[Meta Webhook Verification] Verify Token:', hubVerifyToken);
+        
+        // Get platform-specific verify token from environment
+        let verifyToken: string;
+        switch (platform) {
+          case 'whatsapp':
+            verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'whatsapp_verify_token';
+            break;
+          case 'messenger':
+          case 'facebook':
+            verifyToken = process.env.MESSENGER_WEBHOOK_VERIFY_TOKEN || 'messenger_verify_token';
+            break;
+          case 'instagram':
+            verifyToken = process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || 'instagram_verify_M9Qe7KX2R4LpA8';
+            break;
+          default:
+            verifyToken = '';
+        }
+
+        if (hubVerifyToken === verifyToken) {
+          console.log(`[Meta Webhook Verification] ✅ Verification successful for ${platform}`);
+          console.log('==========================================\n');
+          return res.status(200).send(hubChallenge);
+        } else {
+          console.log(`[Meta Webhook Verification] ❌ Verification failed for ${platform}`, {
+            received: hubVerifyToken,
+            expected: verifyToken
+          });
+          console.log('==========================================\n');
+          return res.sendStatus(403);
+        }
+      }
 
       console.log('\n========== META OAUTH CALLBACK ==========');
       console.log('[Meta OAuth Callback] Platform:', platform);
@@ -460,6 +538,18 @@ export class SocialIntegrationController {
       const longLivedTokenResponse = await metaOAuth.getLongLivedToken(shortLivedToken);
       const accessToken = longLivedTokenResponse.access_token;
 
+      // Get user information (matching Python reference implementation)
+      const userInfo = await metaOAuth.getUserInfo(accessToken);
+      const userId = userInfo.id;
+      const userName = userInfo.name || 'Unknown';
+      const userEmail = userInfo.email || '';
+
+      console.log('[Meta OAuth Callback] User info retrieved:', {
+        userId,
+        userName,
+        hasEmail: !!userEmail
+      });
+
       // Get user's pages
       const pages = await metaOAuth.getUserPages(accessToken);
 
@@ -476,15 +566,31 @@ export class SocialIntegrationController {
       };
 
       if (platform === 'facebook') {
-        // For Facebook, use the first page
-        const selectedPage = pages[0];
+        // For Facebook/Messenger, store all pages with their access tokens
+        // Each page access token can be used to send messages via Messenger API
+        const selectedPage = pages[0]; // Use first page as primary
         integrationData.facebookPageId = selectedPage.id;
+        
+        // Store all pages with their access tokens (matching Python reference)
+        const pagesData = pages.map(page => ({
+          page_id: page.id,
+          page_name: page.name,
+          access_token: page.access_token, // Page Access Token for Messenger API
+          category: page.category || ''
+        }));
+        
         integrationData.credentials = {
-          apiKey: accessToken,
+          apiKey: accessToken, // User Access Token (long-lived)
           clientId: metaAppId,
           facebookPageId: selectedPage.id,
-          pageAccessToken: selectedPage.access_token
+          pageAccessToken: selectedPage.access_token, // Primary page access token
+          pages: pagesData // All pages with access tokens
         };
+        
+        console.log('[Meta OAuth Callback] Facebook pages stored:', {
+          totalPages: pages.length,
+          pages: pagesData.map(p => ({ id: p.page_id, name: p.page_name }))
+        });
       } else if (platform === 'instagram') {
         // For Instagram, find page with Instagram account
         let instagramAccountId: string | null = null;
