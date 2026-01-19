@@ -31,6 +31,7 @@ import settingsRoutes from './routes/settings.routes';
 import apiKeysRoutes from './routes/apiKeys.routes';
 import googleIntegrationRoutes from './routes/googleIntegration.routes';
 import socialIntegrationRoutes from './routes/socialIntegration.routes';
+import metaRoutes from './routes/meta.routes';
 import dialog360WebhookRoutes from './routes/webhook.routes';
 import profileRoutes from './routes/profile.routes';
 import inboundAgentConfigRoutes from './routes/inboundAgentConfig.routes';
@@ -108,6 +109,10 @@ app.get('/api/v1/health', (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// Meta Public Routes (no authentication required)
+// These routes are required by Meta for compliance (e.g., User Data Deletion)
+app.use('/meta', metaRoutes);
 
 // API Routes
 app.use('/api/v1/auth', authRoutes);
