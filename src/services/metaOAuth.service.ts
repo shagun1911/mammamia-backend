@@ -282,6 +282,77 @@ export class MetaOAuthService {
   }
 
   /**
+   * Subscribe Page to webhooks for Messenger
+   * @param pageId - Facebook Page ID
+   * @param pageAccessToken - Page Access Token
+   * @returns Success status
+   */
+  async subscribePageToWebhooks(pageId: string, pageAccessToken: string): Promise<boolean> {
+    try {
+      const appId = this.appId;
+      const response = await axios.post(
+        `${this.baseUrl}/${pageId}/subscribed_apps`,
+        {
+          subscribed_fields: ['messages', 'messaging_postbacks', 'messaging_optins', 'messaging_referrals']
+        },
+        {
+          params: {
+            access_token: pageAccessToken
+          }
+        }
+      );
+
+      console.log(`[Meta OAuth] Page ${pageId} subscribed to webhooks:`, response.data);
+      return response.data.success === true;
+    } catch (error: any) {
+      console.error(`[Meta OAuth] Error subscribing page to webhooks:`, error.response?.data || error.message);
+      // Don't throw - webhook subscription might already be active
+      return false;
+    }
+  }
+
+  /**
+   * Send Messenger message via Graph API
+   * @param pageId - Facebook Page ID
+   * @param pageAccessToken - Page Access Token
+   * @param recipientId - Recipient PSID (Page-scoped ID)
+   * @param messageText - Message text to send
+   * @returns Message ID if successful
+   */
+  async sendMessengerMessage(
+    pageId: string,
+    pageAccessToken: string,
+    recipientId: string,
+    messageText: string
+  ): Promise<string | null> {
+    try {
+      const response = await axios.post(
+        `${this.baseUrl}/${pageId}/messages`,
+        {
+          recipient: { id: recipientId },
+          message: { text: messageText },
+          messaging_type: 'RESPONSE'
+        },
+        {
+          params: {
+            access_token: pageAccessToken
+          }
+        }
+      );
+
+      console.log(`[Meta Messenger] Message sent successfully:`, response.data);
+      return response.data.message_id || null;
+    } catch (error: any) {
+      console.error(`[Meta Messenger] Error sending message:`, error.response?.data || error.message);
+      throw new AppError(
+        400,
+        'MESSENGER_SEND_ERROR',
+        error.response?.data?.error?.message || 'Failed to send Messenger message'
+      );
+    }
+  }
+
+  /**
    * Verify access token
    */
   async verifyToken(accessToken: string): Promise<boolean> {

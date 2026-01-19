@@ -18,7 +18,12 @@ router.post('/messenger/webhook', metaWebhookController.handleMessenger.bind(met
 router.get('/instagram/webhook', (req, res) => metaWebhookController.verify(req, res, 'instagram'));
 router.post('/instagram/webhook', metaWebhookController.handleInstagram.bind(metaWebhookController));
 
-// OAuth callback - handle OAuth redirect (public - no auth required, Meta redirects here)
+// OAuth callback routes - MUST BE PUBLIC (Meta redirects here without JWT tokens)
+// These routes handle OAuth redirects from Meta and must remain public forever
+router.get('/facebook/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
+router.get('/whatsapp/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
+router.get('/instagram/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
+// Fallback for any other platform
 router.get('/:platform/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
 
 // All other routes require authentication
@@ -39,8 +44,9 @@ router.post('/:platform/connect', socialIntegrationController.connect.bind(socia
 // Test connection
 router.post('/:platform/test', socialIntegrationController.testConnection.bind(socialIntegrationController));
 
-// Disconnect integration
+// Disconnect integration (support both POST and DELETE methods for frontend compatibility)
 router.post('/:platform/disconnect', socialIntegrationController.disconnect.bind(socialIntegrationController));
+router.delete('/:platform/disconnect', socialIntegrationController.disconnect.bind(socialIntegrationController));
 
 // Delete integration
 router.delete('/:platform', socialIntegrationController.delete.bind(socialIntegrationController));

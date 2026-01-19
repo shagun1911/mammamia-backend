@@ -393,7 +393,17 @@ export class SocialIntegrationController {
   async oauthCallback(req: Request, res: Response, next: NextFunction) {
     try {
       const { code, state, error, error_reason, error_description, error_code, error_message } = req.query;
-      const { platform } = req.params;
+      
+      // Extract platform from URL params or from URL path
+      // Specific routes like /facebook/oauth/callback don't have :platform param
+      let platform = req.params.platform;
+      if (!platform) {
+        // Extract from URL path (e.g., /api/v1/social-integrations/facebook/oauth/callback)
+        const pathMatch = req.path.match(/\/(facebook|whatsapp|instagram)\/oauth\/callback/);
+        if (pathMatch) {
+          platform = pathMatch[1];
+        }
+      }
 
       // Check if this is a webhook verification request (Meta sometimes sends this to callback URLs)
       const hubMode = req.query['hub.mode'];
@@ -439,7 +449,10 @@ export class SocialIntegrationController {
       }
 
       console.log('\n========== META OAUTH CALLBACK ==========');
-      console.log('[Meta OAuth Callback] Platform:', platform);
+      console.log('[Meta OAuth Callback] Request method:', req.method);
+      console.log('[Meta OAuth Callback] Request path:', req.path);
+      console.log('[Meta OAuth Callback] URL params:', JSON.stringify(req.params, null, 2));
+      console.log('[Meta OAuth Callback] Platform (from URL):', platform || 'NOT FOUND');
       console.log('[Meta OAuth Callback] Full URL:', req.url);
       console.log('[Meta OAuth Callback] Query params:', JSON.stringify(req.query, null, 2));
       console.log('[Meta OAuth Callback] Has code:', !!code);
@@ -505,8 +518,23 @@ export class SocialIntegrationController {
       const stateData = JSON.parse(Buffer.from(state as string, 'base64').toString());
       const { organizationId, platform: statePlatform, redirectUrl } = stateData;
 
-      if (platform !== statePlatform) {
-        throw new AppError(400, 'INVALID_REQUEST', 'Platform mismatch');
+      // Use platform from state as source of truth (it's what was used to initiate OAuth)
+      // If platform from URL doesn't match, use state platform and log a warning
+      if (platform && platform !== statePlatform) {
+        console.warn('[Meta OAuth Callback] Platform mismatch detected:', {
+          urlPlatform: platform,
+          statePlatform: statePlatform,
+          url: req.path
+        });
+        // Use state platform as it's the source of truth
+        platform = statePlatform;
+      } else if (!platform && statePlatform) {
+        // If platform not in URL, use from state
+        platform = statePlatform;
+      }
+
+      if (!platform) {
+        throw new AppError(400, 'INVALID_REQUEST', 'Platform not found in URL or state');
       }
 
       // Validate environment variables (fail-fast)
@@ -591,6 +619,29 @@ export class SocialIntegrationController {
           totalPages: pages.length,
           pages: pagesData.map(p => ({ id: p.page_id, name: p.page_name }))
         });
+
+        // Automatically subscribe Page to webhooks for Messenger chatbot
+        try {
+          console.log('[Meta OAuth Callback] Subscribing Page to Messenger webhooks...');
+          const subscribed = await metaOAuth.subscribePageToWebhooks(selectedPage.id, selectedPage.access_token);
+          if (subscribed) {
+            console.log('[Meta OAuth Callback] ✅ Page subscribed to Messenger webhooks successfully');
+          } else {
+            console.warn('[Meta OAuth Callback] ⚠️  Page webhook subscription may have failed (might already be subscribed)');
+          }
+        } catch (error: any) {
+          console.error('[Meta OAuth Callback] ⚠️  Failed to subscribe Page to webhooks:', error.message);
+          // Don't throw - continue with integration even if webhook subscription fails
+        }
+
+        // Mark chatbot as enabled for this integration
+        integrationData.metadata = {
+          ...integrationData.metadata,
+          chatbotEnabled: true,
+          connectedAt: new Date().toISOString(),
+          userId: userId,
+          userName: userName
+        };
       } else if (platform === 'instagram') {
         // For Instagram, find page with Instagram account
         let instagramAccountId: string | null = null;

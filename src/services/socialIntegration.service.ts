@@ -2,6 +2,7 @@ import SocialIntegration, { ISocialIntegration } from '../models/SocialIntegrati
 import { Dialog360Service } from './dialog360.service';
 import { AppError } from '../middleware/error.middleware';
 import mongoose from 'mongoose';
+import axios from 'axios';
 
 export class SocialIntegrationService {
   /**
@@ -144,11 +145,61 @@ export class SocialIntegrationService {
 
   /**
    * Disconnect integration
+   * Marks integration as disconnected and optionally unsubscribes from webhooks
    */
   async disconnectIntegration(
     organizationId: string,
     platform: 'whatsapp' | 'instagram' | 'facebook'
   ): Promise<void> {
+    const integration = await SocialIntegration.findOne({
+      organizationId: new mongoose.Types.ObjectId(organizationId),
+      platform
+    });
+
+    if (!integration) {
+      console.log(`[Social Integration] No integration found to disconnect for ${platform}`);
+      return;
+    }
+
+    // For Facebook/Messenger, unsubscribe from webhooks if connected
+    if (platform === 'facebook' && integration.credentials?.facebookPageId && integration.credentials?.pageAccessToken) {
+      try {
+        const { MetaOAuthService } = await import('./metaOAuth.service');
+        const metaAppId = process.env.META_APP_ID || '';
+        const metaAppSecret = process.env.META_APP_SECRET || '';
+        const backendUrl = process.env.BACKEND_URL || '';
+        
+        const metaOAuth = new MetaOAuthService({
+          appId: metaAppId,
+          appSecret: metaAppSecret,
+          redirectUri: `${backendUrl}/api/v1/social-integrations/facebook/oauth/callback`
+        });
+
+        // Unsubscribe page from webhooks
+        const pageId = integration.credentials.facebookPageId;
+        const pageAccessToken = integration.credentials.pageAccessToken;
+        
+        try {
+          await axios.delete(
+            `https://graph.facebook.com/v18.0/${pageId}/subscribed_apps`,
+            {
+              params: {
+                access_token: pageAccessToken
+              }
+            }
+          );
+          console.log(`[Social Integration] ✅ Unsubscribed page ${pageId} from webhooks`);
+        } catch (error: any) {
+          console.warn(`[Social Integration] ⚠️  Failed to unsubscribe page from webhooks:`, error.response?.data || error.message);
+          // Continue with disconnection even if unsubscribe fails
+        }
+      } catch (error: any) {
+        console.warn(`[Social Integration] ⚠️  Error during webhook unsubscribe:`, error.message);
+        // Continue with disconnection
+      }
+    }
+
+    // Update integration status
     await SocialIntegration.findOneAndUpdate(
       {
         organizationId: new mongoose.Types.ObjectId(organizationId),
@@ -157,23 +208,66 @@ export class SocialIntegrationService {
       {
         $set: {
           status: 'disconnected',
-          webhookVerified: false
+          webhookVerified: false,
+          'metadata.chatbotEnabled': false // Disable chatbot
         }
       }
     );
+
+    console.log(`[Social Integration] ✅ ${platform} integration disconnected for organization ${organizationId}`);
   }
 
   /**
    * Delete integration
+   * Permanently removes the integration from the database
    */
   async deleteIntegration(
     organizationId: string,
     platform: 'whatsapp' | 'instagram' | 'facebook'
   ): Promise<void> {
+    const integration = await SocialIntegration.findOne({
+      organizationId: new mongoose.Types.ObjectId(organizationId),
+      platform
+    });
+
+    if (!integration) {
+      console.log(`[Social Integration] No integration found to delete for ${platform}`);
+      return;
+    }
+
+    // For Facebook/Messenger, unsubscribe from webhooks before deletion
+    if (platform === 'facebook' && integration.credentials?.facebookPageId && integration.credentials?.pageAccessToken) {
+      try {
+        const pageId = integration.credentials.facebookPageId;
+        const pageAccessToken = integration.credentials.pageAccessToken;
+        
+        try {
+          await axios.delete(
+            `https://graph.facebook.com/v18.0/${pageId}/subscribed_apps`,
+            {
+              params: {
+                access_token: pageAccessToken
+              }
+            }
+          );
+          console.log(`[Social Integration] ✅ Unsubscribed page ${pageId} from webhooks before deletion`);
+        } catch (error: any) {
+          console.warn(`[Social Integration] ⚠️  Failed to unsubscribe page from webhooks:`, error.response?.data || error.message);
+          // Continue with deletion even if unsubscribe fails
+        }
+      } catch (error: any) {
+        console.warn(`[Social Integration] ⚠️  Error during webhook unsubscribe:`, error.message);
+        // Continue with deletion
+      }
+    }
+
+    // Permanently delete the integration
     await SocialIntegration.findOneAndDelete({
       organizationId: new mongoose.Types.ObjectId(organizationId),
       platform
     });
+
+    console.log(`[Social Integration] ✅ ${platform} integration deleted for organization ${organizationId}`);
   }
 
   /**

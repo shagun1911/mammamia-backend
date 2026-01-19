@@ -253,10 +253,20 @@ export class MetaWebhookController {
    */
   private async handleMessengerEvent(messagingEvent: any, pageId: string) {
     try {
-      if (!messagingEvent.message) return;
+      // Skip delivery receipts, read receipts, and echoes (messages sent by the Page itself)
+      if (messagingEvent.delivery || messagingEvent.read || messagingEvent.message?.is_echo) {
+        console.log('[Messenger Webhook] Skipping delivery/read receipt or echo');
+        return;
+      }
+
+      // Only process text messages
+      if (!messagingEvent.message || !messagingEvent.message.text) {
+        console.log('[Messenger Webhook] Skipping non-text message');
+        return;
+      }
 
       const message = messagingEvent.message;
-      const from = messagingEvent.sender.id;
+      const from = messagingEvent.sender.id; // PSID (Page-scoped ID)
       const messageId = message.mid;
       const timestamp = new Date(messagingEvent.timestamp);
 
@@ -310,13 +320,8 @@ export class MetaWebhookController {
         });
       }
 
-      // Extract message content
-      let messageText = '';
-      if (message.text) {
-        messageText = message.text;
-      } else if (message.attachments) {
-        messageText = '[Attachment]';
-      }
+      // Extract message text (already validated above)
+      const messageText = message.text;
 
       // Save message
       await Message.create({
@@ -348,11 +353,24 @@ export class MetaWebhookController {
         }
       });
 
-      // Trigger AI reply if enabled
-      if (conversation.isAiManaging) {
-        this.triggerAIReply(conversation, messageText, integration.organizationId.toString(), from, 'messenger').catch(err => {
+      // Check if chatbot is enabled for this integration
+      const chatbotEnabled = integration.metadata?.chatbotEnabled === true;
+      
+      // Trigger AI reply if chatbot is enabled (automatically enabled after OAuth)
+      if (chatbotEnabled && conversation.isAiManaging) {
+        this.triggerAIReply(
+          conversation, 
+          messageText, 
+          integration.organizationId.toString(), 
+          from, 
+          'messenger',
+          pageId,
+          integration
+        ).catch(err => {
           console.error('[Messenger Webhook] AI auto-reply error:', err);
         });
+      } else if (!chatbotEnabled) {
+        console.log('[Messenger Webhook] Chatbot not enabled for this integration');
       }
     } catch (error) {
       console.error('[Messenger Webhook] Error handling event:', error);
@@ -525,7 +543,9 @@ export class MetaWebhookController {
     userMessage: string,
     organizationId: string,
     customerId: string,
-    platform: 'whatsapp' | 'messenger' | 'instagram'
+    platform: 'whatsapp' | 'messenger' | 'instagram',
+    pageId?: string,
+    integration?: any
   ) {
     try {
       const Organization = (await import('../models/Organization')).default;
@@ -581,12 +601,54 @@ export class MetaWebhookController {
           text: aiResponse
         });
       } else if (platform === 'messenger') {
-        const dialog360 = await socialIntegrationService.getDialog360Service(organizationId, 'facebook');
-        await dialog360.sendFacebookMessage({
-          to: customerId,
-          type: 'text',
-          text: aiResponse
+        // Use Graph API directly with Page Access Token for Messenger
+        if (!integration || !pageId) {
+          console.error('[Messenger AI] Missing integration or pageId for Messenger reply');
+          return;
+        }
+
+        // Get Page Access Token from integration
+        // Check multiple possible storage locations
+        let pageAccessToken = integration.credentials?.pageAccessToken;
+        
+        // If not found, check pages array
+        if (!pageAccessToken && integration.credentials?.pages) {
+          const page = integration.credentials.pages.find((p: any) => p.page_id === pageId);
+          pageAccessToken = page?.access_token;
+        }
+        
+        // If still not found, try to get from primary page
+        if (!pageAccessToken && integration.credentials?.pages?.[0]) {
+          pageAccessToken = integration.credentials.pages[0].access_token;
+        }
+        
+        if (!pageAccessToken) {
+          console.error('[Messenger AI] No Page Access Token found in integration for page:', pageId);
+          console.error('[Messenger AI] Integration credentials:', JSON.stringify(integration.credentials, null, 2));
+          return;
+        }
+
+        // Import MetaOAuthService to use sendMessengerMessage
+        const { MetaOAuthService } = await import('../services/metaOAuth.service');
+        const metaAppId = process.env.META_APP_ID || '';
+        const metaAppSecret = process.env.META_APP_SECRET || '';
+        const backendUrl = process.env.BACKEND_URL || '';
+        
+        const metaOAuth = new MetaOAuthService({
+          appId: metaAppId,
+          appSecret: metaAppSecret,
+          redirectUri: `${backendUrl}/api/v1/social-integrations/facebook/oauth/callback`
         });
+
+        // Send message via Messenger Graph API
+        const messageId = await metaOAuth.sendMessengerMessage(
+          pageId,
+          pageAccessToken,
+          customerId, // PSID
+          aiResponse
+        );
+
+        console.log(`[Messenger AI] ✅ Reply sent successfully. Message ID: ${messageId}`);
       } else if (platform === 'instagram') {
         // Use Graph API for Instagram
         const integration = await SocialIntegration.findOne({
