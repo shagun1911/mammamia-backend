@@ -19,6 +19,8 @@ export class SocialIntegrationService {
     facebookPageId?: string;
     credentials?: any; // For OAuth-based connections
     skipVerification?: boolean; // Skip verification for OAuth connections
+    metadata?: any; // Additional metadata (e.g., chatbotEnabled)
+    webhookVerified?: boolean; // Whether webhook is verified/subscribed
   }): Promise<ISocialIntegration> {
     try {
       // Only verify 360dialog for WhatsApp manual connections
@@ -38,6 +40,34 @@ export class SocialIntegrationService {
         }
       }
 
+      // Prepare update object
+      const updateData: any = {
+        credentials: data.credentials || {
+          apiKey: data.apiKey, // Will be encrypted by pre-save hook
+          clientId: data.clientId,
+          phoneNumberId: data.phoneNumberId,
+          wabaId: data.wabaId,
+          instagramAccountId: data.instagramAccountId,
+          facebookPageId: data.facebookPageId
+        },
+        status: 'connected',
+        lastSyncedAt: new Date(),
+        webhookVerified: data.webhookVerified !== undefined ? data.webhookVerified : false,
+        errorMessage: undefined
+      };
+
+      // Include metadata if provided (e.g., chatbotEnabled for Facebook)
+      // For OAuth connections, always use the provided metadata (fresh connection)
+      if (data.metadata) {
+        updateData.metadata = data.metadata;
+        console.log('[Social Integration Service] Setting metadata:', {
+          chatbotEnabled: updateData.metadata.chatbotEnabled,
+          hasUserId: !!updateData.metadata.userId,
+          hasUserName: !!updateData.metadata.userName,
+          connectedAt: updateData.metadata.connectedAt
+        });
+      }
+
       // Update or create integration
       const integration = await SocialIntegration.findOneAndUpdate(
         {
@@ -45,20 +75,7 @@ export class SocialIntegrationService {
           platform: data.platform
         },
         {
-          $set: {
-            credentials: data.credentials || {
-              apiKey: data.apiKey, // Will be encrypted by pre-save hook
-              clientId: data.clientId,
-              phoneNumberId: data.phoneNumberId,
-              wabaId: data.wabaId,
-              instagramAccountId: data.instagramAccountId,
-              facebookPageId: data.facebookPageId
-            },
-            status: 'connected',
-            lastSyncedAt: new Date(),
-            webhookVerified: false, // Will be set to true after webhook verification succeeds
-            errorMessage: undefined
-          }
+          $set: updateData
         },
         { upsert: true, new: true }
       );

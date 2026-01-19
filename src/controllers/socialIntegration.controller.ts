@@ -621,10 +621,12 @@ export class SocialIntegrationController {
         });
 
         // Automatically subscribe Page to webhooks for Messenger chatbot
+        let webhookSubscribed = false;
         try {
           console.log('[Meta OAuth Callback] Subscribing Page to Messenger webhooks...');
           const subscribed = await metaOAuth.subscribePageToWebhooks(selectedPage.id, selectedPage.access_token);
           if (subscribed) {
+            webhookSubscribed = true;
             console.log('[Meta OAuth Callback] ✅ Page subscribed to Messenger webhooks successfully');
           } else {
             console.warn('[Meta OAuth Callback] ⚠️  Page webhook subscription may have failed (might already be subscribed)');
@@ -642,6 +644,9 @@ export class SocialIntegrationController {
           userId: userId,
           userName: userName
         };
+        
+        // Set webhookVerified if subscription succeeded
+        integrationData.webhookVerified = webhookSubscribed;
       } else if (platform === 'instagram') {
         // For Instagram, find page with Instagram account
         let instagramAccountId: string | null = null;
@@ -711,10 +716,27 @@ export class SocialIntegrationController {
         };
       }
 
+      // Log integration data before saving
+      console.log('[Meta OAuth Callback] Saving integration with data:', {
+        platform: integrationData.platform,
+        hasMetadata: !!integrationData.metadata,
+        chatbotEnabled: integrationData.metadata?.chatbotEnabled,
+        webhookVerified: integrationData.webhookVerified,
+        hasCredentials: !!integrationData.credentials
+      });
+
       // Save integration - OAuth tokens are pre-verified by Meta, skip 360dialog verification
-      await socialIntegrationService.upsertIntegration({
+      const savedIntegration = await socialIntegrationService.upsertIntegration({
         ...integrationData,
         skipVerification: true // OAuth tokens are already verified by Meta
+      });
+
+      console.log('[Meta OAuth Callback] ✅ Integration saved:', {
+        id: savedIntegration._id,
+        platform: savedIntegration.platform,
+        status: savedIntegration.status,
+        chatbotEnabled: savedIntegration.metadata?.chatbotEnabled,
+        webhookVerified: savedIntegration.webhookVerified
       });
 
       // Redirect to frontend with success
