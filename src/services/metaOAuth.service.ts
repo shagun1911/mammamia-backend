@@ -52,12 +52,19 @@ export class MetaOAuthService {
     configId?: string,
     useBusinessLogin: boolean = false
   ): string {
+    // Get platform-specific scopes (explicit, no fallbacks)
     const scopes = this.getScopesForPlatform(platform);
+    const scopeString = scopes.join(',');
+
+    // Log scopes for debugging (helps detect wrong scopes immediately)
+    console.log('[Meta OAuth Initiate] Platform:', platform);
+    console.log('[Meta OAuth Initiate] Scopes:', scopeString);
+
     const params = new URLSearchParams({
       client_id: this.appId,
       redirect_uri: this.redirectUri,
       state,
-      scope: scopes.join(','),
+      scope: scopeString,
       response_type: 'code'
     });
 
@@ -72,41 +79,51 @@ export class MetaOAuthService {
   }
 
   /**
+   * Platform-specific OAuth scopes
+   * Single source of truth for all Meta OAuth scopes
+   * 
+   * IMPORTANT:
+   * - WhatsApp uses ONLY WhatsApp Business scopes (no Page/Messenger scopes)
+   * - Messenger uses ONLY Page/Messenger scopes (no WhatsApp scopes)
+   * - No scope bleeding between platforms
+   */
+  private static readonly META_OAUTH_SCOPES = {
+    facebook: [
+      'pages_show_list', // List user's pages
+      'pages_messaging', // Send and receive messages via Messenger
+      'pages_manage_metadata' // Get Page information
+    ],
+    whatsapp: [
+      'whatsapp_business_management', // WhatsApp Business API management
+      'whatsapp_business_messaging', // WhatsApp messaging
+      'business_management' // Required for Business Manager access
+    ],
+    instagram: [
+      'business_management', // Required for Business Manager access
+      'pages_show_list', // List user's pages
+      'pages_read_engagement', // Read page engagement
+      'instagram_basic', // Instagram basic access
+      'instagram_manage_messages' // Instagram messaging
+    ]
+  } as const;
+
+  /**
    * Get required scopes for each platform
+   * Uses platform-specific scope map to prevent scope bleeding
    */
   private getScopesForPlatform(platform: 'whatsapp' | 'instagram' | 'facebook'): string[] {
     switch (platform) {
       case 'whatsapp':
-        return [
-          'business_management', // Required for Business Manager access
-          'pages_show_list', // List user's pages
-          'pages_read_engagement', // Read page engagement
-          'whatsapp_business_management', // WhatsApp Business API management
-          'whatsapp_business_messaging' // WhatsApp messaging
-        ];
+        // WhatsApp: ONLY WhatsApp Business scopes (NO Page/Messenger scopes)
+        return [...MetaOAuthService.META_OAUTH_SCOPES.whatsapp];
       case 'instagram':
-        return [
-          'business_management', // Required for Business Manager access
-          'pages_show_list', // List user's pages
-          'pages_read_engagement', // Read page engagement
-          'instagram_basic', // Instagram basic access
-          'instagram_manage_messages' // Instagram messaging
-        ];
+        return [...MetaOAuthService.META_OAUTH_SCOPES.instagram];
       case 'facebook':
-        // Standard Messenger OAuth scopes (matching Python reference implementation)
-        // No business_management or other business scopes needed for Messenger
-        return [
-          'pages_show_list', // List user's pages
-          'pages_messaging', // Send and receive messages via Messenger
-          'pages_manage_metadata' // Get Page information
-        ];
+        // Messenger: ONLY Page/Messenger scopes (NO WhatsApp scopes)
+        return [...MetaOAuthService.META_OAUTH_SCOPES.facebook];
       default:
-        // Fallback to common scopes (should never reach here due to TypeScript typing)
-        return [
-          'business_management',
-          'pages_show_list',
-          'pages_read_engagement'
-        ];
+        // Fallback (should never reach here due to TypeScript typing)
+        throw new Error(`Unknown platform: ${platform}`);
     }
   }
 
@@ -214,7 +231,46 @@ export class MetaOAuthService {
   }
 
   /**
-   * Get WhatsApp Business Account ID from a page
+   * Get businesses that the user belongs to (WhatsApp-specific, no Page endpoints)
+   */
+  async getUserBusinesses(accessToken: string): Promise<Array<{ id: string; name: string }>> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/me/businesses`, {
+        params: {
+          access_token: accessToken,
+          fields: 'id,name'
+        }
+      });
+
+      return response.data.data || [];
+    } catch (error: any) {
+      console.error('[Meta OAuth] Error getting user businesses:', error.response?.data || error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get owned WhatsApp Business Accounts for a business (WhatsApp-specific, no Page endpoints)
+   */
+  async getOwnedWhatsAppBusinessAccounts(businessId: string, accessToken: string): Promise<Array<{ id: string; name: string }>> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/${businessId}/owned_whatsapp_business_accounts`, {
+        params: {
+          access_token: accessToken,
+          fields: 'id,name'
+        }
+      });
+
+      return response.data.data || [];
+    } catch (error: any) {
+      console.error('[Meta OAuth] Error getting owned WhatsApp Business Accounts:', error.response?.data || error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get WhatsApp Business Account ID from a page (DEPRECATED - Use getOwnedWhatsAppBusinessAccounts instead)
+   * @deprecated This method uses Page endpoints which require pages_read_engagement. Use getOwnedWhatsAppBusinessAccounts for WhatsApp OAuth.
    */
   async getWhatsAppBusinessAccountId(pageId: string, pageAccessToken: string): Promise<string | null> {
     try {

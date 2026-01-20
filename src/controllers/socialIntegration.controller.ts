@@ -611,13 +611,6 @@ export class SocialIntegrationController {
         hasEmail: !!userEmail
       });
 
-      // Get user's pages
-      const pages = await metaOAuth.getUserPages(accessToken);
-
-      if (pages.length === 0) {
-        throw new AppError(400, 'NO_PAGES', 'No Facebook Pages found. Please create a Facebook Page first.');
-      }
-
       // Platform-specific handling
       let integrationData: any = {
         organizationId,
@@ -626,7 +619,89 @@ export class SocialIntegrationController {
         clientId: metaAppId
       };
 
-      if (platform === 'facebook') {
+      if (platform === 'whatsapp') {
+        // WhatsApp OAuth: Use ONLY WhatsApp Business endpoints (NO Page endpoints)
+        // Flow: User → Businesses → WABAs → Phone Numbers
+        console.log('[WhatsApp OAuth] Starting WhatsApp Business Account discovery...');
+
+        // Step 1: Get businesses user belongs to
+        const businesses = await metaOAuth.getUserBusinesses(accessToken);
+        console.log('[WhatsApp OAuth] Businesses found:', businesses.length);
+
+        if (businesses.length === 0) {
+          throw new AppError(
+            400,
+            'NO_WHATSAPP_ACCOUNT',
+            'No WhatsApp Business Account accessible via API. Ensure the WhatsApp account is owned by a Meta Business and the user has admin access.'
+          );
+        }
+
+        // Step 2: Get owned WhatsApp Business Accounts for each business
+        let wabaId: string | null = null;
+        let wabaName: string | null = null;
+
+        for (const business of businesses) {
+          const wabas = await metaOAuth.getOwnedWhatsAppBusinessAccounts(business.id, accessToken);
+          console.log(`[WhatsApp OAuth] Business ${business.name} (${business.id}) - WABAs found:`, wabas.length);
+
+          if (wabas.length > 0) {
+            // Use first WABA found
+            wabaId = wabas[0].id;
+            wabaName = wabas[0].name;
+            console.log('[WhatsApp OAuth] Using WABA:', { id: wabaId, name: wabaName });
+            break;
+          }
+        }
+
+        if (!wabaId) {
+          console.log('[WhatsApp OAuth] No WABAs found in any business');
+          throw new AppError(
+            400,
+            'NO_WHATSAPP_ACCOUNT',
+            'No WhatsApp Business Account accessible via API. Ensure the WhatsApp account is owned by a Meta Business and the user has admin access.'
+          );
+        }
+
+        // Step 3: Get phone numbers for the WABA
+        const phoneNumberId = await metaOAuth.getWhatsAppPhoneNumberId(wabaId, accessToken);
+        console.log('[WhatsApp OAuth] Phone numbers found:', phoneNumberId ? 1 : 0);
+
+        if (!phoneNumberId) {
+          console.warn('[WhatsApp OAuth] WABA found but no phone numbers available');
+          // Continue anyway - phone number might be added later
+        }
+
+        // Store WhatsApp-specific data (NO Page data)
+        integrationData.wabaId = wabaId;
+        integrationData.phoneNumberId = phoneNumberId;
+        integrationData.credentials = {
+          apiKey: accessToken, // User Access Token (long-lived)
+          clientId: metaAppId,
+          phoneNumberId: phoneNumberId || undefined,
+          wabaId: wabaId
+          // DO NOT store facebookPageId or pageAccessToken for WhatsApp
+        };
+
+        integrationData.metadata = {
+          ...integrationData.metadata,
+          userId: userId,
+          userName: userName,
+          connectedAt: new Date().toISOString()
+        };
+
+        console.log('[WhatsApp OAuth] ✅ WhatsApp integration data prepared:', {
+          wabaId,
+          wabaName,
+          hasPhoneNumberId: !!phoneNumberId,
+          credentialsKeys: Object.keys(integrationData.credentials)
+        });
+      } else if (platform === 'facebook') {
+        // For Facebook/Messenger, get pages (requires pages_read_engagement)
+        const pages = await metaOAuth.getUserPages(accessToken);
+
+        if (pages.length === 0) {
+          throw new AppError(400, 'NO_PAGES', 'No Facebook Pages found. Please create a Facebook Page first.');
+        }
         // For Facebook/Messenger, store primary page access token
         // Webhook will use credentials.pageAccessToken and credentials.facebookPageId
         const selectedPage = pages[0]; // Use first page as primary
@@ -681,6 +756,13 @@ export class SocialIntegrationController {
         // Set webhookVerified if subscription succeeded
         integrationData.webhookVerified = webhookSubscribed;
       } else if (platform === 'instagram') {
+        // For Instagram, get pages (requires pages_read_engagement)
+        const pages = await metaOAuth.getUserPages(accessToken);
+
+        if (pages.length === 0) {
+          throw new AppError(400, 'NO_PAGES', 'No Facebook Pages found. Please create a Facebook Page first.');
+        }
+
         // For Instagram, find page with Instagram account
         let instagramAccountId: string | null = null;
         let selectedPage = pages[0];
@@ -708,42 +790,6 @@ export class SocialIntegrationController {
           apiKey: accessToken,
           clientId: metaAppId,
           instagramAccountId,
-          facebookPageId: selectedPage.id,
-          pageAccessToken: selectedPage.access_token
-        };
-      } else if (platform === 'whatsapp') {
-        // For WhatsApp, find page with WhatsApp Business Account
-        let wabaId: string | null = null;
-        let phoneNumberId: string | null = null;
-        let selectedPage = pages[0];
-
-        for (const page of pages) {
-          const waba = await metaOAuth.getWhatsAppBusinessAccountId(page.id, page.access_token);
-          if (waba) {
-            wabaId = waba;
-            selectedPage = page;
-            // Get phone number ID
-            phoneNumberId = await metaOAuth.getWhatsAppPhoneNumberId(waba, accessToken);
-            break;
-          }
-        }
-
-        if (!wabaId) {
-          throw new AppError(
-            400,
-            'NO_WHATSAPP_ACCOUNT',
-            'No WhatsApp Business Account found. Please set up WhatsApp Business API in Meta Business Manager.'
-          );
-        }
-
-        integrationData.wabaId = wabaId;
-        integrationData.phoneNumberId = phoneNumberId;
-        integrationData.facebookPageId = selectedPage.id;
-        integrationData.credentials = {
-          apiKey: accessToken,
-          clientId: metaAppId,
-          phoneNumberId,
-          wabaId,
           facebookPageId: selectedPage.id,
           pageAccessToken: selectedPage.access_token
         };
