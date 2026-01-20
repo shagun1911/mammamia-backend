@@ -70,6 +70,13 @@ export class GoogleIntegrationController {
         scopes.push('https://www.googleapis.com/auth/calendar.events');
       }
 
+      // Gmail scopes (for sending emails and reading)
+      if (!services || services.includes('gmail')) {
+        scopes.push('https://www.googleapis.com/auth/gmail.send');
+        scopes.push('https://www.googleapis.com/auth/gmail.modify');
+        scopes.push('https://www.googleapis.com/auth/gmail.readonly');
+      }
+
       // Remove duplicates
       const uniqueScopes = [...new Set(scopes)];
       
@@ -224,7 +231,8 @@ export class GoogleIntegrationController {
           services: {
             sheets: services.includes('sheets'),
             drive: services.includes('drive'),
-            calendar: services.includes('calendar')
+            calendar: services.includes('calendar'),
+            gmail: services.includes('gmail')
           },
           googleProfile: {
             email: userInfo.data.email!,

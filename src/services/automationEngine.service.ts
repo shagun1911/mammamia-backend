@@ -4,11 +4,16 @@ import Customer from '../models/Customer';
 import ContactListMember from '../models/ContactListMember';
 import Campaign from '../models/Campaign';
 import PhoneSettings from '../models/PhoneSettings';
+import Organization from '../models/Organization';
 import { WhatsAppService } from './whatsapp.service';
 import { AppError } from '../middleware/error.middleware';
 import axios from 'axios';
 import { trackUsage } from '../middleware/profileTracking.middleware';
 import { profileService } from './profile.service';
+import { googleCalendarService } from './googleCalendar.service';
+import { googleSheetsService } from './googleSheets.service';
+import { googleGmailService } from './googleGmail.service';
+import GoogleIntegration from '../models/GoogleIntegration';
 
 const COMM_API = process.env.COMM_API_URL || 'https://keplerov1-python-2.onrender.com';
 
@@ -482,42 +487,100 @@ export class AutomationEngine {
     this.actions.set('keplero_send_email', {
       execute: async (config, triggerData, context) => {
         const contactId = triggerData.contactId || config.contactId;
-        const { subject, body, template, is_html } = config;
+        const { subject, body, template, is_html, to } = config;
 
-        if (!contactId) {
-          throw new Error('Contact ID is required for email');
+        // Resolve recipient email - support dynamic variables
+        let recipientEmail: string | null = null;
+
+        // If 'to' is provided in config, use it (may contain variables)
+        if (to) {
+          // Simple variable replacement: {{contact.email}}, {{contact.name}}, etc.
+          let resolvedTo = to;
+          if (contactId) {
+            const contact = await Customer.findById(contactId);
+            if (contact) {
+              resolvedTo = resolvedTo
+                .replace(/\{\{contact\.email\}\}/g, contact.email || '')
+                .replace(/\{\{contact\.name\}\}/g, contact.name || '')
+                .replace(/\{\{contact\.phone\}\}/g, contact.phone || '');
+            }
+          }
+          // Replace {{now}} with current date/time
+          resolvedTo = resolvedTo.replace(/\{\{now\}\}/g, new Date().toISOString());
+          
+          if (resolvedTo.trim()) {
+            recipientEmail = resolvedTo.trim();
+          }
         }
 
-        const contact = await Customer.findById(contactId);
-        if (!contact || !contact.email) {
-          throw new Error('Contact not found or email missing');
+        // Fallback to contact email if 'to' not provided or resolved to empty
+        if (!recipientEmail && contactId) {
+          const contact = await Customer.findById(contactId);
+          if (!contact) {
+            throw new Error('Contact not found');
+          }
+          if (!contact.email) {
+            throw new Error('Contact email missing. Please provide email address in "to" field or ensure contact has email.');
+          }
+          recipientEmail = contact.email;
         }
+
+        if (!recipientEmail || recipientEmail.trim() === '') {
+          throw new Error('Email action not configured correctly. Recipient email is required.');
+        }
+
+        // Validate subject and body
+        const emailSubject = subject || 'Notification';
+        const emailBody = body || template || '';
+
+        if (!emailSubject.trim()) {
+          throw new Error('Email action not configured correctly. Subject is required.');
+        }
+
+        if (!emailBody.trim()) {
+          throw new Error('Email action not configured correctly. Body is required.');
+        }
+
+        // Debug logging
+        console.log('[Automation] Email action payload:', {
+          to: recipientEmail,
+          subject: emailSubject,
+          bodyLength: emailBody.length,
+          isHtml: is_html || false,
+          contactId: contactId?.toString(),
+          organizationId: context?.organizationId?.toString(),
+          userId: context?.userId?.toString()
+        });
 
         // Use external API for email sending (same as campaign service)
         try {
-          console.log(`[Automation] Sending email to ${contact.email}...`);
+          console.log(`[Automation] Sending email to ${recipientEmail}...`);
           const emailResponse = await axios.post(`${COMM_API}/email/send`, {
-            receiver_email: contact.email,
-            subject: subject || 'Notification',
-            body: body || template || '',
+            receiver_email: recipientEmail,
+            subject: emailSubject,
+            body: emailBody,
             is_html: is_html || false,
           }, {
             timeout: 30000, // 30 seconds timeout
           });
 
           const success = emailResponse.data.status === 'success';
-          console.log(`[Automation] Email to ${contact.email} ${success ? 'sent successfully' : 'failed'}`);
+          console.log(`[Automation] Email to ${recipientEmail} ${success ? 'sent successfully' : 'failed'}`);
 
           return {
             success,
-            contactId: contact._id,
-            email: contact.email,
-            subject: subject || 'Notification',
+            contactId: contactId?.toString(),
+            email: recipientEmail,
+            subject: emailSubject,
             messageId: emailResponse.data.messageId,
             sentAt: new Date()
           };
         } catch (error: any) {
-          console.error(`[Automation] Email to ${contact.email} failed:`, error.response?.data?.detail || error.message);
+          console.error(`[Automation] Email to ${recipientEmail} failed:`, {
+            error: error.response?.data?.detail || error.message,
+            statusCode: error.response?.status,
+            recipientEmail
+          });
           throw new Error(`Email sending failed: ${error.response?.data?.detail || error.message}`);
         }
       }
@@ -619,17 +682,429 @@ export class AutomationEngine {
         return { added: true, listId: config.listId };
       }
     });
+
+    // ============ GOOGLE WORKSPACE ACTIONS (ADDITIVE ONLY) ============
+    
+    // Google Calendar - Check Availability
+    this.actions.set('keplero_google_calendar_check_availability', {
+      execute: async (config, triggerData, context) => {
+        const organizationId = context?.organizationId || triggerData?.organizationId;
+        let userId = context?.userId;
+        
+        // Resolve userId if missing
+        if (!userId && organizationId) {
+          userId = await this.resolveUserId(organizationId, context);
+        }
+        
+        if (!organizationId || !userId) {
+          throw new Error('Organization ID and User ID are required for Google Calendar actions');
+        }
+
+        // Check if Google Calendar is connected
+        const integration = await GoogleIntegration.findOne({
+          userId,
+          organizationId,
+          status: 'active',
+          'services.calendar': true
+        });
+
+        if (!integration) {
+          throw new Error('Google Calendar integration not connected. Please connect Google Workspace in Settings.');
+        }
+
+        const { timeMin, timeMax, calendarIds } = config;
+        if (!timeMin || !timeMax) {
+          throw new Error('timeMin and timeMax are required for availability check');
+        }
+
+        try {
+          const availability = await googleCalendarService.checkAvailability(
+            userId.toString(),
+            organizationId.toString(),
+            new Date(timeMin),
+            new Date(timeMax),
+            calendarIds || ['primary']
+          );
+
+          return {
+            success: true,
+            availability,
+            checkedAt: new Date()
+          };
+        } catch (error: any) {
+          console.error('[Automation] Google Calendar availability check failed:', error);
+          throw new Error(`Google Calendar availability check failed: ${error.message}`);
+        }
+      }
+    });
+
+    // Google Calendar - Create Event
+    this.actions.set('keplero_google_calendar_create_event', {
+      execute: async (config, triggerData, context) => {
+        const organizationId = context?.organizationId || triggerData?.organizationId;
+        let userId = context?.userId;
+        
+        // Resolve userId if missing
+        if (!userId && organizationId) {
+          userId = await this.resolveUserId(organizationId, context);
+        }
+        
+        if (!organizationId || !userId) {
+          throw new Error('Organization ID and User ID are required for Google Calendar actions');
+        }
+
+        // Check if Google Calendar is connected
+        const integration = await GoogleIntegration.findOne({
+          userId,
+          organizationId,
+          status: 'active',
+          'services.calendar': true
+        });
+
+        if (!integration) {
+          throw new Error('Google Calendar integration not connected. Please connect Google Workspace in Settings.');
+        }
+
+        const { summary, description, startDateTime, endDateTime, timeZone, attendees, location } = config;
+        
+        if (!summary || !startDateTime || !endDateTime) {
+          throw new Error('summary, startDateTime, and endDateTime are required for calendar event');
+        }
+
+        try {
+          const event = await googleCalendarService.createEvent(
+            userId.toString(),
+            organizationId.toString(),
+            {
+              summary,
+              description,
+              start: {
+                dateTime: startDateTime,
+                timeZone: timeZone || 'UTC'
+              },
+              end: {
+                dateTime: endDateTime,
+                timeZone: timeZone || 'UTC'
+              },
+              attendees: attendees || [],
+              location
+            },
+            config.calendarId || 'primary'
+          );
+
+          return {
+            success: true,
+            eventId: event.eventId,
+            htmlLink: event.htmlLink,
+            hangoutLink: event.hangoutLink,
+            createdAt: new Date()
+          };
+        } catch (error: any) {
+          console.error('[Automation] Google Calendar event creation failed:', error);
+          throw new Error(`Google Calendar event creation failed: ${error.message}`);
+        }
+      }
+    });
+
+    // Google Sheets - Append Row
+    this.actions.set('keplero_google_sheet_append_row', {
+      execute: async (config, triggerData, context) => {
+        const organizationId = context?.organizationId || triggerData?.organizationId;
+        let userId = context?.userId;
+        
+        // Resolve userId if missing
+        if (!userId && organizationId) {
+          userId = await this.resolveUserId(organizationId, context);
+        }
+        
+        if (!organizationId || !userId) {
+          throw new Error('Organization ID and User ID are required for Google Sheets actions');
+        }
+
+        // STRICT VALIDATION: Check config before attempting API call
+        const { spreadsheetId, range, sheetName, values } = config;
+        
+        // Debug log for troubleshooting
+        console.log('[Automation] Google Sheets config:', {
+          spreadsheetId: spreadsheetId || 'MISSING',
+          valuesLength: values?.length || 0,
+          hasSpreadsheetId: !!spreadsheetId,
+          hasValues: !!(values && Array.isArray(values) && values.length > 0),
+          range,
+          sheetName,
+          organizationId: organizationId?.toString(),
+          userId: userId?.toString()
+        });
+
+        // Validate required fields
+        if (!spreadsheetId || typeof spreadsheetId !== 'string' || spreadsheetId.trim() === '') {
+          throw new Error('Google Sheet action not configured. Please select a spreadsheet and map fields.');
+        }
+
+        if (!values || !Array.isArray(values) || values.length === 0) {
+          throw new Error('Google Sheet action not configured. Please select a spreadsheet and map fields.');
+        }
+
+        // Check if Google Sheets is connected
+        const integration = await GoogleIntegration.findOne({
+          userId,
+          organizationId,
+          status: 'active',
+          'services.sheets': true
+        });
+
+        if (!integration) {
+          throw new Error('Google Sheets integration not connected. Please connect Google Workspace in Settings.');
+        }
+
+        try {
+          const google = require('googleapis').google;
+          const oauth2Client = new google.auth.OAuth2(
+            process.env.GOOGLE_CLIENT_ID,
+            process.env.GOOGLE_CLIENT_SECRET,
+            process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5001/api/v1/integrations/google/callback'
+          );
+
+          oauth2Client.setCredentials({
+            access_token: integration.accessToken,
+            refresh_token: integration.refreshToken
+          });
+
+          const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
+
+          // Build range for append operation
+          // Google Sheets append API REQUIRES: column range format like "Sheet1!A:Z"
+          // NOT "Sheet1" (invalid), NOT "Sheet1!A1" (single cell), NOT "Sheet1!A:A" (single column)
+          // ✅ CORRECT: "Sheet1!A:Z" - defines columns A through Z, Google finds next empty row
+          
+          // Determine sheet name: prefer from range, then from sheetName config, then default
+          let sheet: string;
+          
+          if (range && range.includes('!')) {
+            // Extract sheet name from range (e.g., "Sheet1" from "Sheet1!A1")
+            const parts = range.split('!');
+            sheet = parts[0];
+          } else {
+            // Use sheetName from config or default
+            sheet = sheetName || 'Sheet1';
+          }
+          
+          // ✅ ALWAYS use column range format: Sheet1!A:Z
+          // This is the industry standard (Zapier, Make, n8n all use A:Z)
+          // Google Sheets append API will find the next empty row automatically
+          const appendRange = `${sheet}!A:Z`;
+
+          console.log('[Automation] Appending to Google Sheet:', {
+            spreadsheetId: spreadsheetId.substring(0, 20) + '...',
+            range: appendRange,
+            sheetName: sheetName || 'Sheet1',
+            valuesCount: values.length,
+            valuesPreview: values.slice(0, 3)
+          });
+
+          const response = await sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range: appendRange,
+            valueInputOption: 'USER_ENTERED',
+            requestBody: {
+              values: [values]
+            }
+          });
+
+          console.log('[Automation] ✅ Google Sheets append successful:', {
+            updatedRange: response.data.updates?.updatedRange,
+            updatedRows: response.data.updates?.updatedRows
+          });
+
+          return {
+            success: true,
+            updatedRange: response.data.updates?.updatedRange,
+            updatedRows: response.data.updates?.updatedRows || 1,
+            appendedAt: new Date()
+          };
+        } catch (error: any) {
+          console.error('[Automation] Google Sheets append failed:', {
+            error: error.message,
+            spreadsheetId: spreadsheetId?.substring(0, 20),
+            valuesCount: values?.length
+          });
+          throw new Error(`Google Sheets append failed: ${error.message}`);
+        }
+      }
+    });
+
+    // Google Gmail - Send Email
+    this.actions.set('keplero_google_gmail_send', {
+      execute: async (config, triggerData, context) => {
+        const organizationId = context?.organizationId || triggerData?.organizationId;
+        let userId = context?.userId;
+        
+        // Resolve userId if missing
+        if (!userId && organizationId) {
+          userId = await this.resolveUserId(organizationId, context);
+        }
+        
+        if (!organizationId || !userId) {
+          throw new Error('Organization ID and User ID are required for Gmail actions');
+        }
+
+        // Check if Gmail is connected
+        const integration = await GoogleIntegration.findOne({
+          userId,
+          organizationId,
+          status: 'active',
+          'services.gmail': true
+        });
+
+        if (!integration) {
+          throw new Error('Google Gmail integration not connected. Please connect Google Workspace in Settings.');
+        }
+
+        const contactId = triggerData.contactId || config.contactId;
+        const { to, subject, body, isHtml, cc, bcc, replyTo } = config;
+
+        // Get recipient email
+        let recipientEmail = to;
+        if (!recipientEmail && contactId) {
+          const contact = await Customer.findById(contactId);
+          if (!contact || !contact.email) {
+            throw new Error('Contact not found or email missing');
+          }
+          recipientEmail = contact.email;
+        }
+
+        if (!recipientEmail) {
+          throw new Error('Recipient email is required');
+        }
+
+        if (!subject || !body) {
+          throw new Error('Subject and body are required for Gmail');
+        }
+
+        try {
+          const result = await googleGmailService.sendEmail(
+            userId.toString(),
+            organizationId.toString(),
+            {
+              to: recipientEmail,
+              subject,
+              body,
+              isHtml: isHtml || false,
+              cc,
+              bcc,
+              replyTo
+            }
+          );
+
+          console.log(`[Automation] Gmail sent to ${recipientEmail} successfully`);
+
+          return {
+            success: true,
+            messageId: result.messageId,
+            threadId: result.threadId,
+            to: recipientEmail,
+            subject,
+            sentAt: new Date()
+          };
+        } catch (error: any) {
+          console.error(`[Automation] Gmail send to ${recipientEmail} failed:`, error);
+          throw new Error(`Gmail send failed: ${error.message}`);
+        }
+      }
+    });
+  }
+
+  /**
+   * Resolve userId from organizationId if not provided in context
+   * Google integrations are user-scoped, so we need the organization owner's userId
+   */
+  private async resolveUserId(organizationId: any, context?: any): Promise<string | null> {
+    // If userId is already in context, use it
+    if (context?.userId) {
+      return context.userId.toString();
+    }
+
+    // If automation has userId, use it
+    if (context?.automation?.userId) {
+      return context.automation.userId.toString();
+    }
+
+    // Resolve from organization ownerId
+    if (organizationId) {
+      try {
+        const org = await Organization.findById(organizationId);
+        if (org?.ownerId) {
+          return org.ownerId.toString();
+        }
+      } catch (error) {
+        console.error('[Automation Engine] Error resolving userId from organization:', error);
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Convert Mongoose Map to plain object
+   * CRITICAL: Mongoose stores config as Map, but we need plain object for execution
+   */
+  private convertConfigToPlainObject(config: any): Record<string, any> {
+    if (!config) return {};
+    
+    // If it's already a plain object, return as is
+    if (config.constructor === Object) {
+      return config;
+    }
+    
+    // If it's a Mongoose Map, convert to plain object
+    if (config instanceof Map) {
+      const plainObj: Record<string, any> = {};
+      config.forEach((value, key) => {
+        plainObj[key] = value;
+      });
+      return plainObj;
+    }
+    
+    // Try to convert using Object.fromEntries if available
+    if (typeof config.toObject === 'function') {
+      return config.toObject();
+    }
+    
+    // Fallback: return as is
+    return config;
   }
 
   async executeAutomation(automationId: string, triggerData: any, context?: any) {
-    const automation = await Automation.findById(automationId);
+    // CRITICAL: Always fetch fresh from database (no cache)
+    // Use lean() to get plain JavaScript objects, not Mongoose documents
+    const automation = await Automation.findById(automationId).lean();
 
     if (!automation || !automation.isActive) {
       throw new AppError(400, 'VALIDATION_ERROR', 'Automation not found or inactive');
     }
 
+    // Resolve organizationId and userId
+    const organizationId = context?.organizationId || triggerData?.organizationId || automation.organizationId;
+    
+    // Resolve userId if missing (needed for Google integrations)
+    let userId = context?.userId;
+    if (!userId && organizationId) {
+      // Need to fetch automation document for resolveUserId if needed
+      const automationDoc = await Automation.findById(automationId);
+      userId = await this.resolveUserId(organizationId, { ...context, automation: automationDoc });
+    }
+
+    // Update context with resolved values
+    const enrichedContext = {
+      ...context,
+      organizationId: organizationId?.toString(),
+      userId: userId?.toString(),
+      automation
+    };
+
     console.log(`[Automation Engine] Executing automation: ${automation.name} (${automationId})`, {
-      organizationId: context?.organizationId || automation.organizationId,
+      organizationId: enrichedContext.organizationId,
+      userId: enrichedContext.userId,
       nodeCount: automation.nodes.length
     });
 
@@ -641,7 +1116,7 @@ export class AutomationEngine {
 
     try {
       // Sort nodes by position
-      const sortedNodes = automation.nodes.sort((a, b) => a.position - b.position);
+      const sortedNodes = [...automation.nodes].sort((a, b) => a.position - b.position);
 
       // Get trigger node
       const triggerNode = sortedNodes.find(n => n.type === 'trigger');
@@ -649,13 +1124,16 @@ export class AutomationEngine {
         throw new Error('No trigger node found');
       }
 
+      // CRITICAL: Convert trigger config from Map to plain object
+      const triggerConfig = this.convertConfigToPlainObject(triggerNode.config);
+      
       // Validate trigger
       const triggerHandler = this.triggers.get(triggerNode.service);
       if (!triggerHandler) {
         throw new Error(`Trigger handler not found: ${triggerNode.service}`);
       }
 
-      const isValid = await triggerHandler.validate(triggerNode.config, triggerData);
+      const isValid = await triggerHandler.validate(triggerConfig, triggerData);
       if (!isValid) {
         execution.status = 'failed';
         execution.errorMessage = 'Trigger validation failed';
@@ -667,8 +1145,25 @@ export class AutomationEngine {
 
       // Execute delay nodes and action nodes in sequence
       for (const node of sortedNodes) {
+        // CRITICAL: Convert node.config from Map to plain object BEFORE using it
+        const nodeConfig = this.convertConfigToPlainObject(node.config);
+        
+        // Log config for debugging (especially for Google Sheets)
+        if (node.service === 'keplero_google_sheet_append_row') {
+          console.log(`[Automation Engine] 📋 Node config for ${node.service} (${node.id}):`, {
+            spreadsheetId: nodeConfig.spreadsheetId || 'MISSING',
+            sheetName: nodeConfig.sheetName,
+            valuesLength: nodeConfig.values?.length || 0,
+            values: nodeConfig.values,
+            configKeys: Object.keys(nodeConfig),
+            configType: typeof nodeConfig,
+            isMap: nodeConfig instanceof Map,
+            isPlainObject: nodeConfig.constructor === Object
+          });
+        }
+        
         if (node.type === 'delay') {
-          await this.delay(node.config.delay, node.config.delayUnit);
+          await this.delay(nodeConfig.delay, nodeConfig.delayUnit);
         } else if (node.type === 'action') {
           const actionHandler = this.actions.get(node.service);
           if (!actionHandler) {
@@ -677,7 +1172,8 @@ export class AutomationEngine {
 
           console.log(`[Automation Engine] Executing action: ${node.service} (nodeId: ${node.id})`);
           try {
-            const actionResult = await actionHandler.execute(node.config, triggerData, context);
+            // CRITICAL: Pass converted plain object config, not Mongoose Map
+            const actionResult = await actionHandler.execute(nodeConfig, triggerData, enrichedContext);
             console.log(`[Automation Engine] ✅ Action ${node.service} completed:`, {
               success: actionResult?.success !== false,
               result: actionResult
@@ -707,10 +1203,11 @@ export class AutomationEngine {
       execution.actionData = actionResults;
       await execution.save();
 
-      // Update automation stats
-      automation.executionCount += 1;
-      automation.lastExecutedAt = new Date();
-      await automation.save();
+      // Update automation stats (fetch fresh document for update)
+      await Automation.findByIdAndUpdate(automationId, {
+        $inc: { executionCount: 1 },
+        lastExecutedAt: new Date()
+      });
 
       return {
         success: true,
@@ -743,8 +1240,9 @@ export class AutomationEngine {
       eventDataKeys: Object.keys(eventData || {})
     });
     
-    // Find all active automations matching the organization
-    const automations = await Automation.find(query);
+    // CRITICAL: Always fetch fresh from database (no cache)
+    // Use lean() to get plain JavaScript objects, not Mongoose documents
+    const automations = await Automation.find(query).lean();
     
     console.log(`[Automation Engine] Found ${automations.length} active automation(s) for organization ${organizationId}`);
 
@@ -755,12 +1253,15 @@ export class AutomationEngine {
       
       if (!triggerNode) continue;
 
+      // CRITICAL: Convert trigger config from Map to plain object
+      const triggerConfig = this.convertConfigToPlainObject(triggerNode.config);
+
       // Check if trigger matches the event
       const triggerHandler = this.triggers.get(triggerNode.service);
       if (!triggerHandler) continue;
 
       try {
-        const isValid = await triggerHandler.validate(triggerNode.config, eventData);
+        const isValid = await triggerHandler.validate(triggerConfig, eventData);
         
         if (isValid) {
           const automationId = (automation._id as any).toString();
@@ -793,6 +1294,7 @@ export class AutomationEngine {
 
   private delay(amount: number, unit: string): Promise<void> {
     const multipliers: Record<string, number> = {
+      seconds: 1000,
       minutes: 60 * 1000,
       hours: 60 * 60 * 1000,
       days: 24 * 60 * 60 * 1000

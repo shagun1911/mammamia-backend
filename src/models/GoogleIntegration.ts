@@ -15,6 +15,7 @@ export interface IGoogleIntegration extends Document {
     sheets: boolean;
     drive: boolean;
     calendar: boolean;
+    gmail: boolean;
   };
   
   // User profile info from Google
@@ -78,6 +79,10 @@ const GoogleIntegrationSchema = new Schema<IGoogleIntegration>({
       default: false
     },
     calendar: {
+      type: Boolean,
+      default: false
+    },
+    gmail: {
       type: Boolean,
       default: false
     }

@@ -169,6 +169,7 @@ export class ContactService {
 
     // Trigger automation for contact created (non-blocking)
     // Pass context with organizationId so automations can filter correctly
+    // Note: userId will be resolved from organization ownerId in executeAutomation if not provided
     automationEngine.triggerByEvent('keplero_contact_created', {
       event: 'contact_created',
       contactId: contact._id,
@@ -180,8 +181,8 @@ export class ContactService {
         tags: contact.tags
       }
     }, {
-      userId: (contact as any).userId, // If available
       organizationId: organizationId
+      // userId will be resolved from organization ownerId if needed
     }).catch(err => console.error('Automation trigger error:', err));
 
     return contact;
