@@ -41,15 +41,41 @@ export class SocialIntegrationService {
       }
 
       // Prepare update object
-      const updateData: any = {
-        credentials: data.credentials || {
+      // If credentials are provided, use them directly (preserves all fields like pageAccessToken)
+      // Otherwise, build from individual fields
+      let credentials: any;
+      if (data.credentials) {
+        // Use provided credentials directly (preserves pageAccessToken, pages, etc.)
+        credentials = { ...data.credentials }; // Create a copy to avoid mutation
+        // Ensure apiKey is set (will be encrypted by pre-save hook)
+        if (!credentials.apiKey && data.apiKey) {
+          credentials.apiKey = data.apiKey;
+        }
+        
+        // Log credentials structure for debugging (mask sensitive data)
+        console.log('[Social Integration Service] Using provided credentials:', {
+          hasApiKey: !!credentials.apiKey,
+          hasClientId: !!credentials.clientId,
+          hasFacebookPageId: !!credentials.facebookPageId,
+          hasPageAccessToken: !!credentials.pageAccessToken,
+          hasPhoneNumberId: !!credentials.phoneNumberId,
+          hasWabaId: !!credentials.wabaId,
+          hasInstagramAccountId: !!credentials.instagramAccountId
+        });
+      } else {
+        // Build credentials from individual fields (fallback for manual connections)
+        credentials = {
           apiKey: data.apiKey, // Will be encrypted by pre-save hook
           clientId: data.clientId,
           phoneNumberId: data.phoneNumberId,
           wabaId: data.wabaId,
           instagramAccountId: data.instagramAccountId,
           facebookPageId: data.facebookPageId
-        },
+        };
+      }
+
+      const updateData: any = {
+        credentials,
         status: 'connected',
         lastSyncedAt: new Date(),
         webhookVerified: data.webhookVerified !== undefined ? data.webhookVerified : false,

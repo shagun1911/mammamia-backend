@@ -1,7 +1,8 @@
 import mongoose, { Schema, Document } from 'mongoose';
 import crypto from 'crypto';
 
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'default-32-char-encryption-key!!'; // Must be 32 chars
+const ENCRYPTION_KEY =
+  process.env.ENCRYPTION_KEY || 'default-32-char-encryption-key!!';
 const ENCRYPTION_ALGORITHM = 'aes-256-cbc';
 
 export interface ISocialIntegration extends Document {
@@ -9,12 +10,21 @@ export interface ISocialIntegration extends Document {
   platform: 'whatsapp' | 'instagram' | 'facebook';
   status: 'connected' | 'disconnected' | 'error';
   credentials: {
-    apiKey: string; // Encrypted
+    apiKey: string; // Encrypted USER token
     clientId?: string;
-    phoneNumberId?: string; // For WhatsApp
-    wabaId?: string; // WhatsApp Business Account ID
-    instagramAccountId?: string; // For Instagram
-    facebookPageId?: string; // For Facebook
+
+    // WhatsApp
+    phoneNumberId?: string;
+    wabaId?: string;
+
+    // Instagram
+    instagramAccountId?: string;
+
+    // Facebook / Messenger
+    facebookPageId?: string;
+    pageAccessToken?: string; // 🔥 REQUIRED for Messenger Send API
+
+    [key: string]: any;
   };
   webhookVerified: boolean;
   lastSyncedAt?: Date;
@@ -24,48 +34,67 @@ export interface ISocialIntegration extends Document {
   updatedAt: Date;
 }
 
-const SocialIntegrationSchema = new Schema<ISocialIntegration>({
-  organizationId: {
-    type: Schema.Types.ObjectId,
-    ref: 'Organization',
-    required: true,
-    index: true
-  },
-  platform: {
-    type: String,
-    enum: ['whatsapp', 'instagram', 'facebook'],
-    required: true
-  },
-  status: {
-    type: String,
-    enum: ['connected', 'disconnected', 'error'],
-    default: 'disconnected'
-  },
-  credentials: {
-    apiKey: { type: String, required: true },
-    clientId: String,
-    phoneNumberId: String,
-    wabaId: String,
-    instagramAccountId: String,
-    facebookPageId: String
-  },
-  webhookVerified: {
-    type: Boolean,
-    default: false
-  },
-  lastSyncedAt: Date,
-  errorMessage: String,
-  metadata: {
-    type: Schema.Types.Mixed,
-    default: {}
-  }
-}, { timestamps: true });
+const SocialIntegrationSchema = new Schema<ISocialIntegration>(
+  {
+    organizationId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Organization',
+      required: true,
+      index: true
+    },
+    platform: {
+      type: String,
+      enum: ['whatsapp', 'instagram', 'facebook'],
+      required: true
+    },
+    status: {
+      type: String,
+      enum: ['connected', 'disconnected', 'error'],
+      default: 'disconnected'
+    },
 
-// Compound index to ensure one integration per platform per organization
-SocialIntegrationSchema.index({ organizationId: 1, platform: 1 }, { unique: true });
+    credentials: {
+      apiKey: { type: String, required: true },
+      clientId: String,
 
-// Encrypt API key before saving
-SocialIntegrationSchema.pre('save', function(next) {
+      // WhatsApp
+      phoneNumberId: String,
+      wabaId: String,
+
+      // Instagram
+      instagramAccountId: String,
+
+      // Facebook / Messenger
+      facebookPageId: String,
+
+      // 🔥 THIS WAS MISSING — THIS FIXES EVERYTHING
+      pageAccessToken: String
+    },
+
+    webhookVerified: {
+      type: Boolean,
+      default: false
+    },
+
+    lastSyncedAt: Date,
+    errorMessage: String,
+
+    metadata: {
+      type: Schema.Types.Mixed,
+      default: {}
+    }
+  },
+  { timestamps: true }
+);
+
+// One integration per platform per org
+SocialIntegrationSchema.index(
+  { organizationId: 1, platform: 1 },
+  { unique: true }
+);
+
+// Encrypt USER access token only (apiKey)
+SocialIntegrationSchema.pre('save', function (next) {
   if (this.isModified('credentials.apiKey')) {
     try {
       const iv = crypto.randomBytes(16);
@@ -84,12 +113,12 @@ SocialIntegrationSchema.pre('save', function(next) {
   next();
 });
 
-// Method to decrypt API key
-SocialIntegrationSchema.methods.getDecryptedApiKey = function(): string {
+// Decrypt USER token
+SocialIntegrationSchema.methods.getDecryptedApiKey = function (): string {
   try {
     const parts = this.credentials.apiKey.split(':');
-    if (parts.length !== 2) return this.credentials.apiKey; // Not encrypted
-    
+    if (parts.length !== 2) return this.credentials.apiKey;
+
     const iv = Buffer.from(parts[0], 'hex');
     const encryptedText = parts[1];
     const decipher = crypto.createDecipheriv(
@@ -106,5 +135,7 @@ SocialIntegrationSchema.methods.getDecryptedApiKey = function(): string {
   }
 };
 
-export default mongoose.model<ISocialIntegration>('SocialIntegration', SocialIntegrationSchema);
-
+export default mongoose.model<ISocialIntegration>(
+  'SocialIntegration',
+  SocialIntegrationSchema
+);

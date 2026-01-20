@@ -7,6 +7,7 @@ import { emitToOrganization, emitToConversation } from '../config/socket';
 import { pythonRagService } from '../services/pythonRag.service';
 import { SocialIntegrationService } from '../services/socialIntegration.service';
 import axios from 'axios';
+import mongoose from 'mongoose';
 
 const socialIntegrationService = new SocialIntegrationService();
 
@@ -85,21 +86,41 @@ export class MetaWebhookController {
 
   /**
    * Handle incoming Messenger webhook events (POST request)
+   * Matches Python reference implementation exactly
    */
   async handleMessenger(req: Request, res: Response) {
     try {
-      // Acknowledge receipt immediately
+      // Acknowledge receipt immediately (like Python script)
       res.sendStatus(200);
 
       const webhookData = req.body;
-      console.log('[Messenger Webhook] Received:', JSON.stringify(webhookData, null, 2));
+      console.log('[Messenger Webhook] Received webhook:', JSON.stringify(webhookData, null, 2));
 
-      // Meta Messenger webhook structure
-      if (webhookData.entry && webhookData.entry.length > 0) {
-        for (const entry of webhookData.entry) {
-          if (entry.messaging && entry.messaging.length > 0) {
-            for (const messagingEvent of entry.messaging) {
-              await this.handleMessengerEvent(messagingEvent, entry.id);
+      // Process incoming messages - EXACT MATCH with Python script
+      // Python: if request.get('object') == 'page':
+      if (webhookData.object === 'page') {
+        // Python: for entry in request.get('entry', []):
+        for (const entry of webhookData.entry || []) {
+          // Python: page_id = entry.get('id')
+          const pageId = entry.id;
+          
+          // Python: for event in entry.get('messaging', []):
+          for (const event of entry.messaging || []) {
+            // Python: sender_id = event.get('sender', {}).get('id')
+            const senderId = event.sender?.id;
+            
+            // Python: if 'message' in event:
+            if (event.message) {
+              // Python: message_text = event['message'].get('text', '')
+              const messageText = event.message.text || '';
+              
+              // Python: print(f"Received message from {sender_id}: {message_text}")
+              console.log(`[Messenger Webhook] Received message from ${senderId}: ${messageText}`);
+              console.log(`[Messenger Webhook] Page ID: ${pageId}`);
+              console.log(`[Messenger Webhook] Sender PSID: ${senderId}`);
+              
+              // Immediately process and reply (synchronous, like Python script)
+              await this.processMessengerMessage(pageId, senderId, messageText, event);
             }
           }
         }
@@ -249,28 +270,31 @@ export class MetaWebhookController {
   }
 
   /**
-   * Handle Messenger event
+   * Process Messenger message and send chatbot reply immediately
+   * Matches Python reference implementation - synchronous, immediate reply
    */
-  private async handleMessengerEvent(messagingEvent: any, pageId: string) {
+  private async processMessengerMessage(
+    pageId: string,
+    senderPsid: string,
+    messageText: string,
+    event: any
+  ) {
     try {
-      // Skip delivery receipts, read receipts, and echoes (messages sent by the Page itself)
-      if (messagingEvent.delivery || messagingEvent.read || messagingEvent.message?.is_echo) {
-        console.log('[Messenger Webhook] Skipping delivery/read receipt or echo');
+      // Skip echo messages (messages sent by the Page itself)
+      if (event.message?.is_echo) {
+        console.log('[Messenger Webhook] Skipping echo message (sent by Page)');
         return;
       }
 
-      // Only process text messages
-      if (!messagingEvent.message || !messagingEvent.message.text) {
-        console.log('[Messenger Webhook] Skipping non-text message');
+      // Skip if no text message
+      if (!messageText || messageText.trim() === '') {
+        console.log('[Messenger Webhook] Skipping empty message');
         return;
       }
 
-      const message = messagingEvent.message;
-      const from = messagingEvent.sender.id; // PSID (Page-scoped ID)
-      const messageId = message.mid;
-      const timestamp = new Date(messagingEvent.timestamp);
-
-      // Find integration
+      // Find integration using page_id (matching OAuth storage structure)
+      // OAuth stores: credentials.facebookPageId and credentials.pageAccessToken
+      // Webhook only provides page_id, so we use it as the primary key
       const integration = await SocialIntegration.findOne({
         'credentials.facebookPageId': pageId,
         platform: 'facebook',
@@ -278,102 +302,209 @@ export class MetaWebhookController {
       });
 
       if (!integration) {
-        console.warn(`[Messenger Webhook] No integration found for page: ${pageId}`);
+        console.warn(`[Messenger Webhook] No integration found for page_id: ${pageId}`);
+        console.warn(`[Messenger Webhook] Searched for: credentials.facebookPageId === ${pageId}`);
         return;
       }
 
-      // Find or create customer
-      let customer = await Customer.findOne({
-        'metadata.facebookId': from,
-        organizationId: integration.organizationId
-      });
-
-      if (!customer) {
-        customer = await Customer.create({
-          organizationId: integration.organizationId,
-          name: from,
-          source: 'facebook',
-          metadata: { facebookId: from }
-        });
+      // Check if chatbot is enabled
+      const chatbotEnabled = integration.metadata?.chatbotEnabled === true;
+      if (!chatbotEnabled) {
+        console.log('[Messenger Webhook] Chatbot not enabled for this integration');
+        return;
       }
 
-      // Find or create conversation
-      let conversation = await Conversation.findOne({
-        customerId: customer._id,
-        channel: 'social',
-        'metadata.platform': 'facebook',
-        status: { $in: ['open', 'unread'] }
+      // Get Page Access Token directly from credentials (matching OAuth storage exactly)
+      // OAuth stores token in: credentials.pageAccessToken
+      const pageAccessToken = integration.credentials.pageAccessToken;
+
+      if (!pageAccessToken) {
+        console.error(`[Messenger Webhook] ❌ No Page Access Token found for page_id: ${pageId}`);
+        console.error(`[Messenger Webhook] Integration credentials:`, {
+          hasFacebookPageId: !!integration.credentials.facebookPageId,
+          hasPageAccessToken: !!integration.credentials.pageAccessToken,
+          facebookPageId: integration.credentials.facebookPageId
+        });
+        return;
+      }
+
+      console.log(`[Messenger Webhook] ✅ Found Page Access Token for page_id: ${pageId}`);
+
+      console.log(`[Messenger Webhook] Processing message - Page: ${pageId}, PSID: ${senderPsid}, Text: ${messageText}`);
+
+      // Generate chatbot reply immediately (synchronous, like Python script)
+      // NOTE: Messenger chatbot uses KnowledgeBase directly via appUserId from OAuth state
+      // Python reference: Only needs Page → Integration → appUserId → KnowledgeBase → RAG
+      const KnowledgeBase = (await import('../models/KnowledgeBase')).default;
+      const mongoose = (await import('mongoose')).default;
+
+      // Get internal app userId from integration metadata (stored during OAuth)
+      const appUserId = integration.metadata?.appUserId;
+
+      if (!appUserId) {
+        console.error('[Messenger Webhook] No appUserId found in integration metadata');
+        console.error('[Messenger Webhook] Integration metadata:', {
+          hasMetadata: !!integration.metadata,
+          metadataKeys: integration.metadata ? Object.keys(integration.metadata) : []
+        });
+        return;
+      }
+
+      // Validate appUserId is a valid ObjectId
+      if (!mongoose.Types.ObjectId.isValid(appUserId)) {
+        console.error('[Messenger Webhook] Invalid appUserId format:', appUserId);
+        return;
+      }
+
+      // Find KnowledgeBase directly by userId (stored during OAuth)
+      const kb = await KnowledgeBase.findOne({
+        userId: new mongoose.Types.ObjectId(appUserId)
+      }).sort({ createdAt: -1 });
+
+      if (!kb) {
+        console.warn('[Messenger Webhook] No KnowledgeBase found for user:', appUserId);
+        return;
+      }
+
+      const collectionName = kb.collectionName;
+      
+      console.log('[Messenger Webhook] Using KnowledgeBase:', {
+        kbId: kb._id.toString(),
+        collectionName
       });
 
-      if (!conversation) {
-        conversation = await Conversation.create({
-          organizationId: integration.organizationId,
+      // Call RAG service to get reply
+      const ragResponse = await pythonRagService.chat({
+        query: messageText,
+        collectionNames: [collectionName],
+        topK: 5,
+        threadId: `messenger_${pageId}_${senderPsid}`, // Simple thread ID
+        systemPrompt: 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.'
+      });
+
+      const botReply = ragResponse.answer;
+      if (!botReply || botReply.trim() === '') {
+        console.warn('[Messenger Webhook] No reply generated from RAG service');
+        return;
+      }
+
+      console.log(`[Messenger Webhook] Got reply from RAG: ${botReply.substring(0, 100)}...`);
+      console.log(`[Messenger Webhook] Sending reply to PSID: ${senderPsid}`);
+
+      // Send reply immediately using Messenger Send API (EXACT MATCH with Python script)
+      // Python: POST https://graph.facebook.com/v18.0/{PAGE_ID}/messages
+      const { MetaOAuthService } = await import('../services/metaOAuth.service');
+      const metaAppId = process.env.META_APP_ID || '';
+      const metaAppSecret = process.env.META_APP_SECRET || '';
+      const backendUrl = process.env.BACKEND_URL || '';
+      
+      const metaOAuth = new MetaOAuthService({
+        appId: metaAppId,
+        appSecret: metaAppSecret,
+        redirectUri: `${backendUrl}/api/v1/social-integrations/facebook/oauth/callback`
+      });
+
+      // Send message (matching Python script exactly)
+      const messageId = await metaOAuth.sendMessengerMessage(
+        pageId,
+        pageAccessToken,
+        senderPsid, // PSID
+        botReply
+      );
+
+      console.log(`[Messenger Webhook] ✅ Reply sent successfully. Message ID: ${messageId || 'N/A'}`);
+
+      // Optional: Save to database (for conversation history)
+      // This is additional functionality beyond Python script, but useful for our system
+      try {
+        // Find or create customer
+        let customer = await Customer.findOne({
+          'metadata.facebookId': senderPsid,
+          organizationId: integration.organizationId
+        });
+
+        if (!customer) {
+          customer = await Customer.create({
+            organizationId: integration.organizationId,
+            name: senderPsid,
+            source: 'facebook',
+            metadata: { facebookId: senderPsid }
+          });
+        }
+
+        // Find or create conversation
+        let conversation = await Conversation.findOne({
           customerId: customer._id,
           channel: 'social',
-          status: 'unread',
-          isAiManaging: true,
+          'metadata.platform': 'facebook',
+          'metadata.facebookPageId': pageId,
+          status: { $in: ['open', 'unread'] }
+        });
+
+        if (!conversation) {
+          conversation = await Conversation.create({
+            organizationId: integration.organizationId,
+            customerId: customer._id,
+            channel: 'social',
+            status: 'unread',
+            isAiManaging: true,
+            metadata: {
+              platform: 'facebook',
+              facebookPageId: pageId
+            }
+          });
+        }
+
+        // Save user message
+        await Message.create({
+          conversationId: conversation._id,
+          organizationId: integration.organizationId,
+          customerId: customer._id,
+          sender: 'customer',
+          text: messageText,
+          type: 'message',
+          timestamp: new Date(),
           metadata: {
-            platform: 'facebook',
-            facebookPageId: pageId,
-            externalMessageId: messageId
+            externalId: event.message?.mid,
+            platform: 'facebook'
           }
         });
-      }
 
-      // Extract message text (already validated above)
-      const messageText = message.text;
-
-      // Save message
-      await Message.create({
-        conversationId: conversation._id,
-        organizationId: integration.organizationId,
-        customerId: customer._id,
-        sender: 'customer',
-        text: messageText,
-        type: 'message',
-        timestamp,
-        metadata: {
-          externalId: messageId,
-          platform: 'facebook'
-        }
-      });
-
-      // Update conversation
-      conversation.unread = true;
-      conversation.updatedAt = new Date();
-      await conversation.save();
-
-      // Emit socket event
-      emitToOrganization(integration.organizationId.toString(), 'new-message', {
-        conversationId: conversation._id?.toString() || '',
-        message: {
-          text: messageText,
-          sender: 'customer',
-          timestamp
-        }
-      });
-
-      // Check if chatbot is enabled for this integration
-      const chatbotEnabled = integration.metadata?.chatbotEnabled === true;
-      
-      // Trigger AI reply if chatbot is enabled (automatically enabled after OAuth)
-      if (chatbotEnabled && conversation.isAiManaging) {
-        this.triggerAIReply(
-          conversation, 
-          messageText, 
-          integration.organizationId.toString(), 
-          from, 
-          'messenger',
-          pageId,
-          integration
-        ).catch(err => {
-          console.error('[Messenger Webhook] AI auto-reply error:', err);
+        // Save bot reply
+        await Message.create({
+          conversationId: conversation._id,
+          organizationId: integration.organizationId,
+          customerId: customer._id,
+          sender: 'ai',
+          text: botReply,
+          type: 'message',
+          timestamp: new Date(),
+          metadata: {
+            externalId: messageId,
+            platform: 'facebook',
+            generatedBy: 'rag-service'
+          }
         });
-      } else if (!chatbotEnabled) {
-        console.log('[Messenger Webhook] Chatbot not enabled for this integration');
+
+        // Update conversation
+        conversation.updatedAt = new Date();
+        await conversation.save();
+
+        // Emit socket event
+        emitToOrganization(integration.organizationId.toString(), 'new-message', {
+          conversationId: conversation._id?.toString() || '',
+          message: {
+            text: botReply,
+            sender: 'ai',
+            timestamp: new Date()
+          }
+        });
+      } catch (dbError) {
+        // Don't fail if database save fails - message was already sent
+        console.error('[Messenger Webhook] Error saving to database (message was sent):', dbError);
       }
-    } catch (error) {
-      console.error('[Messenger Webhook] Error handling event:', error);
+    } catch (error: any) {
+      console.error('[Messenger Webhook] Error processing message:', error.message || error);
     }
   }
 
@@ -609,22 +740,16 @@ export class MetaWebhookController {
 
         // Get Page Access Token from integration
         // Check multiple possible storage locations
-        let pageAccessToken = integration.credentials?.pageAccessToken;
-        
-        // If not found, check pages array
-        if (!pageAccessToken && integration.credentials?.pages) {
-          const page = integration.credentials.pages.find((p: any) => p.page_id === pageId);
-          pageAccessToken = page?.access_token;
-        }
-        
-        // If still not found, try to get from primary page
-        if (!pageAccessToken && integration.credentials?.pages?.[0]) {
-          pageAccessToken = integration.credentials.pages[0].access_token;
-        }
+        // Get Page Access Token directly from credentials (matching OAuth storage)
+        const pageAccessToken = integration.credentials?.pageAccessToken;
         
         if (!pageAccessToken) {
           console.error('[Messenger AI] No Page Access Token found in integration for page:', pageId);
-          console.error('[Messenger AI] Integration credentials:', JSON.stringify(integration.credentials, null, 2));
+          console.error('[Messenger AI] Integration credentials:', {
+            hasFacebookPageId: !!integration.credentials?.facebookPageId,
+            hasPageAccessToken: !!integration.credentials?.pageAccessToken,
+            facebookPageId: integration.credentials?.facebookPageId
+          });
           return;
         }
 

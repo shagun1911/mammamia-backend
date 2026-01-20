@@ -100,6 +100,56 @@ export class KnowledgeBaseService {
       });
       
       console.log(`[KB Service] ✅ Knowledge base created successfully in MongoDB`);
+      
+      // Auto-link Knowledge Base to Settings (enable chatbot if not already configured)
+      try {
+        const Settings = (await import('../models/Settings')).default;
+        const settings = await Settings.findOne({ userId });
+        
+        if (settings) {
+          const needsUpdate = 
+            settings.autoReplyEnabled !== true ||
+            !Array.isArray(settings.defaultKnowledgeBaseNames) ||
+            settings.defaultKnowledgeBaseNames.length === 0;
+          
+          if (needsUpdate) {
+            // Ensure defaultKnowledgeBaseNames is an array
+            const kbNames = Array.isArray(settings.defaultKnowledgeBaseNames) 
+              ? [...settings.defaultKnowledgeBaseNames] 
+              : [];
+            
+            // Add collection name if not already present (no duplicates)
+            if (!kbNames.includes(collectionName)) {
+              kbNames.push(collectionName);
+            }
+            
+            // Update Settings atomically
+            await Settings.updateOne(
+              { userId },
+              {
+                $set: {
+                  autoReplyEnabled: true,
+                  defaultKnowledgeBaseNames: kbNames
+                }
+              }
+            );
+            
+            console.log(`[KB Service] ✅ Auto-linked KB to Settings: enabled auto-reply, added "${collectionName}"`);
+          }
+        } else {
+          // Create Settings if it doesn't exist
+          await Settings.create({
+            userId,
+            autoReplyEnabled: true,
+            defaultKnowledgeBaseNames: [collectionName]
+          });
+          console.log(`[KB Service] ✅ Created Settings and auto-linked KB: "${collectionName}"`);
+        }
+      } catch (error: any) {
+        // Don't fail KB creation if Settings update fails
+        console.error(`[KB Service] ⚠️  Failed to auto-link KB to Settings:`, error.message);
+      }
+      
       return kb;
     } catch (error: any) {
       console.error(`[KB Service] ❌ Failed to create knowledge base:`, error);

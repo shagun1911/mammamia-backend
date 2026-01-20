@@ -392,7 +392,28 @@ export class SocialIntegrationController {
    */
   async oauthCallback(req: Request, res: Response, next: NextFunction) {
     try {
-      const { code, state, error, error_reason, error_description, error_code, error_message } = req.query;
+      console.log('\n========== META OAUTH CALLBACK (PUBLIC ROUTE) ==========');
+      console.log('[Meta OAuth Callback] Method:', req.method);
+      console.log('[Meta OAuth Callback] URL:', req.url);
+      console.log('[Meta OAuth Callback] Path:', req.path);
+      console.log('[Meta OAuth Callback] Query:', req.query);
+      console.log('[Meta OAuth Callback] Body:', req.body);
+      
+      // OAuth callbacks can be GET (query params) or POST (body params)
+      // Meta typically uses GET, but some flows may use POST
+      const queryParams = req.query || {};
+      const bodyParams = req.body || {};
+      
+      // Merge query and body params (query takes precedence)
+      const { 
+        code, 
+        state, 
+        error, 
+        error_reason, 
+        error_description, 
+        error_code, 
+        error_message 
+      } = { ...bodyParams, ...queryParams };
       
       // Extract platform from URL params or from URL path
       // Specific routes like /facebook/oauth/callback don't have :platform param
@@ -405,10 +426,22 @@ export class SocialIntegrationController {
         }
       }
 
+      // Check if this is actually a webhook event (Meta sometimes sends webhooks to callback URLs)
+      // Webhook events have: { object: 'page', entry: [...] }
+      if (bodyParams.object === 'page' && Array.isArray(bodyParams.entry)) {
+        console.log('[Meta OAuth Callback] ⚠️  Webhook event received at OAuth callback route - forwarding to webhook handler');
+        console.log('[Meta OAuth Callback] This is a Messenger webhook event, not an OAuth callback');
+        
+        // Import webhook controller and forward the request
+        const metaWebhookController = (await import('../controllers/metaWebhook.controller')).default;
+        return metaWebhookController.handleMessenger(req, res);
+      }
+
       // Check if this is a webhook verification request (Meta sometimes sends this to callback URLs)
-      const hubMode = req.query['hub.mode'];
-      const hubChallenge = req.query['hub.challenge'];
-      const hubVerifyToken = req.query['hub.verify_token'];
+      // Handle both GET (query) and POST (body) for webhook verification
+      const hubMode = queryParams['hub.mode'] || bodyParams['hub.mode'] || queryParams['hub_mode'] || bodyParams['hub_mode'];
+      const hubChallenge = queryParams['hub.challenge'] || bodyParams['hub.challenge'] || queryParams['hub_challenge'] || bodyParams['hub_challenge'];
+      const hubVerifyToken = queryParams['hub.verify_token'] || bodyParams['hub.verify_token'] || queryParams['hub_verify_token'] || bodyParams['hub_verify_token'];
 
       if (hubMode === 'subscribe' && hubChallenge && hubVerifyToken) {
         console.log('\n========== META WEBHOOK VERIFICATION (via OAuth callback) ==========');
@@ -516,7 +549,7 @@ export class SocialIntegrationController {
 
       // Decode state
       const stateData = JSON.parse(Buffer.from(state as string, 'base64').toString());
-      const { organizationId, platform: statePlatform, redirectUrl } = stateData;
+      const { userId: appUserId, organizationId, platform: statePlatform, redirectUrl } = stateData;
 
       // Use platform from state as source of truth (it's what was used to initiate OAuth)
       // If platform from URL doesn't match, use state platform and log a warning
@@ -594,30 +627,27 @@ export class SocialIntegrationController {
       };
 
       if (platform === 'facebook') {
-        // For Facebook/Messenger, store all pages with their access tokens
-        // Each page access token can be used to send messages via Messenger API
+        // For Facebook/Messenger, store primary page access token
+        // Webhook will use credentials.pageAccessToken and credentials.facebookPageId
         const selectedPage = pages[0]; // Use first page as primary
         integrationData.facebookPageId = selectedPage.id;
         
-        // Store all pages with their access tokens (matching Python reference)
-        const pagesData = pages.map(page => ({
-          page_id: page.id,
-          page_name: page.name,
-          access_token: page.access_token, // Page Access Token for Messenger API
-          category: page.category || ''
-        }));
-        
+        // Store only primary page access token (matching schema structure)
+        // CRITICAL: pageAccessToken must be persisted for Messenger webhook to work
         integrationData.credentials = {
           apiKey: accessToken, // User Access Token (long-lived)
           clientId: metaAppId,
           facebookPageId: selectedPage.id,
-          pageAccessToken: selectedPage.access_token, // Primary page access token
-          pages: pagesData // All pages with access tokens
+          pageAccessToken: selectedPage.access_token // Page Access Token for Messenger API - MUST BE PERSISTED
         };
         
-        console.log('[Meta OAuth Callback] Facebook pages stored:', {
-          totalPages: pages.length,
-          pages: pagesData.map(p => ({ id: p.page_id, name: p.page_name }))
+        console.log('[Meta OAuth Callback] Facebook page credentials prepared:', {
+          pageId: selectedPage.id,
+          pageName: selectedPage.name,
+          hasAccessToken: !!selectedPage.access_token,
+          accessTokenLength: selectedPage.access_token?.length || 0,
+          credentialsKeys: Object.keys(integrationData.credentials),
+          hasPageAccessToken: !!integrationData.credentials.pageAccessToken
         });
 
         // Automatically subscribe Page to webhooks for Messenger chatbot
@@ -637,11 +667,14 @@ export class SocialIntegrationController {
         }
 
         // Mark chatbot as enabled for this integration
+        // Store INTERNAL app userId (from OAuth state) for KnowledgeBase lookup
+        // DO NOT store Meta Facebook userId - use appUserId from state
         integrationData.metadata = {
           ...integrationData.metadata,
           chatbotEnabled: true,
           connectedAt: new Date().toISOString(),
-          userId: userId,
+          appUserId: appUserId, // Internal app userId for KB lookup
+          metaUserId: userId, // Meta Facebook userId (for reference only)
           userName: userName
         };
         
@@ -722,7 +755,10 @@ export class SocialIntegrationController {
         hasMetadata: !!integrationData.metadata,
         chatbotEnabled: integrationData.metadata?.chatbotEnabled,
         webhookVerified: integrationData.webhookVerified,
-        hasCredentials: !!integrationData.credentials
+        hasCredentials: !!integrationData.credentials,
+        credentialsKeys: integrationData.credentials ? Object.keys(integrationData.credentials) : [],
+        hasPageAccessToken: !!integrationData.credentials?.pageAccessToken,
+        hasFacebookPageId: !!integrationData.credentials?.facebookPageId
       });
 
       // Save integration - OAuth tokens are pre-verified by Meta, skip 360dialog verification
@@ -731,13 +767,27 @@ export class SocialIntegrationController {
         skipVerification: true // OAuth tokens are already verified by Meta
       });
 
+      // Verify pageAccessToken was persisted
+      const savedCredentials = (savedIntegration.credentials as any);
       console.log('[Meta OAuth Callback] ✅ Integration saved:', {
         id: savedIntegration._id,
         platform: savedIntegration.platform,
         status: savedIntegration.status,
         chatbotEnabled: savedIntegration.metadata?.chatbotEnabled,
-        webhookVerified: savedIntegration.webhookVerified
+        webhookVerified: savedIntegration.webhookVerified,
+        hasPageAccessToken: !!savedCredentials?.pageAccessToken,
+        hasFacebookPageId: !!savedCredentials?.facebookPageId,
+        pageAccessTokenLength: savedCredentials?.pageAccessToken?.length || 0
       });
+      
+      if (!savedCredentials?.pageAccessToken) {
+        console.error('[Meta OAuth Callback] ❌ CRITICAL: pageAccessToken was NOT persisted!');
+        console.error('[Meta OAuth Callback] Saved credentials:', {
+          keys: Object.keys(savedCredentials || {}),
+          hasApiKey: !!savedCredentials?.apiKey,
+          hasFacebookPageId: !!savedCredentials?.facebookPageId
+        });
+      }
 
       // Redirect to frontend with success
       const frontendUrl = process.env.FRONTEND_URL;

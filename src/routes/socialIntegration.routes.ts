@@ -5,6 +5,12 @@ import { authenticate } from '../middleware/auth.middleware';
 
 const router = Router();
 
+// ============================================
+// PUBLIC ROUTES - NO AUTHENTICATION REQUIRED
+// ============================================
+// These routes MUST be defined BEFORE router.use(authenticate)
+// Meta sends webhooks and OAuth callbacks without JWT tokens
+
 // Meta webhooks - public (Meta sends webhooks here, no auth required)
 // WhatsApp webhook
 router.get('/whatsapp/webhook', (req, res) => metaWebhookController.verify(req, res, 'whatsapp'));
@@ -20,11 +26,16 @@ router.post('/instagram/webhook', metaWebhookController.handleInstagram.bind(met
 
 // OAuth callback routes - MUST BE PUBLIC (Meta redirects here without JWT tokens)
 // These routes handle OAuth redirects from Meta and must remain public forever
+// Support both GET and POST (some OAuth flows may use POST)
 router.get('/facebook/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
+router.post('/facebook/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
 router.get('/whatsapp/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
+router.post('/whatsapp/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
 router.get('/instagram/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
-// Fallback for any other platform
+router.post('/instagram/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
+// Fallback for any other platform - support both GET and POST
 router.get('/:platform/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
+router.post('/:platform/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
 
 // All other routes require authentication
 router.use(authenticate);
