@@ -260,13 +260,25 @@ Object.assign(settings, safeData);
       throw new AppError(409, 'DUPLICATE', 'User with this email already exists');
     }
 
+    // CRITICAL: Only allow admin role if email is in ADMIN_EMAILS env var
+    const adminEmails = process.env.ADMIN_EMAILS?.split(',').map((e: string) => e.trim().toLowerCase()) || [];
+    const requestedRole = data.role || 'operator';
+    const isAdminEmail = adminEmails.includes(data.email.toLowerCase());
+    
+    // Enforce: Only admin emails can be created as admin
+    const finalRole = (requestedRole === 'admin' && !isAdminEmail) ? 'operator' : requestedRole;
+    
+    if (requestedRole === 'admin' && !isAdminEmail) {
+      console.warn(`[Settings Service] ⚠️ Attempted to create admin user with non-admin email: ${data.email}. Setting role to 'operator'.`);
+    }
+
     const user = await User.create({
       email: data.email,
       password: data.password, // Store plain password as requested
       firstName: data.firstName || data.name?.split(' ')[0] || '',
       lastName: data.lastName || data.name?.split(' ')[1] || '',
-      role: data.role || 'operator',
-      permissions: data.permissions || []
+      role: finalRole,
+      permissions: finalRole === 'admin' ? ['all'] : (data.permissions || [])
     });
 
     // Return user with password visible
@@ -286,8 +298,31 @@ Object.assign(settings, safeData);
     if (data.email) user.email = data.email;
     if (data.firstName) user.firstName = data.firstName;
     if (data.lastName) user.lastName = data.lastName;
-    if (data.role) user.role = data.role;
-    if (data.permissions) user.permissions = data.permissions;
+    
+    // CRITICAL: Only allow admin role if email is in ADMIN_EMAILS env var
+    if (data.role) {
+      const adminEmails = process.env.ADMIN_EMAILS?.split(',').map((e: string) => e.trim().toLowerCase()) || [];
+      const isAdminEmail = adminEmails.includes((data.email || user.email).toLowerCase());
+      
+      // Enforce: Only admin emails can be updated to admin
+      if (data.role === 'admin' && !isAdminEmail) {
+        console.warn(`[Settings Service] ⚠️ Attempted to update user to admin with non-admin email: ${data.email || user.email}. Keeping current role.`);
+        // Don't update role if trying to set to admin without admin email
+      } else {
+        user.role = data.role;
+        // Update permissions based on role
+        if (data.role === 'admin') {
+          user.permissions = ['all'];
+        } else if (data.permissions) {
+          user.permissions = data.permissions;
+        }
+      }
+    }
+    
+    if (data.permissions && user.role !== 'admin') {
+      user.permissions = data.permissions;
+    }
+    
     if (data.password) user.password = data.password; // Update plain password
     
     // Handle legacy name field

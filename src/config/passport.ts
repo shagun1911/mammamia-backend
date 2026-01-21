@@ -59,6 +59,11 @@ passport.use(
           ownerId: tempId // Temporary, will update
         });
 
+        // Determine user role - only admin emails get admin role, all others are operators
+        const adminEmails = process.env.ADMIN_EMAILS?.split(',').map((e: string) => e.trim().toLowerCase()) || [];
+        const isAdminEmail = adminEmails.includes(email.toLowerCase());
+        const userRole = isAdminEmail ? 'admin' : 'operator';
+
         // Create user with organization
         user = await User.create({
           email,
@@ -70,7 +75,8 @@ passport.use(
           googleId: profile.id,
           organizationId: organization._id as any,
           status: 'active',
-          role: 'admin' // First user is admin of their organization
+          role: userRole, // Only admin emails get admin role, all others are operators
+          permissions: isAdminEmail ? ['all'] : []
         });
 
         // Update organization owner
