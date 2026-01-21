@@ -650,12 +650,50 @@ export class MetaWebhookController {
         });
 
         if (!customer) {
+          // Try to fetch sender name from Meta Graph API
+          let senderName = senderPsid;
+          try {
+            const pageAccessToken = integration.credentials?.pageAccessToken;
+            if (pageAccessToken) {
+              const response = await axios.get(
+                `https://graph.facebook.com/v18.0/${senderPsid}?fields=first_name,last_name,name&access_token=${pageAccessToken}`
+              );
+              if (response.data?.name) {
+                senderName = response.data.name;
+              } else if (response.data?.first_name) {
+                senderName = response.data.first_name + (response.data.last_name ? ` ${response.data.last_name}` : '');
+              }
+              console.log('[Messenger] Fetched sender name:', senderName);
+            }
+          } catch (error: any) {
+            console.warn('[Messenger] Could not fetch sender name, using PSID:', error.message);
+          }
+          
           customer = await Customer.create({
             organizationId: integration.organizationId,
-            name: senderPsid,
+            name: senderName,
             source: 'facebook',
             metadata: { facebookId: senderPsid }
           });
+        } else if (!customer.name || customer.name === customer.metadata?.facebookId) {
+          // Update customer name if it's still an ID
+          try {
+            const pageAccessToken = integration.credentials?.pageAccessToken;
+            if (pageAccessToken) {
+              const response = await axios.get(
+                `https://graph.facebook.com/v18.0/${senderPsid}?fields=first_name,last_name,name&access_token=${pageAccessToken}`
+              );
+              if (response.data?.name) {
+                customer.name = response.data.name;
+                await customer.save();
+              } else if (response.data?.first_name) {
+                customer.name = response.data.first_name + (response.data.last_name ? ` ${response.data.last_name}` : '');
+                await customer.save();
+              }
+            }
+          } catch (error: any) {
+            console.warn('[Messenger] Could not update sender name:', error.message);
+          }
         }
 
         // Find or create conversation
@@ -848,12 +886,50 @@ export class MetaWebhookController {
         });
 
         if (!customer) {
+          // Try to fetch sender name from Meta Graph API
+          let senderName = senderId;
+          try {
+            const pageAccessToken = integration.credentials?.pageAccessToken;
+            if (pageAccessToken) {
+              const response = await axios.get(
+                `https://graph.facebook.com/v18.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
+              );
+              if (response.data?.name) {
+                senderName = response.data.name;
+              } else if (response.data?.username) {
+                senderName = response.data.username;
+              }
+              console.log('[Instagram] Fetched sender name:', senderName);
+            }
+          } catch (error: any) {
+            console.warn('[Instagram] Could not fetch sender name, using ID:', error.message);
+          }
+          
           customer = await Customer.create({
             organizationId: finalOrganizationId,
-            name: senderId,
+            name: senderName,
             source: 'instagram',
             metadata: { instagramId: senderId }
           });
+        } else if (!customer.name || customer.name === customer.metadata?.instagramId) {
+          // Update customer name if it's still an ID
+          try {
+            const pageAccessToken = integration.credentials?.pageAccessToken;
+            if (pageAccessToken) {
+              const response = await axios.get(
+                `https://graph.facebook.com/v18.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
+              );
+              if (response.data?.name) {
+                customer.name = response.data.name;
+                await customer.save();
+              } else if (response.data?.username) {
+                customer.name = response.data.username;
+                await customer.save();
+              }
+            }
+          } catch (error: any) {
+            console.warn('[Instagram] Could not update sender name:', error.message);
+          }
         }
 
         // Find or create conversation
@@ -1091,12 +1167,50 @@ export class MetaWebhookController {
       });
 
       if (!customer) {
+        // Try to fetch sender name from Meta Graph API
+        let senderName = senderId;
+        try {
+          const pageAccessToken = integration.credentials?.pageAccessToken;
+          if (pageAccessToken) {
+            const response = await axios.get(
+              `https://graph.facebook.com/v18.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
+            );
+            if (response.data?.name) {
+              senderName = response.data.name;
+            } else if (response.data?.username) {
+              senderName = response.data.username;
+            }
+            console.log('[Instagram] Fetched sender name:', senderName);
+          }
+        } catch (error: any) {
+          console.warn('[Instagram] Could not fetch sender name, using ID:', error.message);
+        }
+        
         customer = await Customer.create({
           organizationId: integration.organizationId,
-          name: senderId,
+          name: senderName,
           source: 'instagram',
           metadata: { instagramId: senderId }
         });
+      } else if (!customer.name || customer.name === customer.metadata?.instagramId) {
+        // Update customer name if it's still an ID
+        try {
+          const pageAccessToken = integration.credentials?.pageAccessToken;
+          if (pageAccessToken) {
+            const response = await axios.get(
+              `https://graph.facebook.com/v18.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
+            );
+            if (response.data?.name) {
+              customer.name = response.data.name;
+              await customer.save();
+            } else if (response.data?.username) {
+              customer.name = response.data.username;
+              await customer.save();
+            }
+          }
+        } catch (error: any) {
+          console.warn('[Instagram] Could not update sender name:', error.message);
+        }
       }
 
       // Find or create conversation
@@ -1208,25 +1322,51 @@ export class MetaWebhookController {
       const organization = await Organization.findById(organizationId);
       if (!organization) return;
 
+      // Get settings with fallback logic
       let settings = await Settings.findOne({ userId: organization.ownerId });
       if (!settings) {
         const users = await User.find({ organizationId: organizationId }).limit(5);
         for (const user of users) {
           settings = await Settings.findOne({ userId: user._id });
-          if (settings?.defaultKnowledgeBaseName) break;
+          if (settings && (settings.defaultKnowledgeBaseNames?.length > 0 || settings.defaultKnowledgeBaseName)) break;
         }
       }
 
-      if (!settings || !settings.defaultKnowledgeBaseName) return;
+      // Get knowledge base names (prioritize array, fallback to string)
+      let collectionNames: string[] = [];
+      if (settings?.defaultKnowledgeBaseNames && settings.defaultKnowledgeBaseNames.length > 0) {
+        collectionNames = settings.defaultKnowledgeBaseNames;
+      } else if (settings?.defaultKnowledgeBaseName) {
+        collectionNames = [settings.defaultKnowledgeBaseName];
+      }
 
-      const collectionName = settings.defaultKnowledgeBaseName;
+      if (collectionNames.length === 0) {
+        console.log('[Meta AI] No knowledge base configured');
+        return;
+      }
+
+      // Get system prompt from AIBehavior
+      const { aiBehaviorService } = await import('../services/aiBehavior.service');
+      let systemPrompt = 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.';
+      try {
+        const userId = organization.ownerId?.toString() || (await User.findOne({ organizationId: organizationId }))?._id?.toString();
+        if (userId) {
+          const aiBehavior = await aiBehaviorService.get(userId);
+          if (aiBehavior?.chatAgent?.systemPrompt) {
+            systemPrompt = aiBehavior.chatAgent.systemPrompt;
+            console.log('[Meta AI] Using custom system prompt from AIBehavior');
+          }
+        }
+      } catch (error: any) {
+        console.warn('[Meta AI] Could not fetch system prompt from AIBehavior, using default:', error.message);
+      }
 
       const ragResponse = await pythonRagService.chat({
         query: userMessage,
-        collectionNames: [collectionName],
+        collectionNames: collectionNames,
         topK: 5,
         threadId: conversation._id.toString(),
-        systemPrompt: 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.'
+        systemPrompt: systemPrompt
       });
 
       const aiResponse = ragResponse.answer;
@@ -1339,4 +1479,5 @@ export class MetaWebhookController {
 }
 
 export default new MetaWebhookController();
+
 
