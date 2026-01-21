@@ -23,6 +23,7 @@ router.patch('/:conversationId/status', conversationController.updateStatus);
 router.patch('/:conversationId/assign', conversationController.assignOperator);
 router.patch('/:conversationId/labels', conversationController.updateLabels);
 router.patch('/:conversationId/folder', conversationController.moveToFolder);
+router.patch('/:conversationId/bookmark', conversationController.toggleBookmark);
 router.delete('/:conversationId', conversationController.delete);
 
 export default router;

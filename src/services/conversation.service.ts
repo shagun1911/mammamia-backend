@@ -17,9 +17,19 @@ export class ConversationService {
     }
 
     if (filters.status) query.status = filters.status;
-    if (filters.channel) query.channel = filters.channel;
+    if (filters.channel) {
+      query.channel = filters.channel;
+      // If filtering by social channel and platform is specified, filter by metadata.platform
+      if (filters.channel === 'social' && filters.platform) {
+        query['metadata.platform'] = filters.platform;
+      }
+    }
     if (filters.assignedTo) query.assignedOperatorId = filters.assignedTo;
-    if (filters.folder) query.folderId = filters.folder;
+    if (filters.folderId) {
+      query.folderId = filters.folderId;
+    } else if (filters.folder) {
+      query.folderId = filters.folder;
+    }
     if (filters.label) query.labels = filters.label;
 
     if (filters.search) {
@@ -415,6 +425,21 @@ export class ConversationService {
     const conversation = await Conversation.findByIdAndUpdate(
       conversationId,
       { folderId: folderId || null },
+      { new: true }
+    );
+
+    if (!conversation) {
+      throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
+    }
+
+    return conversation;
+  }
+
+  // Toggle bookmark
+  async toggleBookmark(conversationId: string, isBookmarked: boolean) {
+    const conversation = await Conversation.findByIdAndUpdate(
+      conversationId,
+      { isBookmarked },
       { new: true }
     );
 

@@ -185,6 +185,18 @@ export class ConversationController {
     }
   };
 
+  toggleBookmark = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const conversation = await this.conversationService.toggleBookmark(
+        req.params.conversationId,
+        req.body.isBookmarked ?? true
+      );
+      res.json(successResponse(conversation, conversation.isBookmarked ? 'Bookmarked' : 'Unbookmarked'));
+    } catch (error) {
+      next(error);
+    }
+  };
+
   delete = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const result = await this.conversationService.delete(req.params.conversationId);

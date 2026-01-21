@@ -9,6 +9,7 @@ export interface IConversation extends Document {
   assignedOperatorId?: mongoose.Types.ObjectId;
   isAiManaging: boolean;
   unread: boolean;
+  isBookmarked: boolean;
   labels: string[];
   transcript?: Record<string, any>;
   campaignId?: mongoose.Types.ObjectId;
@@ -60,6 +61,11 @@ const ConversationSchema = new Schema<IConversation>({
   unread: {
     type: Boolean,
     default: true
+  },
+  isBookmarked: {
+    type: Boolean,
+    default: false,
+    index: true
   },
   labels: [String],
   transcript: {
