@@ -39,6 +39,8 @@ import whatsappRoutes from './routes/whatsapp.routes';
 
 import instagramWebhookRoutes from './routes/instagramWebhook.routes';
 import adminRoutes from './routes/admin.routes';
+import planRoutes from './routes/plan.routes';
+import planWarningsRoutes from './routes/planWarnings.routes';
 
 
 const app = express();
@@ -148,6 +150,8 @@ app.use('/api/v1/profile', profileRoutes);
 app.use('/api/v1/inbound-agent-config', inboundAgentConfigRoutes);
 app.use('/api/v1/whatsapp', whatsappRoutes);
 app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/plans', planRoutes);
+app.use('/api/v1/plan-warnings', planWarningsRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -181,6 +185,15 @@ const startServer = async () => {
     
     // Connect to Redis
     await connectRedis();
+
+    // Initialize default plans if none exist
+    try {
+      const { planService } = await import('./services/plan.service');
+      await planService.initializeDefaultPlans();
+      logger.info('✅ Plans initialized');
+    } catch (error: any) {
+      logger.warn('⚠️  Could not initialize plans:', error.message);
+    }
     
     // Start server with Socket.io
     httpServer.listen(PORT, () => {

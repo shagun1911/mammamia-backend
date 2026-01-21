@@ -11,6 +11,7 @@ export interface DateRange {
 export interface CallMetrics {
   totalCallMinutes: number;
   totalCalls: number;
+  callsWithValidDuration: number;
   averageCallDuration: number; // in minutes
   callsWithTranscript: number;
   callsWithoutTranscript: number;

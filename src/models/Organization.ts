@@ -1,10 +1,12 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import Plan from './Plan';
 
 export interface IOrganization extends Document {
   name: string;
   slug: string;
   domain?: string;
-  plan: 'free' | 'starter' | 'professional' | 'enterprise';
+  plan: string; // Plan slug (dynamic)
+  planId?: mongoose.Types.ObjectId; // Reference to Plan model
   status: 'active' | 'suspended' | 'trial';
   settings: {
     timezone?: string;
@@ -36,8 +38,13 @@ const OrganizationSchema = new Schema<IOrganization>({
   },
   plan: {
     type: String,
-    enum: ['free', 'starter', 'professional', 'enterprise'],
-    default: 'free'
+    default: 'free',
+    index: true
+  },
+  planId: {
+    type: Schema.Types.ObjectId,
+    ref: 'Plan',
+    index: true
   },
   status: {
     type: String,
@@ -58,8 +65,24 @@ const OrganizationSchema = new Schema<IOrganization>({
 });
 
 // Index for faster lookups
-// Note: slug already has unique: true which creates an index, so we don't need to index it again
 OrganizationSchema.index({ ownerId: 1 });
 
-export default mongoose.model<IOrganization>('Organization', OrganizationSchema);
+// Pre-save hook to auto-assign free plan if not set
+OrganizationSchema.pre('save', async function(next) {
+  if (this.isNew && !this.planId) {
+    try {
+      // Find the free plan
+      const freePlan = await Plan.findOne({ slug: 'free' }).lean();
+      if (freePlan) {
+        this.planId = freePlan._id as mongoose.Types.ObjectId;
+        this.plan = 'free';
+        console.log(`✅ Auto-assigned free plan to organization: ${this.name}`);
+      }
+    } catch (error) {
+      console.warn('⚠️  Could not auto-assign free plan:', error);
+    }
+  }
+  next();
+});
 
+export default mongoose.model<IOrganization>('Organization', OrganizationSchema);
