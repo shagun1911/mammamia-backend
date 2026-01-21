@@ -15,6 +15,7 @@ router.get('/export', controller.exportData);
 
 // Topics
 router.get('/topics', controller.getAllTopics);
+router.get('/topics/top', controller.getTopTopics);
 router.get('/topics/:topicId', controller.getTopicById);
 router.post('/topics', controller.createTopic);
 router.patch('/topics/:topicId', controller.updateTopic);

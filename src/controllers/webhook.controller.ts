@@ -25,7 +25,7 @@ export class WebhookController {
       const token = req.query['hub.verify_token'];
       const challenge = req.query['hub.challenge'];
 
-      const VERIFY_TOKEN = process.env.DIALOG360_WEBHOOK_TOKEN || 'kepleroai_webhook_token_2024';
+      const VERIFY_TOKEN = process.env.DIALOG360_WEBHOOK_TOKEN || 'aistein_webhook_token_2024';
 
       if (mode === 'subscribe' && token === VERIFY_TOKEN) {
         console.log('[Webhook] Verification successful');
