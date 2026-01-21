@@ -330,101 +330,142 @@ export class ContactService {
       const errors: any[] = [];
       const duplicates: string[] = [];
 
-      Papa.parse(csvContent, {
-        header: true,
-        skipEmptyLines: true,
-        complete: async (parseResult) => {
-          const rows = parseResult.data as any[];
-          console.log('[CSV Import Service] Parsed rows:', rows.length);
-          console.log('[CSV Import Service] First row:', rows[0]);
-
-          for (let i = 0; i < rows.length; i++) {
-            const row = rows[i];
-
-            try {
-              const name = row.name || row.Name || '';
-              const email = row.email || row.Email || '';
-              let phone = row.phone || row.Phone || '';
-              const tags = row.tags ? row.tags.split(',').map((t: string) => t.trim()) : [];
-
-              if (!name) {
-                errors.push({ row: i + 1, error: 'Name is required' });
-                continue;
-              }
-
-              // Normalize phone number
-              if (phone && !phone.startsWith('+')) {
-                phone = defaultCountryCode + phone.replace(/\D/g, '');
-              }
-
-              // Check for duplicates
-              const existing = await Customer.findOne({
-                $or: [
-                  { email: email || undefined },
-                  { phone: phone || undefined }
-                ].filter(Boolean)
-              });
-
-              if (existing) {
-                duplicates.push(email || phone || name);
-                
-                // Add to list even if duplicate
-                await ContactListMember.create({
-                  contactId: existing._id,
-                  listId
-                }).catch(() => {});
-                
-                continue;
-              }
-
-              // Get organization ID from the list
-              const list = await ContactList.findById(listId);
-              if (!list) {
-                errors.push({ row: i + 1, error: 'List not found' });
-                continue;
-              }
-
-              // Create contact with organization ID (if list has one)
-              const contact = await Customer.create({
-                name,
-                email: email || undefined,
-                phone: phone || undefined,
-                organizationId: list.organizationId || undefined,
-                tags,
-                source: 'csv_import',
-                company: row.company || row.Company || undefined,
-                notes: row.notes || row.Notes || undefined
-              });
-
-              // Add to list
-              await ContactListMember.create({
-                contactId: contact._id,
-                listId
-              });
-
-              results.push(contact);
-              console.log('[CSV Import Service] Created contact:', contact._id, contact.name);
-
-            } catch (error: any) {
-              console.error(`[CSV Import Service] Error on row ${i + 1}:`, error.message);
-              errors.push({ row: i + 1, error: error.message });
-            }
-          }
-
-          const summary = {
-            imported: results.length,
-            failed: errors.length,
-            duplicates: duplicates.length,
-            errors: errors.slice(0, 10) // Return max 10 errors
-          };
-          
-          console.log('[CSV Import Service] Import complete:', summary);
-          resolve(summary);
-        },
-        error: (error: any) => {
-          console.error('[CSV Import Service] Parse error:', error);
-          reject(new AppError(400, 'VALIDATION_ERROR', `CSV parsing error: ${error.message}`));
+      // Get organization ID from the list first (before processing rows)
+      ContactList.findById(listId).then(list => {
+        if (!list) {
+          reject(new AppError(404, 'NOT_FOUND', 'List not found'));
+          return;
         }
+
+        const organizationId = list.organizationId;
+
+        Papa.parse(csvContent, {
+          header: true,
+          skipEmptyLines: true,
+          transformHeader: (header: string) => {
+            // Normalize headers: trim whitespace, handle case variations
+            return header.trim().toLowerCase();
+          },
+          transform: (value: string) => {
+            // Clean and trim values
+            return value ? value.trim() : '';
+          },
+          complete: async (parseResult) => {
+            const rows = parseResult.data as any[];
+            console.log('[CSV Import Service] Parsed rows:', rows.length);
+            console.log('[CSV Import Service] First row:', rows[0]);
+            console.log('[CSV Import Service] Headers:', parseResult.meta?.fields);
+
+            for (let i = 0; i < rows.length; i++) {
+              const row = rows[i];
+
+              try {
+                // Extract fields (headers are already normalized to lowercase by transformHeader)
+                const name = (row.name || '').trim();
+                const email = (row.email || '').trim().toLowerCase();
+                let phone = (row.phone || '').trim();
+                const company = (row.company || '').trim();
+                const notes = (row.notes || '').trim();
+                const tagsStr = (row.tags || '').trim();
+                const tags = tagsStr ? tagsStr.split(',').map((t: string) => t.trim()).filter(Boolean) : [];
+
+                // Validate required fields
+                if (!name) {
+                  errors.push({ row: i + 2, error: 'Name is required' }); // +2 because header is row 1
+                  continue;
+                }
+
+                // Normalize phone number
+                if (phone) {
+                  // Remove all non-digit characters
+                  phone = phone.replace(/\D/g, '');
+                  // Add country code if not present
+                  if (phone && !phone.startsWith('+')) {
+                    const countryCode = defaultCountryCode.replace(/\D/g, '');
+                    phone = `+${countryCode}${phone}`;
+                  } else if (phone && !phone.startsWith('+')) {
+                    phone = `+${phone}`;
+                  }
+                }
+
+                // Build metadata object for company and notes
+                const metadata: Record<string, any> = {};
+                if (company) metadata.company = company;
+                if (notes) metadata.notes = notes;
+
+                // Check for duplicates WITHIN the same organization
+                const duplicateQuery: any = {
+                  organizationId: organizationId
+                };
+
+                const duplicateConditions: any[] = [];
+                if (email) duplicateConditions.push({ email: email.toLowerCase() });
+                if (phone) duplicateConditions.push({ phone: phone });
+
+                if (duplicateConditions.length > 0) {
+                  duplicateQuery.$or = duplicateConditions;
+                  
+                  const existing = await Customer.findOne(duplicateQuery);
+
+                  if (existing) {
+                    duplicates.push(email || phone || name);
+                    
+                    // Add to list even if duplicate
+                    await ContactListMember.findOneAndUpdate(
+                      { contactId: existing._id, listId },
+                      { contactId: existing._id, listId },
+                      { upsert: true, new: true }
+                    ).catch(() => {});
+                    
+                    continue;
+                  }
+                }
+
+                // Create contact with organization ID
+                const contact = await Customer.create({
+                  name,
+                  email: email || undefined,
+                  phone: phone || undefined,
+                  organizationId: organizationId,
+                  tags,
+                  source: 'import',
+                  metadata: Object.keys(metadata).length > 0 ? metadata : undefined
+                });
+
+                // Add to list
+                await ContactListMember.create({
+                  contactId: contact._id,
+                  listId
+                });
+
+                results.push(contact);
+                console.log('[CSV Import Service] Created contact:', contact._id, contact.name);
+
+              } catch (error: any) {
+                console.error(`[CSV Import Service] Error on row ${i + 2}:`, error.message);
+                console.error(`[CSV Import Service] Row data:`, row);
+                errors.push({ row: i + 2, error: error.message || 'Unknown error' });
+              }
+            }
+
+            const summary = {
+              imported: results.length,
+              failed: errors.length,
+              duplicates: duplicates.length,
+              errors: errors.slice(0, 10) // Return max 10 errors
+            };
+            
+            console.log('[CSV Import Service] Import complete:', summary);
+            resolve(summary);
+          },
+          error: (error: any) => {
+            console.error('[CSV Import Service] Parse error:', error);
+            reject(new AppError(400, 'VALIDATION_ERROR', `CSV parsing error: ${error.message}`));
+          }
+        });
+      }).catch(error => {
+        console.error('[CSV Import Service] Error fetching list:', error);
+        reject(new AppError(404, 'NOT_FOUND', 'List not found'));
       });
     });
   }
