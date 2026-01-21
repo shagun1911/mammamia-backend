@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import KnowledgeBase from '../models/KnowledgeBase';
 import FAQ from '../models/FAQ';
 import Website from '../models/Website';
@@ -30,7 +31,16 @@ export class KnowledgeBaseService {
     return kbWithCounts;
   }
 
-  // Create knowledge base
+  /**
+   * Create a new knowledge base
+   * 
+   * This method:
+   * 1. Creates a collection in Python RAG system
+   * 2. Ingests data sources if provided (URLs, PDFs, Excel files)
+   * 3. Saves KB record to MongoDB with proper user reference
+   * 4. Auto-links KB to user's Settings (enables chatbot, sets as default if first KB)
+   * 5. Syncs with InboundAgentConfig for voice/call functionality
+   */
   async create(name: string, userId: string, dataSources?: {
     urlLinks?: string[];
     pdfFiles?: Buffer[];
@@ -46,31 +56,35 @@ export class KnowledgeBaseService {
         throw new AppError(400, 'VALIDATION_ERROR', 'User ID is required');
       }
       
-      // Generate collection name from knowledge base name
+      // Generate collection name from knowledge base name (sanitize for Python/Chroma)
       const collectionName = name.trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
       
-      console.log(`[KB Service] Creating knowledge base: ${name} with collection: ${collectionName}`);
+      console.log(`[KB Service] Creating knowledge base for user: ${userId}`);
+      console.log(`[KB Service] Name: "${name}" → Collection: "${collectionName}"`);
       
-      // Check if a knowledge base with this collection name already exists
-      const existingKB = await KnowledgeBase.findOne({ collectionName });
+      // Check if THIS USER already has a knowledge base with this collection name
+      // Different users can have KBs with the same name/collection name
+      const existingKB = await KnowledgeBase.findOne({ 
+        userId: userId,
+        collectionName: collectionName 
+      });
       if (existingKB) {
-        console.log(`[KB Service] ⚠️  Knowledge base with collection name "${collectionName}" already exists`);
+        console.log(`[KB Service] ⚠️  User ${userId} already has a KB with collection name "${collectionName}"`);
         throw new AppError(
           409,
           'DUPLICATE_COLLECTION_NAME',
-          `A knowledge base with the name "${existingKB.name}" already uses the collection "${collectionName}". Please choose a different name.`
+          `You already have a knowledge base named "${existingKB.name}" that uses the collection "${collectionName}". Please choose a different name.`
         );
       }
       
-      // Check if there are any data sources to ingest
+      // Step 1: Create collection in Python RAG system
       const hasUrlLinks = dataSources?.urlLinks && dataSources.urlLinks.length > 0;
       const hasPdfFiles = dataSources?.pdfFiles && dataSources.pdfFiles.length > 0;
       const hasExcelFiles = dataSources?.excelFiles && dataSources.excelFiles.length > 0;
       const hasDataSources = hasUrlLinks || hasPdfFiles || hasExcelFiles;
       
       if (hasDataSources) {
-        // If data sources are provided, use data_ingestion endpoint (creates collection and ingests data)
-        console.log(`[KB Service] Calling /rag/data_ingestion to create collection and ingest data`);
+        console.log(`[KB Service] Creating collection with data ingestion`);
         console.log(`[KB Service] Data sources:`, {
           urlLinks: dataSources.urlLinks?.length || 0,
           pdfFiles: dataSources.pdfFiles?.length || 0,
@@ -84,70 +98,33 @@ export class KnowledgeBaseService {
           excelFiles: dataSources.excelFiles || []
         });
         
-        console.log(`[KB Service] ✅ Collection created and data ingested successfully`);
+        console.log(`[KB Service] ✅ Collection created and data ingested in Python RAG`);
       } else {
-        // If no data sources, just create an empty collection
-        console.log(`[KB Service] No data sources provided, creating empty collection`);
+        console.log(`[KB Service] Creating empty collection (no data sources)`);
         await pythonRagService.createCollection(collectionName);
-        console.log(`[KB Service] ✅ Empty collection created successfully`);
+        console.log(`[KB Service] ✅ Empty collection created in Python RAG`);
       }
       
-      // Create knowledge base record in MongoDB
+      // Step 2: Save KB record to MongoDB
       const kb = await KnowledgeBase.create({ 
         userId,
         name,
-        collectionName 
+        collectionName,
+        isDefault: false // Will be updated below if first KB
       });
       
-      console.log(`[KB Service] ✅ Knowledge base created successfully in MongoDB`);
+      console.log(`[KB Service] ✅ KB record saved to MongoDB: ${kb._id}`);
       
-      // Auto-link Knowledge Base to Settings (enable chatbot if not already configured)
+      // Step 3: Auto-link KB to Settings
+      await this.linkKBToSettings(userId, kb._id.toString(), collectionName);
+      
+      // Step 4: Sync with InboundAgentConfig for voice functionality
       try {
-        const Settings = (await import('../models/Settings')).default;
-        const settings = await Settings.findOne({ userId });
-        
-        if (settings) {
-          const needsUpdate = 
-            settings.autoReplyEnabled !== true ||
-            !Array.isArray(settings.defaultKnowledgeBaseNames) ||
-            settings.defaultKnowledgeBaseNames.length === 0;
-          
-          if (needsUpdate) {
-            // Ensure defaultKnowledgeBaseNames is an array
-            const kbNames = Array.isArray(settings.defaultKnowledgeBaseNames) 
-              ? [...settings.defaultKnowledgeBaseNames] 
-              : [];
-            
-            // Add collection name if not already present (no duplicates)
-            if (!kbNames.includes(collectionName)) {
-              kbNames.push(collectionName);
-            }
-            
-            // Update Settings atomically
-            await Settings.updateOne(
-              { userId },
-              {
-                $set: {
-                  autoReplyEnabled: true,
-                  defaultKnowledgeBaseNames: kbNames
-                }
-              }
-            );
-            
-            console.log(`[KB Service] ✅ Auto-linked KB to Settings: enabled auto-reply, added "${collectionName}"`);
-          }
-        } else {
-          // Create Settings if it doesn't exist
-          await Settings.create({
-            userId,
-            autoReplyEnabled: true,
-            defaultKnowledgeBaseNames: [collectionName]
-          });
-          console.log(`[KB Service] ✅ Created Settings and auto-linked KB: "${collectionName}"`);
-        }
+        const { inboundAgentConfigService } = await import('./inboundAgentConfig.service');
+        await inboundAgentConfigService.syncConfig(userId);
+        console.log(`[KB Service] ✅ InboundAgentConfig synced`);
       } catch (error: any) {
-        // Don't fail KB creation if Settings update fails
-        console.error(`[KB Service] ⚠️  Failed to auto-link KB to Settings:`, error.message);
+        console.warn(`[KB Service] ⚠️  Failed to sync InboundAgentConfig:`, error.message);
       }
       
       return kb;
@@ -158,6 +135,196 @@ export class KnowledgeBaseService {
         error.code || 'KB_CREATE_ERROR',
         error.message || 'Failed to create knowledge base'
       );
+    }
+  }
+
+  /**
+   * Link a knowledge base to user's settings
+   * 
+   * This ensures:
+   * - autoReplyEnabled is set to true
+   * - KB is added to defaultKnowledgeBaseNames array (no duplicates)
+   * - Legacy defaultKnowledgeBaseName is set (for backward compatibility)
+   * - First KB becomes the default
+   */
+  private async linkKBToSettings(userId: string, kbId: string, collectionName: string): Promise<void> {
+    try {
+      const Settings = (await import('../models/Settings')).default;
+      let settings = await Settings.findOne({ userId });
+      
+      if (settings) {
+        // Get existing KB names array
+        const existingNames = Array.isArray(settings.defaultKnowledgeBaseNames) 
+          ? [...settings.defaultKnowledgeBaseNames] 
+          : [];
+        
+        // Get existing KB IDs array
+        const existingIds = Array.isArray(settings.defaultKnowledgeBaseIds) 
+          ? [...settings.defaultKnowledgeBaseIds] 
+          : [];
+        
+        // Add new KB if not already present
+        const nameAlreadyLinked = existingNames.includes(collectionName);
+        const idAlreadyLinked = existingIds.some((id: any) => id.toString() === kbId);
+        
+        if (!nameAlreadyLinked) {
+          existingNames.push(collectionName);
+        }
+        
+        if (!idAlreadyLinked) {
+          existingIds.push(new mongoose.Types.ObjectId(kbId));
+        }
+        
+        // Determine if this is the first KB (should be default)
+        const isFirstKB = existingNames.length === 1;
+        
+        // Update Settings
+        const updateData: any = {
+          autoReplyEnabled: true,
+          defaultKnowledgeBaseNames: existingNames,
+          defaultKnowledgeBaseIds: existingIds
+        };
+        
+        // Set legacy single-value fields (for backward compatibility)
+        if (isFirstKB || !settings.defaultKnowledgeBaseName) {
+          updateData.defaultKnowledgeBaseName = collectionName;
+          updateData.defaultKnowledgeBaseId = kbId;
+        }
+        
+        await Settings.updateOne({ userId }, { $set: updateData });
+        
+        console.log(`[KB Service] ✅ Settings updated:`, {
+          userId,
+          collectionName,
+          totalKBs: existingNames.length,
+          isFirstKB,
+          autoReplyEnabled: true
+        });
+      } else {
+        // Create new Settings document
+        await Settings.create({
+          userId,
+          autoReplyEnabled: true,
+          defaultKnowledgeBaseId: new mongoose.Types.ObjectId(kbId),
+          defaultKnowledgeBaseName: collectionName,
+          defaultKnowledgeBaseIds: [new mongoose.Types.ObjectId(kbId)],
+          defaultKnowledgeBaseNames: [collectionName]
+        });
+        
+        console.log(`[KB Service] ✅ Created new Settings with KB linked:`, {
+          userId,
+          kbId,
+          collectionName,
+          defaultKnowledgeBaseNames: [collectionName],
+          defaultKnowledgeBaseIds: [kbId]
+        });
+      }
+    } catch (error: any) {
+      console.error(`[KB Service] ⚠️  Failed to link KB to Settings:`, error.message);
+      // Don't throw - KB creation should still succeed
+    }
+  }
+
+  /**
+   * Set a knowledge base as the default for a user
+   * 
+   * This updates:
+   * - Settings.defaultKnowledgeBaseName (string)
+   * - Settings.defaultKnowledgeBaseId (ObjectId)
+   * - Moves the KB to the front of defaultKnowledgeBaseNames array
+   */
+  async setAsDefault(userId: string, kbId: string): Promise<void> {
+    try {
+      const kb = await KnowledgeBase.findById(kbId);
+      if (!kb) {
+        throw new AppError(404, 'NOT_FOUND', 'Knowledge base not found');
+      }
+
+      if (kb.userId.toString() !== userId) {
+        throw new AppError(403, 'FORBIDDEN', 'You do not have access to this knowledge base');
+      }
+
+      const Settings = (await import('../models/Settings')).default;
+      const settings = await Settings.findOne({ userId });
+
+      if (!settings) {
+        // Create settings if doesn't exist
+        await Settings.create({
+          userId,
+          autoReplyEnabled: true,
+          defaultKnowledgeBaseId: kbId,
+          defaultKnowledgeBaseName: kb.collectionName,
+          defaultKnowledgeBaseIds: [kbId],
+          defaultKnowledgeBaseNames: [kb.collectionName]
+        });
+      } else {
+        // Get existing arrays
+        const existingNames = Array.isArray(settings.defaultKnowledgeBaseNames)
+          ? settings.defaultKnowledgeBaseNames.filter((n: string) => n !== kb.collectionName)
+          : [];
+        const existingIds = Array.isArray(settings.defaultKnowledgeBaseIds)
+          ? settings.defaultKnowledgeBaseIds.filter((id: any) => id.toString() !== kbId)
+          : [];
+
+        // Put the selected KB at the front
+        const newNames = [kb.collectionName, ...existingNames];
+        const newIds = [kbId, ...existingIds];
+
+        await Settings.updateOne(
+          { userId },
+          {
+            $set: {
+              defaultKnowledgeBaseId: kbId,
+              defaultKnowledgeBaseName: kb.collectionName,
+              defaultKnowledgeBaseIds: newIds,
+              defaultKnowledgeBaseNames: newNames
+            }
+          }
+        );
+      }
+
+      // Update KB model to mark as default
+      await KnowledgeBase.updateMany({ userId }, { isDefault: false });
+      await KnowledgeBase.updateOne({ _id: kbId }, { isDefault: true });
+
+      console.log(`[KB Service] ✅ Set KB "${kb.name}" as default for user ${userId}`);
+
+      // Sync InboundAgentConfig
+      try {
+        const { inboundAgentConfigService } = await import('./inboundAgentConfig.service');
+        await inboundAgentConfigService.syncConfig(userId);
+      } catch (error: any) {
+        console.warn(`[KB Service] ⚠️  Failed to sync InboundAgentConfig:`, error.message);
+      }
+    } catch (error: any) {
+      console.error(`[KB Service] ❌ Failed to set KB as default:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get knowledge base collections for a user
+   * Returns the collection names that should be used for RAG queries
+   */
+  async getCollectionNamesForUser(userId: string): Promise<string[]> {
+    try {
+      const Settings = (await import('../models/Settings')).default;
+      const settings = await Settings.findOne({ userId });
+
+      if (settings?.defaultKnowledgeBaseNames && settings.defaultKnowledgeBaseNames.length > 0) {
+        return settings.defaultKnowledgeBaseNames;
+      }
+
+      if (settings?.defaultKnowledgeBaseName) {
+        return [settings.defaultKnowledgeBaseName];
+      }
+
+      // Fallback: get all KBs for user
+      const kbs = await KnowledgeBase.find({ userId }).sort({ isDefault: -1, createdAt: -1 });
+      return kbs.map(kb => kb.collectionName);
+    } catch (error: any) {
+      console.error(`[KB Service] Error getting collection names:`, error);
+      return [];
     }
   }
 

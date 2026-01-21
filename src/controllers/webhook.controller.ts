@@ -221,66 +221,49 @@ export class WebhookController {
 
   /**
    * Trigger AI auto-reply using RAG service
+   * Uses AIContextService for consistent KB and system prompt resolution
    */
   private async triggerAIReply(conversation: any, userMessage: string, organizationId: string, customerPhone: string) {
     try {
-      // Find the organization and its owner
-      const organization = await Organization.findById(organizationId);
-      if (!organization) {
-        console.log(`[AI Auto-Reply] Organization not found: ${organizationId}`);
+      // Use centralized AI context service for consistent behavior across all platforms
+      const { aiContextService } = await import('../services/aiContext.service');
+      
+      // Resolve AI context (KB + system prompt) from organization
+      const aiContext = await aiContextService.resolveFromOrganization(organizationId);
+      
+      if (!aiContext) {
+        console.log('[WhatsApp AI] No AI context available (no KB or settings configured)');
         return;
       }
 
-      // Get settings for the organization owner
-      let settings = await Settings.findOne({ userId: organization.ownerId });
-      
-      // If owner doesn't have settings, try finding any user in this organization with settings
-      if (!settings) {
-        const users = await User.find({ organizationId: organizationId }).limit(5);
-        for (const user of users) {
-          settings = await Settings.findOne({ userId: user._id });
-          if (settings?.defaultKnowledgeBaseName) break;
-        }
-      }
-      
-      // Log for debugging
-      console.log(`[AI Auto-Reply] Organization: ${organizationId}, Owner: ${organization.ownerId}`);
-      console.log(`[AI Auto-Reply] Settings found: ${settings ? 'YES' : 'NO'}`);
-      if (settings) {
-        console.log(`[AI Auto-Reply] defaultKnowledgeBaseName: ${settings.defaultKnowledgeBaseName || 'NOT SET'}`);
-      }
-      
-      if (!settings || !settings.defaultKnowledgeBaseName) {
-        console.log('[AI Auto-Reply] No default knowledge base configured in settings');
+      if (!aiContext.autoReplyEnabled) {
+        console.log('[WhatsApp AI] Auto-reply is disabled in settings');
         return;
       }
 
-      const collectionName = settings.defaultKnowledgeBaseName;
-      console.log(`[AI Auto-Reply] Using knowledge base collection: ${collectionName}`);
-      
-      // Get recent conversation history for context
-      const recentMessages = await Message.find({ conversationId: conversation._id })
-        .sort({ timestamp: -1 })
-        .limit(5)
-        .lean();
-      
-      // Call Python RAG service to generate response - simple payload only
+      console.log(`[WhatsApp AI] Using context:`, {
+        collectionNames: aiContext.collectionNames,
+        systemPromptLength: aiContext.systemPrompt.length,
+        userId: aiContext.userId
+      });
+
+      // Call Python RAG service with resolved context
       const ragResponse = await pythonRagService.chat({
         query: userMessage,
-        collectionNames: [collectionName],
+        collectionNames: aiContext.collectionNames,
         topK: 5,
         threadId: conversation._id.toString(),
-        systemPrompt: 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.'
+        systemPrompt: aiContext.systemPrompt
       });
 
       const aiResponse = ragResponse.answer;
       
       if (!aiResponse) {
-        console.error('[AI Auto-Reply] No response from RAG service');
+        console.error('[WhatsApp AI] No response from RAG service');
         return;
       }
 
-      console.log(`[AI Auto-Reply] Got response: ${aiResponse.substring(0, 100)}...`);
+      console.log(`[WhatsApp AI] Got response: ${aiResponse.substring(0, 100)}...`);
 
       // Save AI message to database
       await Message.create({
@@ -291,7 +274,8 @@ export class WebhookController {
         timestamp: new Date(),
         metadata: {
           generatedBy: 'rag-service',
-          collectionNames: [collectionName], // Updated to array for multiple collections support
+          collectionNames: aiContext.collectionNames,
+          systemPromptUsed: true,
           retrievedDocs: ragResponse.retrieved_docs || []
         }
       });
@@ -305,7 +289,7 @@ export class WebhookController {
         text: aiResponse
       });
 
-      console.log('[AI Auto-Reply] Response sent successfully');
+      console.log('[WhatsApp AI] ✅ Response sent successfully');
 
       // Emit socket event for AI reply
       emitToOrganization(organizationId, 'new-message', {
@@ -324,7 +308,7 @@ export class WebhookController {
       });
 
     } catch (error: any) {
-      console.error('[AI Auto-Reply] Failed:', error.message || error);
+      console.error('[WhatsApp AI] Failed:', error.message || error);
       // Don't throw - we don't want to break the webhook flow
     }
   }

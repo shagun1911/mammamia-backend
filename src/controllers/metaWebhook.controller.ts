@@ -1304,6 +1304,7 @@ export class MetaWebhookController {
 
   /**
    * Trigger AI auto-reply
+   * Uses AIContextService for consistent KB and system prompt resolution
    */
   private async triggerAIReply(
     conversation: any,
@@ -1315,62 +1316,43 @@ export class MetaWebhookController {
     integration?: any
   ) {
     try {
-      const Organization = (await import('../models/Organization')).default;
-      const Settings = (await import('../models/Settings')).default;
-      const User = (await import('../models/User')).default;
-
-      const organization = await Organization.findById(organizationId);
-      if (!organization) return;
-
-      // Get settings with fallback logic
-      let settings = await Settings.findOne({ userId: organization.ownerId });
-      if (!settings) {
-        const users = await User.find({ organizationId: organizationId }).limit(5);
-        for (const user of users) {
-          settings = await Settings.findOne({ userId: user._id });
-          if (settings && (settings.defaultKnowledgeBaseNames?.length > 0 || settings.defaultKnowledgeBaseName)) break;
-        }
-      }
-
-      // Get knowledge base names (prioritize array, fallback to string)
-      let collectionNames: string[] = [];
-      if (settings?.defaultKnowledgeBaseNames && settings.defaultKnowledgeBaseNames.length > 0) {
-        collectionNames = settings.defaultKnowledgeBaseNames;
-      } else if (settings?.defaultKnowledgeBaseName) {
-        collectionNames = [settings.defaultKnowledgeBaseName];
-      }
-
-      if (collectionNames.length === 0) {
-        console.log('[Meta AI] No knowledge base configured');
+      // Use centralized AI context service for consistent behavior across all platforms
+      const { aiContextService } = await import('../services/aiContext.service');
+      
+      // Resolve AI context (KB + system prompt) from organization
+      const aiContext = await aiContextService.resolveFromOrganization(organizationId);
+      
+      if (!aiContext) {
+        console.log(`[${platform} AI] No AI context available (no KB or settings configured)`);
         return;
       }
 
-      // Get system prompt from AIBehavior
-      const { aiBehaviorService } = await import('../services/aiBehavior.service');
-      let systemPrompt = 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.';
-      try {
-        const userId = organization.ownerId?.toString() || (await User.findOne({ organizationId: organizationId }))?._id?.toString();
-        if (userId) {
-          const aiBehavior = await aiBehaviorService.get(userId);
-          if (aiBehavior?.chatAgent?.systemPrompt) {
-            systemPrompt = aiBehavior.chatAgent.systemPrompt;
-            console.log('[Meta AI] Using custom system prompt from AIBehavior');
-          }
-        }
-      } catch (error: any) {
-        console.warn('[Meta AI] Could not fetch system prompt from AIBehavior, using default:', error.message);
+      if (!aiContext.autoReplyEnabled) {
+        console.log(`[${platform} AI] Auto-reply is disabled in settings`);
+        return;
       }
+
+      console.log(`[${platform} AI] Using context:`, {
+        collectionNames: aiContext.collectionNames,
+        systemPromptLength: aiContext.systemPrompt.length,
+        userId: aiContext.userId
+      });
 
       const ragResponse = await pythonRagService.chat({
         query: userMessage,
-        collectionNames: collectionNames,
+        collectionNames: aiContext.collectionNames,
         topK: 5,
         threadId: conversation._id.toString(),
-        systemPrompt: systemPrompt
+        systemPrompt: aiContext.systemPrompt
       });
 
       const aiResponse = ragResponse.answer;
-      if (!aiResponse) return;
+      if (!aiResponse) {
+        console.error(`[${platform} AI] No response from RAG service`);
+        return;
+      }
+
+      console.log(`[${platform} AI] Got response: ${aiResponse.substring(0, 100)}...`);
 
       // Save AI message
       await Message.create({
@@ -1381,7 +1363,8 @@ export class MetaWebhookController {
         timestamp: new Date(),
         metadata: {
           generatedBy: 'rag-service',
-          collectionNames: [collectionName]
+          collectionNames: aiContext.collectionNames,
+          systemPromptUsed: true
         }
       });
 

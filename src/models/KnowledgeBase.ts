@@ -57,7 +57,6 @@ const KnowledgeBaseSchema = new Schema<IKnowledgeBase>({
   collectionName: {
     type: String,
     required: true,
-    unique: true
   },
   isDefault: {
     type: Boolean,

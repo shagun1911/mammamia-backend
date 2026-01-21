@@ -425,6 +425,7 @@ export class InstagramWebhookController {
 
   /**
    * Trigger AI auto-reply for Instagram
+   * Uses AIContextService for consistent KB and system prompt resolution
    */
   private async triggerAIReply(
     conversation: any,
@@ -434,71 +435,36 @@ export class InstagramWebhookController {
     instagramAccountId: string
   ) {
     try {
-      // Import services
+      // Use centralized AI context service for consistent behavior across all platforms
+      const { aiContextService } = await import('../services/aiContext.service');
       const { pythonRagService } = await import('../services/pythonRag.service');
-      const Organization = (await import('../models/Organization')).default;
-      const Settings = (await import('../models/Settings')).default;
-      const User = (await import('../models/User')).default;
-
-      // Find organization
-      const organization = await Organization.findById(organizationId);
-      if (!organization) {
-        console.log(`[Instagram AI] Organization not found: ${organizationId}`);
+      
+      // Resolve AI context (KB + system prompt) from organization
+      const aiContext = await aiContextService.resolveFromOrganization(organizationId);
+      
+      if (!aiContext) {
+        console.log('[Instagram AI] No AI context available (no KB or settings configured)');
         return;
       }
 
-      // Get settings with fallback logic
-      let settings = await Settings.findOne({ userId: organization.ownerId });
-      if (!settings) {
-        const users = await User.find({ organizationId: organizationId }).limit(5);
-        for (const user of users) {
-          settings = await Settings.findOne({ userId: user._id });
-          if (settings && (settings.defaultKnowledgeBaseNames?.length > 0 || settings.defaultKnowledgeBaseName)) break;
-        }
-      }
-
-      // Get knowledge base names (prioritize array, fallback to string)
-      let collectionNames: string[] = [];
-      if (settings?.defaultKnowledgeBaseNames && settings.defaultKnowledgeBaseNames.length > 0) {
-        collectionNames = settings.defaultKnowledgeBaseNames;
-      } else if (settings?.defaultKnowledgeBaseName) {
-        collectionNames = [settings.defaultKnowledgeBaseName];
-      }
-
-      if (collectionNames.length === 0) {
-        console.log('[Instagram AI] No knowledge base configured');
+      if (!aiContext.autoReplyEnabled) {
+        console.log('[Instagram AI] Auto-reply is disabled in settings');
         return;
       }
 
-      // Get system prompt from AIBehavior
-      const { aiBehaviorService } = await import('../services/aiBehavior.service');
-      let systemPrompt = 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.';
-      try {
-        const userId = organization.ownerId?.toString() || (await User.findOne({ organizationId: organizationId }))?._id?.toString();
-        if (userId) {
-          const aiBehavior = await aiBehaviorService.get(userId);
-          if (aiBehavior?.chatAgent?.systemPrompt) {
-            systemPrompt = aiBehavior.chatAgent.systemPrompt;
-            console.log('[Instagram AI] Using custom system prompt from AIBehavior');
-          }
-        }
-      } catch (error: any) {
-        console.warn('[Instagram AI] Could not fetch system prompt from AIBehavior, using default:', error.message);
-      }
+      console.log('[Instagram AI] Using context:', {
+        collectionNames: aiContext.collectionNames,
+        systemPromptLength: aiContext.systemPrompt.length,
+        userId: aiContext.userId
+      });
 
-      // Get recent conversation history
-      const recentMessages = await Message.find({ conversationId: conversation._id })
-        .sort({ timestamp: -1 })
-        .limit(5)
-        .lean();
-
-      // Call Python RAG service
+      // Call Python RAG service with resolved context
       const ragResponse = await pythonRagService.chat({
         query: userMessage,
-        collectionNames: collectionNames,
+        collectionNames: aiContext.collectionNames,
         topK: 5,
         threadId: conversation._id.toString(),
-        systemPrompt: systemPrompt
+        systemPrompt: aiContext.systemPrompt
       });
 
       const aiResponse = ragResponse.answer;
@@ -506,6 +472,8 @@ export class InstagramWebhookController {
         console.error('[Instagram AI] No response from RAG service');
         return;
       }
+
+      console.log(`[Instagram AI] Got response: ${aiResponse.substring(0, 100)}...`);
 
       // Save AI message
       await Message.create({
@@ -516,14 +484,15 @@ export class InstagramWebhookController {
         timestamp: new Date(),
         metadata: {
           generatedBy: 'rag-service',
-          collectionNames: [collectionName]
+          collectionNames: aiContext.collectionNames,
+          systemPromptUsed: true
         }
       });
 
       // Send AI response via Instagram (using Messenger Send API with page access token)
       await this.sendInstagramMessage(instagramAccountId, instagramUserId, aiResponse, organizationId);
 
-      console.log('[Instagram AI] Response sent successfully');
+      console.log('[Instagram AI] ✅ Response sent successfully');
 
       // Emit socket event
       emitToOrganization(organizationId, 'new-message', {

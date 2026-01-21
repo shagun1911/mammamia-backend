@@ -541,6 +541,14 @@ export class AutomationEngine {
           throw new Error('Email action not configured correctly. Body is required.');
         }
 
+        // Get user email for API authentication (if available)
+        let userEmail: string | undefined;
+        if (context?.userId) {
+          const User = (await import('../models/User')).default;
+          const user = await User.findById(context.userId).select('email').lean();
+          userEmail = user?.email;
+        }
+
         // Debug logging
         console.log('[Automation] Email action payload:', {
           to: recipientEmail,
@@ -549,26 +557,48 @@ export class AutomationEngine {
           isHtml: is_html || false,
           contactId: contactId?.toString(),
           organizationId: context?.organizationId?.toString(),
-          userId: context?.userId?.toString()
+          userId: context?.userId?.toString(),
+          hasUserEmail: !!userEmail
         });
 
-        // Use external API for email sending (same as campaign service)
+        // Use external API for email sending
+        // Python API expects: to, subject, body, and X-User-Email header (if Gmail integration)
         try {
           console.log(`[Automation] Sending email to ${recipientEmail}...`);
+          
+          const requestHeaders: any = {
+            'Content-Type': 'application/json'
+          };
+          
+          // Add user email header if available (required for Gmail API)
+          if (userEmail) {
+            requestHeaders['X-User-Email'] = userEmail;
+          }
+          
           const emailResponse = await axios.post(`${COMM_API}/email/send`, {
-            receiver_email: recipientEmail,
+            to: recipientEmail,
             subject: emailSubject,
             body: emailBody,
-            is_html: is_html || false,
+            // Note: Python API may handle HTML based on content or is_html flag
+            ...(is_html ? { is_html: true } : {})
           }, {
+            headers: requestHeaders,
             timeout: 30000, // 30 seconds timeout
           });
 
-          const success = emailResponse.data.status === 'success';
-          console.log(`[Automation] Email to ${recipientEmail} ${success ? 'sent successfully' : 'failed'}`);
+          const success = emailResponse.data.status === 'success' || emailResponse.data.success === true;
+          
+          // FAIL HARD: If email sending failed, throw error immediately
+          if (!success) {
+            const errorMessage = emailResponse.data.message || emailResponse.data.error || 'Email sending failed';
+            console.error(`[Automation] Email to ${recipientEmail} failed:`, errorMessage);
+            throw new Error(`Email sending failed: ${errorMessage}`);
+          }
+
+          console.log(`[Automation] Email to ${recipientEmail} sent successfully`);
 
           return {
-            success,
+            success: true,
             contactId: contactId?.toString(),
             email: recipientEmail,
             subject: emailSubject,
@@ -576,39 +606,167 @@ export class AutomationEngine {
             sentAt: new Date()
           };
         } catch (error: any) {
+          // Log detailed error information
+          const errorDetails = error.response?.data;
           console.error(`[Automation] Email to ${recipientEmail} failed:`, {
-            error: error.response?.data?.detail || error.message,
+            error: errorDetails || error.message,
             statusCode: error.response?.status,
-            recipientEmail
+            recipientEmail,
+            requestPayload: {
+              to: recipientEmail,
+              subject: emailSubject,
+              bodyLength: emailBody.length,
+              hasUserEmailHeader: !!userEmail
+            }
           });
-          throw new Error(`Email sending failed: ${error.response?.data?.detail || error.message}`);
+          
+          // Provide more helpful error message
+          let errorMessage = 'Email sending failed';
+          if (errorDetails) {
+            if (Array.isArray(errorDetails)) {
+              // Pydantic validation errors
+              const missingFields = errorDetails
+                .filter((e: any) => e.type === 'missing')
+                .map((e: any) => e.loc?.join('.') || 'unknown')
+                .join(', ');
+              errorMessage = `Email sending failed: Missing required fields: ${missingFields}`;
+            } else if (errorDetails.detail) {
+              errorMessage = `Email sending failed: ${errorDetails.detail}`;
+            } else if (errorDetails.message) {
+              errorMessage = `Email sending failed: ${errorDetails.message}`;
+            }
+          } else {
+            errorMessage = `Email sending failed: ${error.message}`;
+          }
+          
+          throw new Error(errorMessage);
         }
       }
     });
 
     // WhatsApp Template Action
     this.actions.set('send_whatsapp', {
-      execute: async (config, triggerData) => {
-        const { templateId, delay, delayUnit } = config;
+      execute: async (config, triggerData, context) => {
+        const { templateName, templateId, phoneNumberId, to, delay, delayUnit, languageCode = 'en_US', components = [] } = config;
         const contactId = triggerData.contactId;
 
         if (delay && delay > 0) {
           await this.delay(delay, delayUnit);
         }
 
-        const contact = await Customer.findById(contactId);
-        if (!contact || !contact.phone) {
-          throw new Error('Contact not found or phone missing');
+        // Resolve phoneNumberId from integration if not provided
+        let resolvedPhoneNumberId = phoneNumberId;
+        let userAccessToken: string | null = null;
+
+        if (!resolvedPhoneNumberId) {
+          const organizationId = context?.organizationId || triggerData?.organizationId;
+          if (organizationId) {
+            const SocialIntegration = (await import('../models/SocialIntegration')).default;
+            const integration = await SocialIntegration.findOne({
+              organizationId,
+              platform: 'whatsapp',
+              status: 'connected'
+            });
+
+            if (integration?.credentials?.phoneNumberId) {
+              resolvedPhoneNumberId = integration.credentials.phoneNumberId;
+              userAccessToken = integration.credentials.apiKey; // USER access token
+            }
+          }
         }
 
-        const result = await this.whatsappService.sendTemplate(
-          contact.phone,
-          templateId,
-          'en',
-          config.variables || {}
-        );
+        // STRICT VALIDATION: Throw immediately if required fields missing
+        if (!resolvedPhoneNumberId || resolvedPhoneNumberId.trim() === '') {
+          throw new Error('phoneNumberId is required. Please configure WhatsApp integration or provide phoneNumberId in action config.');
+        }
 
-        return result;
+        if (!userAccessToken || userAccessToken.trim() === '') {
+          throw new Error('WhatsApp access token not found. Please ensure WhatsApp integration is connected.');
+        }
+
+        // Resolve recipient phone number
+        let recipientPhone = to;
+        if (!recipientPhone && contactId) {
+          const contact = await Customer.findById(contactId);
+          if (!contact || !contact.phone) {
+            throw new Error('Contact not found or phone missing. Please provide "to" field or ensure contact has phone number.');
+          }
+          recipientPhone = contact.phone;
+        }
+
+        if (!recipientPhone || recipientPhone.trim() === '') {
+          throw new Error('Recipient phone number (to) is required.');
+        }
+
+        // Use templateName or templateId (templateName takes precedence)
+        // Default to "hello_world" if not specified (for testing)
+        const resolvedTemplateName = templateName || templateId || 'hello_world';
+        const resolvedLanguageCode = languageCode || 'en_US';
+        
+        if (!resolvedTemplateName || resolvedTemplateName.trim() === '') {
+          throw new Error('templateName is required.');
+        }
+
+        // Construct Graph API URL exactly as specified
+        const graphApiUrl = `https://graph.facebook.com/v18.0/${resolvedPhoneNumberId}/messages`;
+        
+        // Build payload exactly as specified (do NOT include components unless required)
+        const payload: any = {
+          messaging_product: 'whatsapp',
+          to: recipientPhone,
+          type: 'template',
+          template: {
+            name: resolvedTemplateName,
+            language: { code: resolvedLanguageCode }
+          }
+        };
+        
+        // Only include components if explicitly provided and not empty
+        if (components && Array.isArray(components) && components.length > 0) {
+          payload.template.components = components;
+        }
+        
+        console.log('[Automation] WhatsApp Template - Final URL and payload:', {
+          url: graphApiUrl,
+          phoneNumberId: resolvedPhoneNumberId,
+          to: recipientPhone,
+          templateName: resolvedTemplateName,
+          languageCode: resolvedLanguageCode,
+          hasComponents: components && components.length > 0,
+          payload: JSON.stringify(payload, null, 2)
+        });
+
+        // Use WhatsAppService.sendTemplateMessage with proper parameters
+        const result = await this.whatsappService.sendTemplateMessage(userAccessToken, {
+          phoneNumberId: resolvedPhoneNumberId,
+          to: recipientPhone,
+          templateName: resolvedTemplateName,
+          languageCode: resolvedLanguageCode,
+          components: components && components.length > 0 ? components : []
+        });
+
+        // Fail hard on HTTP errors (already handled by sendTemplateMessage throwing AppError)
+        if (!result.success) {
+          throw new Error(result.error?.message || 'WhatsApp template send failed');
+        }
+
+        return {
+          success: true,
+          messageId: result.message_id,
+          result
+        };
+      }
+    });
+
+    // WhatsApp Template Action (alias for send_whatsapp)
+    this.actions.set('whatsapp_template', {
+      execute: async (config, triggerData, context) => {
+        // Delegate to send_whatsapp handler
+        const sendWhatsAppHandler = this.actions.get('send_whatsapp');
+        if (!sendWhatsAppHandler) {
+          throw new Error('WhatsApp service not available');
+        }
+        return sendWhatsAppHandler.execute(config, triggerData, context);
       }
     });
 
@@ -870,44 +1028,71 @@ export class AutomationEngine {
             refresh_token: integration.refreshToken
           });
 
+          // VERIFY API CLIENT METHOD: google.sheets("v4").spreadsheets.values.append
           const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
 
-          // Build range for append operation
-          // Google Sheets append API REQUIRES: column range format like "Sheet1!A:Z"
-          // NOT "Sheet1" (invalid), NOT "Sheet1!A1" (single cell), NOT "Sheet1!A:A" (single column)
-          // ✅ CORRECT: "Sheet1!A:Z" - defines columns A through Z, Google finds next empty row
-          
-          // Determine sheet name: prefer from range, then from sheetName config, then default
-          let sheet: string;
-          
-          if (range && range.includes('!')) {
-            // Extract sheet name from range (e.g., "Sheet1" from "Sheet1!A1")
-            const parts = range.split('!');
-            sheet = parts[0];
-          } else {
-            // Use sheetName from config or default
-            sheet = sheetName || 'Sheet1';
-          }
-          
-          // ✅ ALWAYS use column range format: Sheet1!A:Z
-          // This is the industry standard (Zapier, Make, n8n all use A:Z)
-          // Google Sheets append API will find the next empty row automatically
-          const appendRange = `${sheet}!A:Z`;
+          // FORCE RANGE TO SHEET NAME ONLY - NO EXCLAMATION, NO COLUMN OR CELL RANGES
+          // Use sheetName from config or default to "Sheet1"
+          // For append operations, Google Sheets API accepts just the sheet name
+          const sheetNameOnly = sheetName || 'Sheet1';
 
-          console.log('[Automation] Appending to Google Sheet:', {
-            spreadsheetId: spreadsheetId.substring(0, 20) + '...',
-            range: appendRange,
-            sheetName: sheetName || 'Sheet1',
-            valuesCount: values.length,
-            valuesPreview: values.slice(0, 3)
+          // Resolve template variables in values (e.g., {{contact.name}})
+          // Fetch contact from database to get REAL values, not template strings
+          let contact: any = null;
+          const contactId = triggerData.contactId;
+          if (contactId) {
+            contact = await Customer.findById(contactId).lean();
+          }
+
+          // Resolve template variables to REAL ARRAY values
+          // Ensure resolvedValues is a proper 1D array: [value1, value2, value3, ...]
+          const resolvedValues: any[] = values.map((value: any) => {
+            if (typeof value !== 'string') return value;
+            
+            // Replace contact variables with actual contact data
+            if (contact) {
+              return value
+                .replace(/\{\{contact\.name\}\}/g, contact.name || '')
+                .replace(/\{\{contact\.email\}\}/g, contact.email || '')
+                .replace(/\{\{contact\.phone\}\}/g, contact.phone || '')
+                .replace(/\{\{contact\.createdAt\}\}/g, contact.createdAt ? new Date(contact.createdAt).toISOString() : '');
+            }
+            
+            // Fallback to triggerData if contact not found
+            return value
+              .replace(/\{\{contact\.name\}\}/g, triggerData.contactName || '')
+              .replace(/\{\{contact\.email\}\}/g, triggerData.contactEmail || '')
+              .replace(/\{\{contact\.phone\}\}/g, triggerData.contactPhone || '')
+              .replace(/\{\{contact\.createdAt\}\}/g, triggerData.contactCreatedAt || '');
           });
 
+          // Ensure resolvedValues is an array (safety check)
+          if (!Array.isArray(resolvedValues)) {
+            throw new Error('resolvedValues must be an array');
+          }
+
+          // DEBUG LOG: Show exact payload being sent
+          console.log('[Automation] Sheets append payload:', {
+            spreadsheetId,
+            range: sheetNameOnly,
+            values: resolvedValues,
+            valuesType: Array.isArray(resolvedValues) ? 'array' : typeof resolvedValues,
+            valuesLength: resolvedValues.length,
+            wrappedValues: [resolvedValues] // Show the 2D array format
+          });
+
+          // EXACT API CALL: google.sheets("v4").spreadsheets.values.append
+          // values MUST be a 2D array: [[value1, value2, value3]]
           const response = await sheets.spreadsheets.values.append({
             spreadsheetId,
-            range: appendRange,
+            range: sheetNameOnly, // "Sheet1" - sheet name only
             valueInputOption: 'USER_ENTERED',
+            insertDataOption: 'INSERT_ROWS',
             requestBody: {
-              values: [values]
+              // CRITICAL: Wrap resolvedValues in array to create 2D array
+              // resolvedValues = [v1, v2, v3] (1D array)
+              // [resolvedValues] = [[v1, v2, v3]] (2D array) ✅ CORRECT
+              values: [resolvedValues]
             }
           });
 
@@ -928,7 +1113,14 @@ export class AutomationEngine {
             spreadsheetId: spreadsheetId?.substring(0, 20),
             valuesCount: values?.length
           });
-          throw new Error(`Google Sheets append failed: ${error.message}`);
+          
+          // Return failure result instead of throwing - allows automation to continue
+          // WhatsApp template and other actions should still execute
+          return {
+            success: false,
+            error: `Google Sheets append failed: ${error.message}`,
+            appendedAt: new Date()
+          };
         }
       }
     });
@@ -1174,6 +1366,31 @@ export class AutomationEngine {
           try {
             // CRITICAL: Pass converted plain object config, not Mongoose Map
             const actionResult = await actionHandler.execute(nodeConfig, triggerData, enrichedContext);
+            
+            // Check if action returned success=false
+            if (actionResult && actionResult.success === false) {
+              const errorMessage = actionResult.error || 'Action returned success=false';
+              console.error(`[Automation Engine] ❌ Action ${node.service} failed:`, errorMessage);
+              
+              // Google Sheets failures should NOT stop automation - continue to next action
+              if (node.service === 'keplero_google_sheet_append_row') {
+                console.warn(`[Automation Engine] ⚠️  Google Sheets failed, but continuing automation...`);
+                actionResults.push({
+                  nodeId: node.id,
+                  service: node.service,
+                  result: {
+                    success: false,
+                    error: errorMessage
+                  }
+                });
+                // Continue to next action instead of throwing
+                continue;
+              }
+              
+              // For other actions, throw to stop execution
+              throw new Error(errorMessage);
+            }
+            
             console.log(`[Automation Engine] ✅ Action ${node.service} completed:`, {
               success: actionResult?.success !== false,
               result: actionResult
@@ -1181,11 +1398,27 @@ export class AutomationEngine {
             actionResults.push({
               nodeId: node.id,
               service: node.service,
-              result: actionResult
+              result: actionResult || { success: true }
             });
           } catch (actionError: any) {
             console.error(`[Automation Engine] ❌ Action ${node.service} failed:`, actionError.message);
-            // Continue with other actions even if one fails
+            
+            // Google Sheets failures should NOT stop automation - continue to next action
+            if (node.service === 'keplero_google_sheet_append_row') {
+              console.warn(`[Automation Engine] ⚠️  Google Sheets failed, but continuing automation...`);
+              actionResults.push({
+                nodeId: node.id,
+                service: node.service,
+                result: {
+                  success: false,
+                  error: actionError.message
+                }
+              });
+              // Continue to next action instead of throwing
+              continue;
+            }
+            
+            // Mark this node as failed
             actionResults.push({
               nodeId: node.id,
               service: node.service,
@@ -1194,11 +1427,33 @@ export class AutomationEngine {
                 error: actionError.message
               }
             });
+            // THROW to stop execution - automation must be marked as FAILED
+            throw new Error(`Action ${node.service} (${node.id}) failed: ${actionError.message}`);
           }
         }
       }
 
-      // Update execution as success
+      // Check if any action failed
+      const hasFailures = actionResults.some((r: any) => r.result?.success === false);
+      
+      if (hasFailures) {
+        // Mark execution as failed if any action failed
+        execution.status = 'failed';
+        execution.errorMessage = 'One or more actions failed';
+        execution.actionData = actionResults;
+        await execution.save();
+        
+        console.error(`[Automation Engine] ❌ Automation execution failed: One or more actions failed`);
+        
+        return {
+          success: false,
+          executionId: execution._id,
+          results: actionResults,
+          error: 'One or more actions failed'
+        };
+      }
+
+      // Update execution as success only if all actions succeeded
       execution.status = 'success';
       execution.actionData = actionResults;
       await execution.save();
@@ -1208,6 +1463,8 @@ export class AutomationEngine {
         $inc: { executionCount: 1 },
         lastExecutedAt: new Date()
       });
+
+      console.log(`[Automation Engine] ✅ Automation executed successfully - all actions completed`);
 
       return {
         success: true,
@@ -1219,6 +1476,9 @@ export class AutomationEngine {
       execution.status = 'failed';
       execution.errorMessage = error.message;
       await execution.save();
+      
+      console.error(`[Automation Engine] ❌ Automation execution failed:`, error.message);
+      
       throw error;
     }
   }
@@ -1270,7 +1530,11 @@ export class AutomationEngine {
           // Execute automation asynchronously
           this.executeAutomation(automationId, eventData, context)
             .then(result => {
-              console.log(`[Automation Engine] ✅ Automation ${automation.name} executed successfully`);
+              if (result && result.success) {
+                console.log(`[Automation Engine] ✅ Automation ${automation.name} executed successfully`);
+              } else {
+                console.error(`[Automation Engine] ❌ Automation ${automation.name} execution failed:`, result?.error || 'Unknown error');
+              }
             })
             .catch(err => {
               console.error(`[Automation Engine] ❌ Error executing automation ${automationId}:`, err.message);
