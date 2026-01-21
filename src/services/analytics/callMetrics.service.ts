@@ -45,9 +45,9 @@ export class CallMetricsService {
 
   /**
    * Get duration from conversation metadata or transcript
-   * Priority: transcript timestamps > metadata.duration > time difference > default
+   * Priority: transcript timestamps > metadata.duration > null (don't count if no valid data)
    */
-  private getCallDuration(conversation: any): number {
+  private getCallDuration(conversation: any): number | null {
     // Priority 1: Calculate from transcript timestamps
     if (conversation.transcript) {
       const duration = this.calculateDurationFromTranscript(conversation.transcript);
@@ -59,9 +59,9 @@ export class CallMetricsService {
     // Priority 2: Use metadata.duration (could be in seconds or minutes)
     if (conversation.metadata?.duration) {
       const metaDuration = conversation.metadata.duration;
-      if (typeof metaDuration === 'number') {
+      if (typeof metaDuration === 'number' && metaDuration > 0) {
         // If > 100, assume seconds; otherwise assume minutes
-        return metaDuration > 100 ? Math.ceil(metaDuration / 60) : metaDuration;
+        return metaDuration > 100 ? Math.ceil(metaDuration / 60) : Math.ceil(metaDuration);
       } else if (typeof metaDuration === 'string') {
         // Try to parse formatted duration (e.g., "5:30" or "5m 30s")
         const parsed = this.parseDurationString(metaDuration);
@@ -69,15 +69,18 @@ export class CallMetricsService {
       }
     }
 
-    // Priority 3: Fallback to time difference (capped at 30 minutes)
+    // Priority 3: Use time difference ONLY if reasonable (between 10 seconds and 2 hours)
     if (conversation.createdAt && conversation.updatedAt) {
       const diffMs = new Date(conversation.updatedAt).getTime() - new Date(conversation.createdAt).getTime();
       const diffMinutes = Math.ceil(diffMs / (1000 * 60));
-      return Math.min(diffMinutes, 30); // Cap at 30 minutes
+      // Only count if between 1 minute and 120 minutes (reasonable call duration)
+      if (diffMinutes >= 1 && diffMinutes <= 120) {
+        return diffMinutes;
+      }
     }
 
-    // Priority 4: Default to 2 minutes if no duration found
-    return 2;
+    // No valid data found - don't count this call
+    return null;
   }
 
   /**
@@ -140,10 +143,15 @@ export class CallMetricsService {
       let totalCallMinutes = 0;
       let callsWithTranscript = 0;
       let callsWithoutTranscript = 0;
+      let callsWithValidDuration = 0;
 
       for (const conv of phoneConversations) {
         const duration = this.getCallDuration(conv);
-        totalCallMinutes += duration;
+        
+        if (duration !== null && duration > 0) {
+          totalCallMinutes += duration;
+          callsWithValidDuration++;
+        }
 
         if (conv.transcript && conv.transcript.items && conv.transcript.items.length > 0) {
           callsWithTranscript++;
@@ -153,11 +161,12 @@ export class CallMetricsService {
       }
 
       const totalCalls = phoneConversations.length;
-      const averageCallDuration = totalCalls > 0 ? totalCallMinutes / totalCalls : 0;
+      const averageCallDuration = callsWithValidDuration > 0 ? totalCallMinutes / callsWithValidDuration : 0;
 
       return {
         totalCallMinutes,
         totalCalls,
+        callsWithValidDuration,
         averageCallDuration: Math.round(averageCallDuration * 100) / 100, // Round to 2 decimals
         callsWithTranscript,
         callsWithoutTranscript
@@ -183,6 +192,7 @@ export class CallMetricsService {
         return {
           totalCallMinutes: 0,
           totalCalls: 0,
+          callsWithValidDuration: 0,
           averageCallDuration: 0,
           callsWithTranscript: 0,
           callsWithoutTranscript: 0
@@ -221,10 +231,15 @@ export class CallMetricsService {
       let totalCallMinutes = 0;
       let callsWithTranscript = 0;
       let callsWithoutTranscript = 0;
+      let callsWithValidDuration = 0;
 
       for (const conv of phoneConversations) {
         const duration = this.getCallDuration(conv);
-        totalCallMinutes += duration;
+        
+        if (duration !== null && duration > 0) {
+          totalCallMinutes += duration;
+          callsWithValidDuration++;
+        }
 
         if (conv.transcript && conv.transcript.items && conv.transcript.items.length > 0) {
           callsWithTranscript++;
@@ -234,11 +249,12 @@ export class CallMetricsService {
       }
 
       const totalCalls = phoneConversations.length;
-      const averageCallDuration = totalCalls > 0 ? totalCallMinutes / totalCalls : 0;
+      const averageCallDuration = callsWithValidDuration > 0 ? totalCallMinutes / callsWithValidDuration : 0;
 
       return {
         totalCallMinutes,
         totalCalls,
+        callsWithValidDuration,
         averageCallDuration: Math.round(averageCallDuration * 100) / 100,
         callsWithTranscript,
         callsWithoutTranscript

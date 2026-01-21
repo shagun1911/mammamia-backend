@@ -17,8 +17,8 @@ export interface IUser extends Document {
   provider?: 'local' | 'google';
   providerId?: string;
   googleId?: string;
-  // Profile/Package fields
-  selectedProfile?: 'mileva' | 'nobel' | 'aistein';
+  // Profile/Package fields (now supports dynamic plan slugs)
+  selectedProfile?: string;
   createdAt: Date;
   updatedAt: Date;
   comparePassword(candidatePassword: string): Promise<boolean>;
@@ -80,8 +80,9 @@ const UserSchema = new Schema<IUser>({
   // Profile/Package fields
   selectedProfile: {
     type: String,
-    enum: ['mileva', 'nobel', 'aistein'],
-    default: null
+    trim: true,
+    lowercase: true,
+    default: 'free'
   }
 }, {
   timestamps: true

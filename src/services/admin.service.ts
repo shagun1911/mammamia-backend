@@ -11,6 +11,7 @@ import Message from '../models/Message';
 import { profileService } from './profile.service';
 import { logger } from '../utils/logger.util';
 import { analyticsService } from './analytics/analytics.service';
+import { usageTrackerService } from './usage/usageTracker.service';
 import mongoose from 'mongoose';
 
 export class AdminService {
@@ -30,6 +31,8 @@ export class AdminService {
         failedExecutions,
         googleIntegrations,
         whatsappIntegrations,
+        instagramIntegrations,
+        facebookIntegrations,
         ecommerceIntegrations,
         platformMetrics
       ] = await Promise.all([
@@ -43,6 +46,14 @@ export class AdminService {
         GoogleIntegration.countDocuments({ status: 'active' }).lean(),
         SocialIntegration.countDocuments({ 
           platform: 'whatsapp', 
+          status: 'connected' 
+        }).lean(),
+        SocialIntegration.countDocuments({ 
+          platform: 'instagram', 
+          status: 'connected' 
+        }).lean(),
+        SocialIntegration.countDocuments({ 
+          platform: 'facebook', 
           status: 'connected' 
         }).lean(),
         Settings.countDocuments({ 'ecommerceIntegration.platform': { $exists: true, $ne: null } }).lean(),
@@ -59,6 +70,8 @@ export class AdminService {
         failedExecutions,
         googleIntegrations,
         whatsappIntegrations,
+        instagramIntegrations,
+        facebookIntegrations,
         ecommerceIntegrations,
         totalCallMinutes: platformMetrics.callMinutes,
         totalChatConversations: platformMetrics.totalConversations
@@ -112,18 +125,22 @@ export class AdminService {
         return {
           _id: automation._id,
           name: automation.name,
-          organization: organization ? {
+          description: automation.description || '',
+          organizationId: organization ? {
             _id: organization._id,
             name: organization.name,
             slug: organization.slug
           } : null,
-          status: automation.isActive ? 'active' : 'inactive',
+          isActive: automation.isActive,
           nodeCount: nodes.length,
           triggerType: triggerNode?.serviceId || 'unknown',
           lastExecutedAt: automation.lastExecutedAt || null,
           executionCount: automation.executionCount || 0,
           createdAt: automation.createdAt,
-          updatedAt: automation.updatedAt
+          updatedAt: automation.updatedAt,
+          // Include full automation data for viewing
+          nodes: nodes,
+          edges: automation.edges || []
         };
       });
 
@@ -492,65 +509,90 @@ export class AdminService {
 
       const organizations = await Organization.find(query)
         .populate('ownerId', 'email firstName lastName')
+        .populate('planId') // Populate plan details
         .sort({ createdAt: -1 })
         .lean();
 
       const organizationsWithUsage = await Promise.all(
         organizations.map(async (org: any) => {
-          // Get users in this organization
-          const orgUsers = await User.find({ organizationId: org._id }).select('_id').lean();
-          const userIds = orgUsers.map(u => u._id);
+          try {
+            // Get users in this organization
+            const orgUsers = await User.find({ organizationId: org._id }).select('_id').lean();
+            const userIds = orgUsers.map(u => u._id);
 
-          // Get profile usage (aggregated)
-          const profileUsage = await Profile.aggregate([
-            { $match: { userId: { $in: userIds }, isActive: true } },
-            {
-              $group: {
-                _id: null,
-                totalCallMinutes: { $sum: '$voiceMinutesUsed' },
-                totalChatConversations: { $sum: '$chatConversationsUsed' },
-                profileType: { $first: '$profileType' }
-              }
+            // Get REAL-TIME usage from centralized usage tracker (with error handling)
+            let usage = {
+              callMinutes: 0,
+              chatMessages: 0,
+              conversations: 0,
+              automations: 0,
+              campaignSends: 0
+            };
+
+            try {
+              usage = await usageTrackerService.getOrganizationUsage(org._id.toString());
+            } catch (usageError: any) {
+              logger.warn(`Could not get usage for org ${org._id}:`, usageError.message);
             }
-          ]);
 
-          const usage = profileUsage[0] || { totalCallMinutes: 0, totalChatConversations: 0 };
+            // Get integrations status (only show CONNECTED integrations)
+            const [googleIntegration, whatsappIntegration, instagramIntegration, facebookIntegration, ecommerceSettings] = await Promise.all([
+              GoogleIntegration.findOne({ organizationId: org._id, status: 'active' }).lean(),
+              SocialIntegration.findOne({ organizationId: org._id, platform: 'whatsapp', status: 'connected' }).lean(),
+              SocialIntegration.findOne({ organizationId: org._id, platform: 'instagram', status: 'connected' }).lean(),
+              SocialIntegration.findOne({ organizationId: org._id, platform: 'facebook', status: 'connected' }).lean(),
+              Settings.findOne({ userId: { $in: userIds }, 'ecommerceIntegration.platform': { $exists: true } }).lean()
+            ]);
 
-          // Get automation count
-          const automationCount = await Automation.countDocuments({ organizationId: org._id });
-
-          // Get integrations status
-          const [googleIntegration, whatsappIntegration, ecommerceSettings] = await Promise.all([
-            GoogleIntegration.findOne({ organizationId: org._id, status: 'active' }).lean(),
-            SocialIntegration.findOne({ organizationId: org._id, platform: 'whatsapp', status: 'connected' }).lean(),
-            Settings.findOne({ userId: { $in: userIds }, 'ecommerceIntegration.platform': { $exists: true } }).lean()
-          ]);
-
-          // Get owner's profile for plan/package info
-          const ownerProfile = org.ownerId ? await Profile.findOne({ userId: org.ownerId }).lean() : null;
-
-          return {
-            ...org,
-            usage: {
-              callMinutes: usage.totalCallMinutes || 0,
-              chatConversations: usage.totalChatConversations || 0,
-              automations: automationCount
-            },
-            integrations: {
-              google: !!googleIntegration,
-              whatsapp: !!whatsappIntegration,
-              ecommerce: {
-                connected: !!ecommerceSettings?.ecommerceIntegration?.platform,
-                platform: ecommerceSettings?.ecommerceIntegration?.platform || null
+            return {
+              ...org,
+              usage: {
+                callMinutes: usage.callMinutes || 0,
+                chatMessages: usage.chatMessages || 0,
+                conversations: usage.conversations || 0,
+                automations: usage.automations || 0
+              },
+              integrations: {
+                google: !!googleIntegration,
+                whatsapp: !!whatsappIntegration,
+                instagram: !!instagramIntegration,
+                facebook: !!facebookIntegration,
+                ecommerce: {
+                  connected: !!ecommerceSettings?.ecommerceIntegration?.platform,
+                  platform: ecommerceSettings?.ecommerceIntegration?.platform || null
+                }
+              },
+              integrationCount: {
+                google: googleIntegration ? 1 : 0,
+                whatsapp: whatsappIntegration ? 1 : 0,
+                instagram: instagramIntegration ? 1 : 0,
+                facebook: facebookIntegration ? 1 : 0,
+                ecommerce: ecommerceSettings?.ecommerceIntegration?.platform ? 1 : 0
+              },
+              planDetails: org.planId || {
+                name: org.plan || 'free',
+                slug: org.plan || 'free',
+                price: 0,
+                features: {
+                  callMinutes: 100,
+                  chatConversations: 100,
+                  automations: 5,
+                  users: 1,
+                  customFeatures: []
+                }
               }
-            },
-            planDetails: {
-              name: org.plan,
-              status: org.status,
-              package: ownerProfile?.profileType || null,
-              billingActive: ownerProfile?.isActive || false
-            }
-          };
+            };
+          } catch (error: any) {
+            logger.error(`Error processing organization ${org._id}:`, error.message);
+            // Return organization with default values on error
+            return {
+              ...org,
+              usage: { callMinutes: 0, chatMessages: 0, conversations: 0, automations: 0 },
+              integrations: { google: false, whatsapp: false, instagram: false, facebook: false, ecommerce: { connected: false, platform: null } },
+              integrationCount: { google: 0, whatsapp: 0, instagram: 0, facebook: 0, ecommerce: 0 },
+              planDetails: { name: 'free', slug: 'free', price: 0, features: { callMinutes: 100, chatConversations: 100, automations: 5, users: 1, customFeatures: [] } }
+            };
+          }
         })
       );
 

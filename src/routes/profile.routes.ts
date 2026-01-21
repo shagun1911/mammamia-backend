@@ -1,29 +1,61 @@
 import { Router } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
-import { profileController } from '../controllers/profile.controller';
+import Organization from '../models/Organization';
+import { usageTrackerService } from '../services/usage/usageTracker.service';
+import { logger } from '../utils/logger.util';
 
 const router = Router();
 
 // All routes require authentication
 router.use(authenticate);
 
-// Get available profile types
-router.get('/available', profileController.getAvailableProfiles);
+/**
+ * GET /api/v1/profile/billing
+ * Get current user's billing information and usage
+ */
+router.get('/billing', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = (req.user as any)?.id;
+    const organizationId = (req.user as any)?.organizationId;
 
-// Get current profile and usage stats
-router.get('/', profileController.getProfile);
+    if (!organizationId) {
+      return res.status(404).json({
+        success: false,
+        message: 'No organization found for this user'
+      });
+    }
 
-// Get usage statistics
-router.get('/usage', profileController.getUsageStats);
+    // Get organization with plan details
+    const organization = await Organization.findById(organizationId)
+      .populate('planId')
+      .lean();
 
-// Check if user has available credits
-router.get('/check-credits', profileController.checkCredits);
+    if (!organization) {
+      return res.status(404).json({
+        success: false,
+        message: 'Organization not found'
+      });
+    }
 
-// Select or change profile
-router.post('/select', profileController.selectProfile);
+    // Get usage data
+    const usage = await usageTrackerService.getOrganizationUsage(organizationId.toString());
 
-// Delete profile
-router.delete('/', profileController.deleteProfile);
+    res.json({
+      success: true,
+      organization: {
+        _id: organization._id,
+        name: organization.name,
+        plan: organization.plan,
+        planId: organization.planId,
+        status: organization.status
+      },
+      usage
+    });
+  } catch (error: any) {
+    logger.error('Error fetching billing data:', error.message);
+    next(error);
+  }
+});
 
 export default router;
-
