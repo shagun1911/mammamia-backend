@@ -935,7 +935,10 @@ export class MetaWebhookController {
 
   /**
    * Send Instagram DM reply via Graph API
-   * POST https://graph.facebook.com/v18.0/{instagramAccountId}/messages
+   * POST https://graph.facebook.com/v18.0/me/messages
+   * 
+   * IMPORTANT: Instagram Messaging API uses Page Access Token (EAAG) from Facebook OAuth
+   * This is the same token used for Messenger, obtained via /me/accounts
    */
   private async sendInstagramReply(
     instagramAccountId: string,
@@ -945,7 +948,7 @@ export class MetaWebhookController {
   ): Promise<void> {
     try {
       // Get Page Access Token from integration credentials
-      // Instagram uses the same Page Access Token as the connected Facebook Page
+      // Instagram DM replies use Page Access Token (EAAG) from Facebook OAuth
       const pageAccessToken = integration.credentials?.pageAccessToken;
 
       if (!pageAccessToken) {
@@ -955,10 +958,22 @@ export class MetaWebhookController {
           hasPageAccessToken: !!integration.credentials?.pageAccessToken,
           instagramAccountId: integration.credentials?.instagramAccountId
         });
-        throw new Error('Page Access Token not found');
+        throw new Error('Page Access Token not found. Please re-authenticate Instagram OAuth.');
       }
 
-      console.log(`[Instagram Webhook] ✅ Found Page Access Token for instagramAccountId: ${instagramAccountId}`);
+      // HARD SAFETY CHECK: Only accept Page tokens (EAAG) for Instagram messaging
+      const tokenPrefix = pageAccessToken.substring(0, 4);
+      console.log(`[Instagram Webhook] Token prefix (first 4 chars): ${tokenPrefix}`);
+
+      if (!tokenPrefix.startsWith('EAAG') && !tokenPrefix.startsWith('EAA')) {
+        console.error(`[Instagram Webhook] ❌ REJECTED: Token does not start with "EAAG" or "EAA"`);
+        console.error(`[Instagram Webhook] Instagram DM replies require Page Access Token (EAAG)`);
+        console.error(`[Instagram Webhook] Got token starting with: ${tokenPrefix}`);
+        console.error(`[Instagram Webhook] Please re-authenticate using Facebook OAuth`);
+        throw new Error(`Invalid token type: Expected Page Access Token (EAAG), got token starting with: ${tokenPrefix}`);
+      }
+
+      console.log(`[Instagram Webhook] ✅ Found valid Page Access Token (EAAG) for instagramAccountId: ${instagramAccountId}`);
 
       // Defensive logging: App mode and permissions check
       const appMode = process.env.NODE_ENV || 'development';
@@ -995,7 +1010,8 @@ export class MetaWebhookController {
       }
 
       // Build endpoint URL
-      const endpointUrl = `https://graph.facebook.com/v18.0/${instagramAccountId}/messages`;
+      // Instagram Messaging API requires /me/messages (NOT /{instagramAccountId}/messages)
+      const endpointUrl = `https://graph.facebook.com/v18.0/me/messages`;
       console.log(`[Instagram Webhook] Endpoint URL: ${endpointUrl}`);
       console.log(`[Instagram Webhook] Recipient ID: ${senderId}`);
       console.log(`[Instagram Webhook] Message length: ${messageText.length} characters`);
@@ -1013,7 +1029,8 @@ export class MetaWebhookController {
       console.log(`[Instagram Webhook] Payload:`, JSON.stringify(payload, null, 2));
 
       // Send message via Instagram Graph API
-      // POST /v18.0/{instagramAccountId}/messages
+      // POST /v18.0/me/messages
+      // Authorization: Bearer <PAGE_ACCESS_TOKEN> (EAAG)
       const response = await axios.post(
         endpointUrl,
         payload,
@@ -1032,15 +1049,16 @@ export class MetaWebhookController {
       const errorCode = errorData.code;
       const errorMessage = errorData.message || error.message;
 
-      // Guard for error code 3: Application does not have the capability
-      if (errorCode === 3) {
-        console.error(`[Instagram Webhook] ❌ ERROR CODE 3: Application does not have the capability to make this API call`);
-        console.error(`[Instagram Webhook] Instagram Messaging API capability not enabled.`);
+      // Guard for error code 3 or 200: Application does not have the capability
+      if (errorCode === 3 || errorCode === 200) {
+        console.error(`[Instagram Webhook] ❌ ERROR CODE ${errorCode}: Application does not have the capability to make this API call`);
+        console.error(`[Instagram Webhook] Instagram Messaging requires Page Access Token (EAAG) from Facebook OAuth`);
         console.error(`[Instagram Webhook] Check:`);
-        console.error(`[Instagram Webhook]   - App is LIVE (not in Development mode)`);
-        console.error(`[Instagram Webhook]   - instagram_business_manage_messages permission is Advanced`);
+        console.error(`[Instagram Webhook]   - App is PUBLISHED (not in Development mode)`);
+        console.error(`[Instagram Webhook]   - instagram_manage_messages permission is Advanced`);
         console.error(`[Instagram Webhook]   - Instagram Messaging product is added to the app`);
-        console.error(`[Instagram Webhook]   - App Review is approved for instagram_business_manage_messages`);
+        console.error(`[Instagram Webhook]   - App Review is approved for instagram_manage_messages`);
+        console.error(`[Instagram Webhook]   - Token prefix is EAAG (Page Access Token)`);
         console.error(`[Instagram Webhook] Full error:`, JSON.stringify(error.response?.data, null, 2));
       } else {
         console.error(`[Instagram Webhook] ❌ Error sending Instagram message (code: ${errorCode}):`, errorMessage);

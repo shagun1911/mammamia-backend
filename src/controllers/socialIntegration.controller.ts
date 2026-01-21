@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import socialIntegrationService from '../services/socialIntegration.service';
 import { AppError } from '../middleware/error.middleware';
-import { MetaOAuthService } from '../services/metaOAuth.service';
+import { MetaOAuthService, MetaPage } from '../services/metaOAuth.service';
 import { successResponse } from '../utils/response.util';
 
 export class SocialIntegrationController {
@@ -597,7 +597,14 @@ export class SocialIntegrationController {
         redirectUri
       });
 
-      // Exchange code for short-lived token
+      // Platform-specific handling
+      let integrationData: any = {
+        organizationId,
+        platform: platform as 'whatsapp' | 'instagram' | 'facebook',
+        clientId: metaAppId
+      };
+
+      // Exchange code for short-lived token (standard Facebook OAuth for all platforms)
       const tokenResponse = await metaOAuth.exchangeCodeForToken(code as string);
       const shortLivedToken = tokenResponse.access_token;
 
@@ -617,15 +624,95 @@ export class SocialIntegrationController {
         hasEmail: !!userEmail
       });
 
-      // Platform-specific handling
-      let integrationData: any = {
-        organizationId,
-        platform: platform as 'whatsapp' | 'instagram' | 'facebook',
-        apiKey: accessToken, // Store access token as apiKey for compatibility
-        clientId: metaAppId
-      };
+      integrationData.apiKey = accessToken; // Store access token as apiKey for compatibility
 
-      if (platform === 'whatsapp') {
+      if (platform === 'instagram') {
+        // Instagram OAuth: Use Facebook OAuth, then fetch pages and Instagram Business Account
+        console.log('[Instagram Business Login] Starting Instagram OAuth flow via Facebook...');
+        
+        // Step 1: Get all pages using USER access token
+        const pages = await metaOAuth.getUserPages(accessToken);
+
+        if (pages.length === 0) {
+          throw new AppError(400, 'NO_PAGES', 'No Facebook Pages found. Please create a Facebook Page first.');
+        }
+
+        console.log(`[Instagram Business Login] Found ${pages.length} Facebook Page(s)`);
+
+        // Step 2: For each page, check if it has an Instagram Business Account
+        let instagramAccountId: string | null = null;
+        let selectedPage: MetaPage | null = null;
+        let pageAccessToken: string | null = null;
+
+        for (const page of pages) {
+          console.log(`[Instagram Business Login] Checking page ${page.id} for Instagram account...`);
+          console.log(`[Instagram Business Login] Page access token prefix: ${page.access_token.substring(0, 10)}...`);
+          
+          // Validate that this is a PAGE token (EAAG), not a USER token
+          if (!page.access_token.startsWith('EAAG') && !page.access_token.startsWith('EAA')) {
+            console.warn(`[Instagram Business Login] Page ${page.id} access token does not start with EAAG/EAA, skipping`);
+            continue;
+          }
+
+          // Step 3: Get Instagram Business Account for this page
+          const instagramAccounts = await metaOAuth.getInstagramAccounts(page.id, page.access_token);
+          
+          if (instagramAccounts.length > 0) {
+            instagramAccountId = instagramAccounts[0].id;
+            selectedPage = page;
+            pageAccessToken = page.access_token;
+            console.log(`[Instagram Business Login] ✅ Found Instagram account ${instagramAccountId} on page ${page.id}`);
+            console.log(`[Instagram Business Login] ✅ Page access token (EAAG): ${pageAccessToken.substring(0, 10)}...`);
+            break;
+          }
+        }
+
+        if (!instagramAccountId || !selectedPage || !pageAccessToken) {
+          throw new AppError(
+            400,
+            'NO_INSTAGRAM_ACCOUNT',
+            'No Instagram Business Account found. Please connect an Instagram account to your Facebook Page.'
+          );
+        }
+
+        // Step 4: Validate page access token is EAAG
+        if (!pageAccessToken.startsWith('EAAG') && !pageAccessToken.startsWith('EAA')) {
+          throw new AppError(
+            400,
+            'INVALID_PAGE_TOKEN',
+            'Instagram Page Access Token not resolved — cannot send DMs'
+          );
+        }
+
+        console.log('[Instagram Business Login] Step 4: Storing credentials with PAGE access token');
+        console.log('[Instagram Business Login] - instagramAccountId:', instagramAccountId);
+        console.log('[Instagram Business Login] - facebookPageId:', selectedPage.id);
+        console.log('[Instagram Business Login] - pageAccessToken prefix:', pageAccessToken.substring(0, 10) + '...');
+        console.log('[Instagram Business Login] - apiKey (user token):', accessToken.substring(0, 10) + '...');
+
+        // Store Instagram-specific credentials with Page Access Token
+        integrationData.instagramAccountId = instagramAccountId;
+        integrationData.facebookPageId = selectedPage.id;
+        integrationData.credentials = {
+          apiKey: accessToken, // Store user token for reference
+          clientId: metaAppId,
+          instagramAccountId,
+          facebookPageId: selectedPage.id,
+          pageAccessToken: pageAccessToken // Store PAGE token for sending DMs (EAAG)
+        };
+
+        // Set metadata for Instagram integration
+        integrationData.metadata = {
+          ...integrationData.metadata,
+          chatbotEnabled: true,
+          connectedAt: new Date().toISOString(),
+          appUserId: appUserId, // Internal app userId for KB lookup
+          metaUserId: userId, // Meta Facebook userId (for reference only)
+          userName: userName
+        };
+
+        console.log('[Instagram Business Login] ✅ Instagram OAuth completed successfully');
+      } else if (platform === 'whatsapp') {
         // WhatsApp OAuth: Use ONLY WhatsApp Business endpoints (NO Page endpoints)
         // Flow: User → Businesses → WABAs → Phone Numbers
         console.log('[WhatsApp OAuth] Starting WhatsApp Business Account discovery...');
@@ -761,44 +848,6 @@ export class SocialIntegrationController {
         
         // Set webhookVerified if subscription succeeded
         integrationData.webhookVerified = webhookSubscribed;
-      } else if (platform === 'instagram') {
-        // For Instagram, get pages (requires pages_read_engagement)
-        const pages = await metaOAuth.getUserPages(accessToken);
-
-        if (pages.length === 0) {
-          throw new AppError(400, 'NO_PAGES', 'No Facebook Pages found. Please create a Facebook Page first.');
-        }
-
-        // For Instagram, find page with Instagram account
-        let instagramAccountId: string | null = null;
-        let selectedPage = pages[0];
-
-        for (const page of pages) {
-          const instagramAccounts = await metaOAuth.getInstagramAccounts(page.id, page.access_token);
-          if (instagramAccounts.length > 0) {
-            instagramAccountId = instagramAccounts[0].id;
-            selectedPage = page;
-            break;
-          }
-        }
-
-        if (!instagramAccountId) {
-          throw new AppError(
-            400,
-            'NO_INSTAGRAM_ACCOUNT',
-            'No Instagram Business Account found. Please connect an Instagram account to your Facebook Page.'
-          );
-        }
-
-        integrationData.instagramAccountId = instagramAccountId;
-        integrationData.facebookPageId = selectedPage.id;
-        integrationData.credentials = {
-          apiKey: accessToken,
-          clientId: metaAppId,
-          instagramAccountId,
-          facebookPageId: selectedPage.id,
-          pageAccessToken: selectedPage.access_token
-        };
       }
 
       // Log integration data before saving

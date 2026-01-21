@@ -19,10 +19,12 @@ export interface ISocialIntegration extends Document {
 
     // Instagram
     instagramAccountId?: string;
+    instagramAccessToken?: string; // Instagram Business Login token (IGAA) - REQUIRED for Instagram DM replies
+    instagramUserId?: string; // Instagram user ID from OAuth
 
     // Facebook / Messenger
     facebookPageId?: string;
-    pageAccessToken?: string; // 🔥 REQUIRED for Messenger Send API
+    pageAccessToken?: string; // 🔥 REQUIRED for Messenger Send API (EAAG) - NOT for Instagram
 
     [key: string]: any;
   };
@@ -63,6 +65,8 @@ const SocialIntegrationSchema = new Schema<ISocialIntegration>(
 
       // Instagram
       instagramAccountId: String,
+      instagramAccessToken: String, // Instagram Business Login token (IGAA)
+      instagramUserId: String, // Instagram user ID
 
       // Facebook / Messenger
       facebookPageId: String,

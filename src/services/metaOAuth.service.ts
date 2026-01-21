@@ -60,6 +60,10 @@ export class MetaOAuthService {
     console.log('[Meta OAuth Initiate] Platform:', platform);
     console.log('[Meta OAuth Initiate] Scopes:', scopeString);
 
+    if (platform === 'instagram') {
+      console.log('[Instagram Business Login] Using Facebook OAuth dialog');
+    }
+
     const params = new URLSearchParams({
       client_id: this.appId,
       redirect_uri: this.redirectUri,
@@ -99,11 +103,13 @@ export class MetaOAuthService {
       'business_management' // Required for Business Manager access
     ],
     instagram: [
-      'business_management', // Required for Business Manager access
+      'instagram_basic', // Instagram basic access
+      'instagram_manage_messages', // Instagram messaging
+      'instagram_manage_comments', // Instagram comments
       'pages_show_list', // List user's pages
       'pages_read_engagement', // Read page engagement
-      'instagram_basic', // Instagram basic access
-      'instagram_manage_messages' // Instagram messaging
+      'pages_messaging', // Page messaging
+      'business_management' // Required for Business Manager access
     ]
   } as const;
 
@@ -129,6 +135,7 @@ export class MetaOAuthService {
 
   /**
    * Exchange authorization code for access token
+   * @param code - OAuth authorization code
    */
   async exchangeCodeForToken(code: string): Promise<MetaAccessTokenResponse> {
     try {
