@@ -113,8 +113,11 @@ export class AuthService {
         id: user._id,
         email: user.email,
         name: `${user.firstName} ${user.lastName}`,
+        firstName: user.firstName,
+        lastName: user.lastName,
         avatar: user.avatar,
         role: user.role,
+        isAdmin: user.role === 'admin',
         organizationId: user.organizationId
       }
     };
@@ -140,8 +143,11 @@ export class AuthService {
         id: user._id,
         email: user.email,
         name: `${user.firstName} ${user.lastName}`,
+        firstName: user.firstName,
+        lastName: user.lastName,
         avatar: user.avatar,
         role: user.role,
+        isAdmin: user.role === 'admin',
         organizationId: user.organizationId,
         provider: user.provider
       }
@@ -210,8 +216,11 @@ export class AuthService {
       id: user._id,
       email: user.email,
       name: `${user.firstName} ${user.lastName}`,
+      firstName: user.firstName,
+      lastName: user.lastName,
       avatar: user.avatar,
       role: user.role,
+      isAdmin: user.role === 'admin',
       organizationId: user.organizationId,
       permissions: user.permissions,
       createdAt: user.createdAt

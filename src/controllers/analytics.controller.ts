@@ -4,6 +4,8 @@ import { AnalyticsService } from '../services/analytics.service';
 import { TopicService } from '../services/topic.service';
 import { successResponse } from '../utils/response.util';
 import { AppError } from '../middleware/error.middleware';
+import Conversation from '../models/Conversation';
+import Message from '../models/Message';
 
 export class AnalyticsController {
   private analyticsService: AnalyticsService;
@@ -174,6 +176,56 @@ export class AnalyticsController {
         dateTo as string
       );
       res.json(successResponse(stats));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // Get top topics for analytics
+  getTopTopics = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const { dateFrom, dateTo, limit = 10 } = req.query;
+      
+      // Get conversations in date range
+      const dateQuery: any = { organizationId };
+      if (dateFrom || dateTo) {
+        dateQuery.createdAt = {};
+        if (dateFrom) dateQuery.createdAt.$gte = new Date(dateFrom as string);
+        if (dateTo) dateQuery.createdAt.$lte = new Date(dateTo as string);
+      }
+
+      const conversations = await Conversation.find(dateQuery).select('_id').lean();
+      const conversationIds = conversations.map(c => c._id);
+
+      // Aggregate topics from messages
+      const topics = await Message.aggregate([
+        {
+          $match: {
+            conversationId: { $in: conversationIds },
+            topics: { $exists: true, $ne: [] }
+          }
+        },
+        { $unwind: '$topics' },
+        {
+          $group: {
+            _id: '$topics',
+            count: { $sum: 1 }
+          }
+        },
+        { $sort: { count: -1 } },
+        { $limit: parseInt(limit as string) }
+      ]);
+
+      const topTopics = topics.map((item: any) => ({
+        topic: item._id,
+        count: item.count
+      }));
+
+      res.json(successResponse(topTopics));
     } catch (error) {
       next(error);
     }

@@ -36,7 +36,10 @@ import dialog360WebhookRoutes from './routes/webhook.routes';
 import profileRoutes from './routes/profile.routes';
 import inboundAgentConfigRoutes from './routes/inboundAgentConfig.routes';
 import whatsappRoutes from './routes/whatsapp.routes';
+
 import instagramWebhookRoutes from './routes/instagramWebhook.routes';
+import adminRoutes from './routes/admin.routes';
+
 
 const app = express();
 const httpServer = createServer(app);
@@ -144,6 +147,7 @@ app.use('/api/v1/webhooks/360dialog', dialog360WebhookRoutes);
 app.use('/api/v1/profile', profileRoutes);
 app.use('/api/v1/inbound-agent-config', inboundAgentConfigRoutes);
 app.use('/api/v1/whatsapp', whatsappRoutes);
+app.use('/api/v1/admin', adminRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {

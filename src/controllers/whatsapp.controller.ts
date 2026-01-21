@@ -91,7 +91,7 @@ export class WhatsAppController {
           success: false,
           error: {
             message: error.message,
-            code: error.errorCode,
+            code: (error as any)?.errorCode ?? (error as any)?.code ?? null,
             ...(error.details && { details: error.details })
           }
         });

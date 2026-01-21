@@ -44,7 +44,7 @@ router.get('/user-data-deletion', (req: Request, res: Response) => {
 </head>
 <body>
   <h1>User Data Deletion</h1>
-  <p>If you want your data deleted from our system, please email us at <span class="email">support@keplero.ai</span>.</p>
+  <p>If you want your data deleted from our system, please email us at <span class="email">support@aistein.ai</span>.</p>
   <p>We will process the request within 30 days as per Meta platform policies.</p>
 </body>
 </html>

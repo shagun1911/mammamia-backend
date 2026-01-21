@@ -29,7 +29,7 @@ export class EmailService {
     const smtpUser = process.env.SMTP_USER;
     // Support both SMTP_PASS and SMTP_PASSWORD for flexibility
     const smtpPass = process.env.SMTP_PASS || process.env.SMTP_PASSWORD;
-    this.appName = process.env.APP_NAME || 'KepleroAI';
+    this.appName = process.env.APP_NAME || 'Aistein';
     this.appUrl = process.env.APP_URL || 'http://localhost:3000';
 
     // Check if SMTP is configured

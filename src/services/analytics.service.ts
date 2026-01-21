@@ -1,8 +1,11 @@
 import Conversation from '../models/Conversation';
 import Message from '../models/Message';
+import Profile from '../models/Profile';
+import User from '../models/User';
 import redisClient, { isRedisAvailable } from '../config/redis';
 import { AppError } from '../middleware/error.middleware';
 import { Parser } from 'json2csv';
+import { analyticsService as centralizedAnalyticsService } from './analytics/analytics.service';
 
 export class AnalyticsService {
   // Dashboard Metrics
@@ -87,9 +90,32 @@ export class AnalyticsService {
       }
     }
 
-    // Conversations by channel
+    // Conversations by channel (separate Instagram and Facebook from social)
     const conversationsByChannel = await Conversation.aggregate([
       { $match: dateQuery },
+      {
+        $project: {
+          channel: {
+            $cond: {
+              if: { $eq: ['$channel', 'social'] },
+              then: {
+                $cond: {
+                  if: { $eq: ['$metadata.platform', 'instagram'] },
+                  then: 'instagram',
+                  else: {
+                    $cond: {
+                      if: { $eq: ['$metadata.platform', 'facebook'] },
+                      then: 'facebook',
+                      else: 'social'
+                    }
+                  }
+                }
+              },
+              else: '$channel'
+            }
+          }
+        }
+      },
       { $group: { _id: '$channel', count: { $sum: 1 } } }
     ]);
 
@@ -109,17 +135,75 @@ export class AnalyticsService {
       return acc;
     }, {} as Record<string, number>);
 
+    // Reopened conversations (conversations that were closed then reopened)
+    const reopenedConversations = await Conversation.countDocuments({
+      ...dateQuery,
+      status: { $in: ['open', 'unread', 'support_request'] },
+      resolvedAt: { $exists: true } // Was resolved but now open again
+    });
+
+    // Wrong answers (messages with low confidence or negative feedback)
+    // Get conversation IDs first, then check messages
+    const conversationIds = await Conversation.find(dateQuery).select('_id').lean();
+    const convIds = conversationIds.map(c => c._id);
+
+    const wrongAnswersQuery: any = {
+      conversationId: { $in: convIds },
+      sender: 'ai'
+    };
+    if (dateFrom || dateTo) {
+      wrongAnswersQuery.timestamp = {};
+      if (dateFrom) wrongAnswersQuery.timestamp.$gte = new Date(dateFrom);
+      if (dateTo) wrongAnswersQuery.timestamp.$lte = new Date(dateTo);
+    }
+    wrongAnswersQuery.$or = [
+      { 'metadata.confidence': { $lt: 0.5 } },
+      { 'metadata.feedback': 'negative' },
+      { 'metadata.isWrongAnswer': true }
+    ];
+
+    const wrongAnswers = await Message.countDocuments(wrongAnswersQuery);
+
+    // Links clicked (messages containing URLs)
+    const linksClickedQuery: any = {
+      conversationId: { $in: convIds }
+    };
+    if (dateFrom || dateTo) {
+      linksClickedQuery.timestamp = {};
+      if (dateFrom) linksClickedQuery.timestamp.$gte = new Date(dateFrom);
+      if (dateTo) linksClickedQuery.timestamp.$lte = new Date(dateTo);
+    }
+    // Match messages containing URLs (http:// or https://)
+    linksClickedQuery.text = { $regex: /https?:\/\/[^\s]+/i };
+    // Count all messages with URLs (we'll track clicks separately if needed)
+    const linksClicked = await Message.countDocuments(linksClickedQuery);
+
+    // Use centralized analytics service for consistent calculations
+    const dateRange = dateFrom || dateTo ? {
+      dateFrom: dateFrom ? new Date(dateFrom) : undefined,
+      dateTo: dateTo ? new Date(dateTo) : undefined
+    } : undefined;
+
+    const orgMetrics = await centralizedAnalyticsService.getOrganizationMetrics(organizationId, dateRange);
+    const totalCallMinutes = orgMetrics.callMinutes;
+    const chatConversations = orgMetrics.totalConversations;
+
     const metrics = {
       totalConversations,
       activeConversations,
       closedConversations,
+      reopenedConversations,
+      wrongAnswers,
+      linksClicked,
       aiManaged: aiManagedCount,
       humanManaged: humanManagedCount,
       avgResponseTime: Math.round(avgResponseTime),
       customerSatisfactionScore: null, // Placeholder for future implementation
       messagesToday: messagesTodayCount,
       conversationsByChannel: channelBreakdown,
-      conversationsByStatus: statusBreakdown
+      conversationsByStatus: statusBreakdown,
+      totalCallMinutes: totalCallMinutes, // Use actual conversation data only, no Profile fallback
+      totalChatConversations: chatConversations // Use actual conversation data only
     };
 
     // Cache for 5 minutes (only if Redis is available)
@@ -228,23 +312,77 @@ export class AnalyticsService {
       { $sort: { _id: 1 } }
     ]);
 
+    // Get call minutes trends from phone conversations
+    const callMinutesTrend = await Conversation.aggregate([
+      {
+        $match: {
+          ...dateQuery,
+          channel: 'phone'
+        }
+      },
+      {
+        $project: {
+          period: { $dateToString: { format: dateFormat[groupBy], date: '$createdAt' } },
+          duration: {
+            $cond: {
+              if: { $and: [{ $ne: ['$transcript', null] }, { $gt: [{ $ifNull: ['$transcript.duration', 0] }, 0] }] },
+              then: { $divide: [{ $ifNull: ['$transcript.duration', 0] }, 60] },
+              else: {
+                $cond: {
+                  if: { $and: ['$updatedAt', '$createdAt'] },
+                  then: {
+                    $divide: [
+                      { $subtract: ['$updatedAt', '$createdAt'] },
+                      60000
+                    ]
+                  },
+                  else: 2 // Default 2 minutes
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        $group: {
+          _id: '$period',
+          minutes: { $sum: { $ceil: '$duration' } }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    const callMinutesFormatted = callMinutesTrend.map((item: any) => ({
+      period: item._id,
+      minutes: item.minutes || 0
+    }));
+
+    // Fill in missing periods with 0 to match newConversations periods
+    const allPeriods = new Set(newConversations.map((item: any) => item._id));
+    callMinutesFormatted.forEach((item: any) => allPeriods.add(item.period));
+    const callMinutesComplete = Array.from(allPeriods).sort().map((period: any) => {
+      const existing = callMinutesFormatted.find((item: any) => item.period === period);
+      return existing || { period, minutes: 0 };
+    });
+
     return {
-      newConversations: newConversations.map(item => ({
+      newConversations: newConversations.map((item: any) => ({
         period: item._id,
         count: item.count
       })),
-      messagesSent: messagesSent.map(item => ({
+      messagesSent: messagesSent.map((item: any) => ({
         period: item._id,
         count: item.count
       })),
-      responseTimes: responseTimes.map(item => ({
+      responseTimes: responseTimes.map((item: any) => ({
         period: item._id,
         avgResponseTime: Math.round(item.avgResponseTime)
       })),
-      resolutionRates: resolutionRates.map(item => ({
+      resolutionRates: resolutionRates.map((item: any) => ({
         period: item._id,
         resolutionRate: Math.round(item.resolutionRate * 10) / 10
-      }))
+      })),
+      callMinutes: callMinutesComplete
     };
   }
 
