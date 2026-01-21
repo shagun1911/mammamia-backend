@@ -16,14 +16,25 @@ export class ConversationController {
     try {
       const { page = 1, limit = 20, ...filters } = req.query;
       
+      console.log('[Conversation Controller] getAll called:', {
+        userId: req.user?.id,
+        organizationId: req.user?.organizationId,
+        filters: filters
+      });
+      
       // CRITICAL: Filter by organization to ensure data isolation
       const orgFilters: any = {
         ...filters
       };
       
-      // Only add organizationId filter if it exists (for multi-tenant support)
-      if (req.user.organizationId) {
-        orgFilters.organizationId = req.user.organizationId.toString();
+      // CRITICAL: Always add organizationId filter for multi-tenant support
+      // Use organizationId from user, or fallback to user._id if organizationId is missing
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (organizationId) {
+        orgFilters.organizationId = organizationId.toString();
+        console.log('[Conversation Controller] Filtering by organizationId:', orgFilters.organizationId);
+      } else {
+        console.warn('[Conversation Controller] ⚠️ No organizationId found in user object:', req.user);
       }
       
       const result = await this.conversationService.findAll(
@@ -31,6 +42,9 @@ export class ConversationController {
         Number(page),
         Number(limit)
       );
+      
+      console.log('[Conversation Controller] Found', result.items.length, 'conversations');
+      
       res.json(paginatedResponse(
         result.items,
         result.pagination.page,
@@ -237,13 +251,23 @@ export class ConversationController {
   // Save widget conversation (no auth required for public widget)
   saveWidgetConversation = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { name, threadId, collection, messages } = req.body;
+      const { name, threadId, collection, messages, widgetId, organizationId } = req.body;
+      
+      console.log('[Conversation Controller] Saving widget conversation:', {
+        name,
+        threadId,
+        widgetId,
+        organizationId,
+        messageCount: messages?.length || 0
+      });
       
       const conversation = await this.conversationService.saveWidgetConversation({
         name,
         threadId,
         collection,
-        messages
+        messages,
+        widgetId, // Pass widgetId to map to organizationId
+        organizationId // Pass organizationId if provided directly
       });
 
       res.json(successResponse(conversation, 'Conversation saved'));
