@@ -33,13 +33,21 @@ export class ConversationService {
     if (filters.label) query.labels = filters.label;
 
     if (filters.search) {
-      const customers = await Customer.find({
+      // CRITICAL: Scope customer search by organizationId to prevent cross-org matches
+      const customerQuery: any = {
         $or: [
           { name: { $regex: filters.search, $options: 'i' } },
           { email: { $regex: filters.search, $options: 'i' } },
           { phone: { $regex: filters.search, $options: 'i' } }
         ]
-      });
+      };
+      
+      // Only search customers within the same organization
+      if (filters.organizationId) {
+        customerQuery.organizationId = filters.organizationId;
+      }
+      
+      const customers = await Customer.find(customerQuery);
       query.customerId = { $in: customers.map(c => c._id) };
     }
 
@@ -700,26 +708,56 @@ export class ConversationService {
     collection?: string;
     messages: Array<{ role: string; content: string; timestamp: Date }>;
     organizationId?: string;
+    widgetId?: string; // widgetId can be userId, used to find organizationId
   }) {
     try {
       console.log('[Widget Conversation] Saving conversation for:', data.name);
+      console.log('[Widget Conversation] WidgetId:', data.widgetId);
+      console.log('[Widget Conversation] OrganizationId:', data.organizationId);
       
-      // Find or create customer by name (with organizationId if provided)
-      let customer = await Customer.findOne({ name: data.name });
+      // CRITICAL: Determine organizationId from widgetId or provided organizationId
+      let organizationId: mongoose.Types.ObjectId | undefined;
+      
+      // If organizationId is provided directly, use it
+      if (data.organizationId) {
+        organizationId = new mongoose.Types.ObjectId(data.organizationId);
+        console.log('[Widget Conversation] ✅ Using provided organizationId:', organizationId);
+      }
+      // If widgetId is provided, try to map it to organizationId via User
+      else if (data.widgetId && /^[0-9a-fA-F]{24}$/.test(data.widgetId)) {
+        const User = mongoose.model('User');
+        const user = await User.findById(data.widgetId);
+        if (user && user.organizationId) {
+          organizationId = user.organizationId as mongoose.Types.ObjectId;
+          console.log('[Widget Conversation] ✅ Mapped widgetId to organizationId:', organizationId);
+        }
+      }
+      
+      // Fallback: Get first organization (should rarely happen)
+      if (!organizationId) {
+        const Organization = mongoose.model('Organization');
+        const defaultOrg = await Organization.findOne();
+        if (defaultOrg) {
+          organizationId = defaultOrg._id as mongoose.Types.ObjectId;
+          console.log('[Widget Conversation] ⚠️ Using fallback organizationId:', organizationId);
+        } else {
+          throw new AppError(400, 'VALIDATION_ERROR', 'Could not determine organizationId for widget conversation');
+        }
+      }
+      
+      // CRITICAL: Find or create customer scoped by organizationId to prevent cross-org matches
+      let customer = await Customer.findOne({ 
+        name: data.name,
+        organizationId: organizationId
+      });
       
       if (!customer) {
-        console.log('[Widget Conversation] Creating new customer:', data.name);
-        const customerData: any = {
+        console.log('[Widget Conversation] Creating new customer:', data.name, 'for org:', organizationId);
+        customer = await Customer.create({
           name: data.name,
-          source: 'widget'
-        };
-        
-        // Add organizationId if provided
-        if (data.organizationId) {
-          customerData.organizationId = data.organizationId;
-        }
-        
-        customer = await Customer.create(customerData);
+          source: 'widget',
+          organizationId: organizationId
+        });
       } else {
         // Update customer if name was empty/missing
         if (!customer.name || customer.name === '') {
@@ -729,50 +767,41 @@ export class ConversationService {
         }
       }
 
-      // Find existing conversation by threadId using dot notation
+      // CRITICAL: Find existing conversation scoped by organizationId, threadId, and customerId
       let conversation = await Conversation.findOne({ 
-        'metadata.threadId': data.threadId 
+        'metadata.threadId': data.threadId,
+        organizationId: organizationId,
+        customerId: customer._id,
+        channel: 'website'
       });
 
       if (!conversation) {
-        console.log('[Widget Conversation] Creating new conversation for thread:', data.threadId);
-        const conversationData: any = {
+        console.log('[Widget Conversation] Creating new conversation for thread:', data.threadId, 'org:', organizationId);
+        conversation = await Conversation.create({
+          organizationId: organizationId,
           customerId: customer._id,
           channel: 'website',
-          status: 'unread', // Valid status: 'open', 'unread', 'support_request', 'closed'
-          isAiManaging: true, // Widget conversations are AI managed
+          status: 'unread',
+          isAiManaging: true,
           metadata: {
             threadId: data.threadId,
             collection: data.collection
           }
-        };
-        
-        // Add organizationId if provided, otherwise use a default
-        if (data.organizationId) {
-          conversationData.organizationId = data.organizationId;
-        } else if (customer.organizationId) {
-          conversationData.organizationId = customer.organizationId;
-        } else {
-          // Get first organization as fallback for widget conversations
-          const Organization = mongoose.model('Organization');
-          const defaultOrg = await Organization.findOne();
-          if (defaultOrg) {
-            conversationData.organizationId = defaultOrg._id;
-          }
-        }
-        
-        conversation = await Conversation.create(conversationData);
+        });
 
         // Track chat conversation usage
-        // Get the user (owner) of this organization to track usage
-        if (conversationData.organizationId) {
-          const User = mongoose.model('User');
-          const orgOwner = await User.findOne({ organizationId: conversationData.organizationId, role: 'admin' });
-          if (orgOwner) {
+        const User = mongoose.model('User');
+        const orgOwner = await User.findOne({ organizationId: organizationId, role: 'admin' });
+        if (orgOwner) {
+          try {
             await trackUsage(String(orgOwner._id), 'chat', 1);
             console.log(`[Widget Conversation] Tracked 1 chat conversation for user ${orgOwner._id}`);
+          } catch (trackError: any) {
+            console.warn('[Widget Conversation] Failed to track usage:', trackError.message);
           }
         }
+      } else {
+        console.log('[Widget Conversation] Found existing conversation:', conversation._id);
       }
 
       // Add messages
@@ -780,10 +809,10 @@ export class ConversationService {
       for (const msg of data.messages) {
         await Message.create({
           conversationId: conversation._id,
-          sender: msg.role === 'user' ? 'customer' : 'ai', // Valid values: 'customer', 'ai', 'operator'
-          text: msg.content, // Message model uses 'text' not 'content'
-          type: 'message', // Default message type
-          timestamp: msg.timestamp
+          sender: msg.role === 'user' ? 'customer' : 'ai',
+          text: msg.content,
+          type: 'message',
+          timestamp: msg.timestamp || new Date()
         });
       }
 
@@ -791,7 +820,7 @@ export class ConversationService {
       conversation.updatedAt = new Date();
       await conversation.save();
 
-      console.log('[Widget Conversation] ✅ Conversation saved successfully');
+      console.log('[Widget Conversation] ✅ Conversation saved successfully:', conversation._id);
       return conversation;
     } catch (error: any) {
       console.error('[Widget Conversation] ❌ Error saving conversation:', error);
