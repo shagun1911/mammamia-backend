@@ -427,14 +427,20 @@ export class SocialIntegrationController {
       }
 
       // Check if this is actually a webhook event (Meta sometimes sends webhooks to callback URLs)
-      // Webhook events have: { object: 'page', entry: [...] }
+      // Reject webhook events - they should go to dedicated webhook endpoints
       if (bodyParams.object === 'page' && Array.isArray(bodyParams.entry)) {
-        console.log('[Meta OAuth Callback] ⚠️  Webhook event received at OAuth callback route - forwarding to webhook handler');
-        console.log('[Meta OAuth Callback] This is a Messenger webhook event, not an OAuth callback');
-        
-        // Import webhook controller and forward the request
-        const metaWebhookController = (await import('../controllers/metaWebhook.controller')).default;
-        return metaWebhookController.handleMessenger(req, res);
+        console.log('[Meta OAuth Callback] ⚠️  Messenger webhook event received at OAuth callback route');
+        console.log('[Meta OAuth Callback] Webhook events should be sent to /api/v1/social-integrations/messenger/webhook');
+        console.log('[Meta OAuth Callback] Returning 200 to acknowledge but not processing');
+        return res.sendStatus(200); // Acknowledge but don't process
+      }
+
+      // Reject Instagram webhook events
+      if (bodyParams.object === 'instagram' && Array.isArray(bodyParams.entry)) {
+        console.log('[Meta OAuth Callback] ⚠️  Instagram webhook event received at OAuth callback route');
+        console.log('[Meta OAuth Callback] Instagram webhook events should be sent to /api/v1/webhooks/instagram');
+        console.log('[Meta OAuth Callback] Returning 200 to acknowledge but not processing');
+        return res.sendStatus(200); // Acknowledge but don't process
       }
 
       // Check if this is a webhook verification request (Meta sometimes sends this to callback URLs)

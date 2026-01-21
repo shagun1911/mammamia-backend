@@ -36,6 +36,7 @@ import dialog360WebhookRoutes from './routes/webhook.routes';
 import profileRoutes from './routes/profile.routes';
 import inboundAgentConfigRoutes from './routes/inboundAgentConfig.routes';
 import whatsappRoutes from './routes/whatsapp.routes';
+import instagramWebhookRoutes from './routes/instagramWebhook.routes';
 
 const app = express();
 const httpServer = createServer(app);
@@ -132,6 +133,7 @@ app.use('/api/v1/contacts', contactRoutes);
 app.use('/api/v1/campaigns', campaignRoutes);
 app.use('/api/v1/automations', automationRoutes);
 app.use('/api/v1/webhooks', webhookRoutes);
+app.use('/api/v1/webhooks/instagram', instagramWebhookRoutes); // Instagram webhook (separate from OAuth)
 app.use('/api/v1/analytics', analyticsRoutes);
 app.use('/api/v1/phone-settings', phoneSettingsRoutes);
 app.use('/api/v1/tools', toolRoutes);

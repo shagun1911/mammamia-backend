@@ -11,7 +11,215 @@ import mongoose from 'mongoose';
 
 const socialIntegrationService = new SocialIntegrationService();
 
+/**
+ * Organization context resolved from integration
+ */
+interface OrgContext {
+  organization?: any; // Organization document (optional)
+  users: any[]; // User documents
+  settings?: any; // Settings document (optional)
+  collectionName?: string; // Knowledge base collection name
+}
+
 export class MetaWebhookController {
+  /**
+   * Resolve organization context from integration with robust fallbacks
+   * Handles cases where Organization may not exist
+   */
+  private async resolveOrgContextFromIntegration(integration: any): Promise<OrgContext | null> {
+    const Organization = (await import('../models/Organization')).default;
+    const User = (await import('../models/User')).default;
+    const Settings = (await import('../models/Settings')).default;
+    const mongoose = (await import('mongoose')).default;
+
+    // Step 1: Resolve organizationId safely (keep raw value for user queries)
+    let orgIdRaw = integration.organizationId || integration.metadata?.organizationId;
+    
+    // Try alternative sources if not found
+    if (!orgIdRaw) {
+      const userId = integration.metadata?.userId;
+      if (userId) {
+        console.log('[Instagram Webhook] Looking up User by userId to find organizationId');
+        const user = await User.findById(userId);
+        if (user?.organizationId) {
+          orgIdRaw = user.organizationId;
+          console.log('[Instagram Webhook] Found organizationId from User:', orgIdRaw);
+        } else if (user?._id) {
+          // If user has no organizationId, use user._id as fallback
+          orgIdRaw = user._id;
+          console.log('[Instagram Webhook] Using user._id as organizationId fallback:', orgIdRaw);
+        }
+      }
+    }
+
+    if (!orgIdRaw) {
+      console.error('[Instagram Webhook] ❌ No organizationId found in integration');
+      return null;
+    }
+
+    console.log(`[Instagram Webhook] Resolved organizationId (raw): ${orgIdRaw} (type: ${typeof orgIdRaw})`);
+
+    // Convert to ObjectId for lookups (if valid)
+    const orgObjectId = mongoose.Types.ObjectId.isValid(orgIdRaw)
+      ? new mongoose.Types.ObjectId(orgIdRaw)
+      : null;
+
+    // Step 1: Try Organization (if exists)
+    let organization = null;
+    if (orgObjectId) {
+      try {
+        organization = await Organization.findById(orgObjectId);
+        if (organization) {
+          console.log(`[Instagram Webhook] ✅ Organization found: ${orgObjectId}`);
+        } else {
+          console.log(`[Instagram Webhook] ⚠️  Organization not found: ${orgObjectId} (will try user fallbacks)`);
+        }
+      } catch (error: any) {
+        console.warn(`[Instagram Webhook] ⚠️  Error looking up Organization: ${error.message} (will try user fallbacks)`);
+      }
+    } else {
+      console.log(`[Instagram Webhook] ⚠️  organizationId is not a valid ObjectId, skipping Organization lookup (will try user fallbacks)`);
+    }
+
+    // Step 2: Try users by organizationId field (query BOTH string and ObjectId forms)
+    let users: any[] = [];
+    
+    if (orgIdRaw) {
+      const userQuery: any = {
+        $or: [
+          { organizationId: orgIdRaw } // string match (original value)
+        ]
+      };
+
+      // Add ObjectId match if valid
+      if (orgObjectId) {
+        userQuery.$or.push({ organizationId: orgObjectId });
+      }
+
+      users = await User.find(userQuery).limit(10);
+      
+      // Log which path matched
+      if (users.length > 0) {
+        const matchedAsString = users.some(u => String(u.organizationId) === String(orgIdRaw));
+        const matchedAsObjectId = orgObjectId && users.some(u => u.organizationId?.equals?.(orgObjectId));
+        
+        console.log(`[Instagram Webhook] Found ${users.length} user(s) by organizationId field:`, {
+          raw: orgIdRaw,
+          objectId: orgObjectId?.toString(),
+          matchedAsString,
+          matchedAsObjectId: matchedAsObjectId || false
+        });
+      } else {
+        console.log(`[Instagram Webhook] No users found by organizationId field (will try final fallback)`);
+      }
+    }
+
+    // Step 3: FINAL FALLBACK — organizationId IS userId (single-tenant case)
+    if (users.length === 0 && orgObjectId) {
+      console.log(`[Instagram Webhook] Attempting final fallback: treating organizationId as userId...`);
+      const ownerUser = await User.findById(orgObjectId);
+      if (ownerUser) {
+        users = [ownerUser];
+        console.warn(`[Instagram Webhook] ⚠️  organizationId resolved as userId (single-tenant mode)`);
+        console.log(`[Instagram Webhook] Owner user resolved: ${ownerUser._id}`);
+      } else {
+        console.log(`[Instagram Webhook] No user found with _id === organizationId`);
+      }
+    }
+
+    // HARD FAIL only after ALL fallbacks
+    if (users.length === 0) {
+      console.error('[Instagram Webhook] ❌ Failed to resolve user context from integration after all fallbacks:', {
+        orgIdRaw,
+        orgObjectId: orgObjectId?.toString(),
+        hasOrganization: !!organization
+      });
+      return null;
+    }
+
+    console.log(`[Instagram Webhook] ✅ Resolved ${users.length} user(s) for context`);
+
+    // Step 4: Resolve Settings safely
+    // Use users[0] as owner (single-tenant: organizationId === userId)
+    let settings = null;
+    
+    // Try organization owner first (if organization exists)
+    if (organization?.ownerId) {
+      settings = await Settings.findOne({ userId: organization.ownerId });
+      if (settings) {
+        console.log(`[Instagram Webhook] ✅ Settings found for organization owner: ${organization.ownerId}`);
+      }
+    }
+
+    // Fallback: Use users[0] as owner (single-tenant case)
+    if (!settings && users.length > 0) {
+      const ownerUser = users[0];
+      console.log(`[Instagram Webhook] Using first user as owner: ${ownerUser._id}`);
+      settings = await Settings.findOne({ userId: ownerUser._id });
+      if (settings) {
+        console.log(`[Instagram Webhook] ✅ Settings found for owner user: ${ownerUser._id}`);
+      }
+    }
+
+    // Final fallback: iterate all users and find first Settings with KB configured
+    if (!settings) {
+      console.log('[Instagram Webhook] Searching for settings in all users...');
+      for (const user of users) {
+        const userSettings = await Settings.findOne({ userId: user._id });
+        if (userSettings) {
+          // Check if settings has KB configured (either format)
+          const hasKB = 
+            (userSettings.defaultKnowledgeBaseNames && userSettings.defaultKnowledgeBaseNames.length > 0) ||
+            userSettings.defaultKnowledgeBaseName;
+          
+          if (hasKB) {
+            settings = userSettings;
+            console.log(`[Instagram Webhook] ✅ Settings found for user: ${user._id} (with KB configured)`);
+            break;
+          }
+        }
+      }
+    }
+
+    if (!settings) {
+      console.error('[Instagram Webhook] ❌ No settings found with KB configured');
+      return {
+        organization: organization || undefined,
+        users,
+        settings: undefined
+      };
+    }
+
+    // Step 5: Validate KB configuration (support both formats)
+    let collectionName: string | undefined = undefined;
+
+    // Priority 1: defaultKnowledgeBaseNames (array)
+    if (settings.defaultKnowledgeBaseNames && settings.defaultKnowledgeBaseNames.length > 0) {
+      collectionName = settings.defaultKnowledgeBaseNames[0];
+      console.log(`[Instagram Webhook] ✅ Knowledge base resolved: ${collectionName}`);
+    }
+    // Priority 2: defaultKnowledgeBaseName (string - legacy)
+    else if (settings.defaultKnowledgeBaseName) {
+      collectionName = settings.defaultKnowledgeBaseName;
+      console.log(`[Instagram Webhook] ✅ Knowledge base resolved: ${collectionName}`);
+    }
+
+    if (!collectionName) {
+      console.error('[Instagram Webhook] ❌ No KB configured in settings');
+      return {
+        organization: organization || undefined,
+        users,
+        settings
+      };
+    }
+
+    return {
+      organization: organization || undefined,
+      users,
+      settings,
+      collectionName
+    };
+  }
   /**
    * Verify webhook (GET request) - Generic handler for all Meta platforms
    */
@@ -133,21 +341,39 @@ export class MetaWebhookController {
 
   /**
    * Handle incoming Instagram webhook events (POST request)
+   * Matches Messenger webhook pattern exactly
    */
   async handleInstagram(req: Request, res: Response) {
     try {
-      // Acknowledge receipt immediately
+      // Acknowledge receipt immediately (like Messenger)
       res.sendStatus(200);
 
       const webhookData = req.body;
-      console.log('[Instagram Webhook] Received:', JSON.stringify(webhookData, null, 2));
+      console.log('[Instagram Webhook] Received webhook:', JSON.stringify(webhookData, null, 2));
 
-      // Meta Instagram webhook structure (same as Messenger)
-      if (webhookData.entry && webhookData.entry.length > 0) {
-        for (const entry of webhookData.entry) {
-          if (entry.messaging && entry.messaging.length > 0) {
-            for (const messagingEvent of entry.messaging) {
-              await this.handleInstagramEvent(messagingEvent, entry.id);
+      // Process incoming messages - EXACT MATCH with Messenger pattern
+      // Check for object = "instagram"
+      if (webhookData.object === 'instagram') {
+        // Process entries
+        for (const entry of webhookData.entry || []) {
+          // Instagram account ID (recipient)
+          const instagramAccountId = entry.id;
+          
+          // Process messaging events
+          for (const event of entry.messaging || []) {
+            // Extract sender ID
+            const senderId = event.sender?.id;
+            
+            // Only process message events (ignore delivery, read receipts, reactions, echoes)
+            if (event.message) {
+              const messageText = event.message.text || '';
+              
+              console.log(`[Instagram Webhook] Received message from ${senderId}: ${messageText}`);
+              console.log(`[Instagram Webhook] Instagram Account ID: ${instagramAccountId}`);
+              console.log(`[Instagram Webhook] Sender ID: ${senderId}`);
+              
+              // Immediately process and reply (synchronous, like Messenger)
+              await this.processInstagramMessage(instagramAccountId, senderId, messageText, event);
             }
           }
         }
@@ -509,41 +735,319 @@ export class MetaWebhookController {
   }
 
   /**
-   * Handle Instagram event
+   * Process Instagram message and send chatbot reply immediately
+   * Matches Messenger pattern - synchronous, immediate reply
    */
-  private async handleInstagramEvent(messagingEvent: any, pageId: string) {
+  private async processInstagramMessage(
+    instagramAccountId: string,
+    senderId: string,
+    messageText: string,
+    event: any
+  ) {
     try {
-      const senderId = messagingEvent.sender?.id;
-      const recipientId = messagingEvent.recipient?.id;
-      const timestamp = messagingEvent.timestamp ? new Date(messagingEvent.timestamp * 1000) : new Date();
+      console.log('[Instagram Webhook] Event received');
+      console.log('[Instagram Webhook] Processing message - Account:', instagramAccountId, 'Sender:', senderId, 'Text:', messageText);
 
-      // Find integration
+      // Skip echo messages (messages sent by the Instagram account itself)
+      if (event.message?.is_echo) {
+        console.log('[Instagram Webhook] Skipping echo message (sent by Instagram account)');
+        return;
+      }
+
+      // Skip if senderId == instagramAccountId (echo)
+      if (senderId === instagramAccountId) {
+        console.log('[Instagram Webhook] Skipping echo message (senderId === instagramAccountId)');
+        return;
+      }
+
+      // Skip if no text message
+      if (!messageText || messageText.trim() === '') {
+        console.log('[Instagram Webhook] Skipping empty message');
+        return;
+      }
+
+      // Find integration using instagramAccountId (matching OAuth storage structure)
       const integration = await SocialIntegration.findOne({
-        'credentials.instagramAccountId': recipientId,
+        'credentials.instagramAccountId': instagramAccountId,
         platform: 'instagram',
         status: 'connected'
       });
 
       if (!integration) {
-        console.warn(`[Instagram Webhook] No integration found for account: ${recipientId}`);
+        console.warn(`[Instagram Webhook] No integration found for instagramAccountId: ${instagramAccountId}`);
+        console.warn(`[Instagram Webhook] Searched for: credentials.instagramAccountId === ${instagramAccountId}`);
         return;
       }
 
-      // Handle different event types
-      if (messagingEvent.message) {
-        await this.handleInstagramMessage(messagingEvent.message, senderId, recipientId, timestamp, integration, pageId);
-      } else if (messagingEvent.postback) {
-        // Handle postback
-        console.log('[Instagram Webhook] Postback received:', messagingEvent.postback);
-      } else if (messagingEvent.reaction) {
-        // Handle reaction
-        console.log('[Instagram Webhook] Reaction received:', messagingEvent.reaction);
-      } else if (messagingEvent.read) {
-        // Handle read receipt
-        await this.handleInstagramRead(messagingEvent.read, recipientId);
+      console.log(`[Instagram] Integration found for instagramAccountId: ${instagramAccountId}`);
+
+      // Resolve organization context with robust fallbacks
+      const orgContext = await this.resolveOrgContextFromIntegration(integration);
+      
+      if (!orgContext) {
+        console.error('[Instagram Webhook] ❌ Failed to resolve organization context');
+        return;
       }
-    } catch (error) {
-      console.error('[Instagram Webhook] Error handling event:', error);
+
+      if (!orgContext.collectionName) {
+        console.error('[Instagram Webhook] ❌ No knowledge base collection name resolved');
+        return;
+      }
+
+      const collectionName = orgContext.collectionName;
+      const organizationId = integration.organizationId || 
+                           integration.metadata?.organizationId || 
+                           (orgContext.users[0]?.organizationId?.toString());
+      
+      console.log(`[Instagram] Organization resolved: ${organizationId || 'via users fallback'}`);
+      console.log(`[Instagram] KB selected: ${collectionName}`);
+
+      // Generate AI reply using RAG service
+      console.log(`[Instagram Webhook] Generating AI reply for message: ${messageText.substring(0, 100)}...`);
+      
+      const ragResponse = await pythonRagService.chat({
+        query: messageText,
+        collectionNames: [collectionName],
+        topK: 5,
+        threadId: `instagram_${instagramAccountId}_${senderId}`, // Simple thread ID
+        systemPrompt: 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.'
+      });
+
+      const botReply = ragResponse.answer;
+      if (!botReply || botReply.trim() === '') {
+        console.warn('[Instagram Webhook] No reply generated from RAG service');
+        // Use fallback text
+        const fallbackText = 'Thank you for your message. I am processing your request.';
+        console.log(`[Instagram Webhook] Using fallback text: ${fallbackText}`);
+        await this.sendInstagramReply(instagramAccountId, senderId, fallbackText, integration);
+        return;
+      }
+
+      console.log(`[Instagram Webhook] Got reply from RAG: ${botReply.substring(0, 100)}...`);
+      console.log(`[Instagram Webhook] Sending reply...`);
+
+      // Send reply immediately using Instagram Messaging API
+      await this.sendInstagramReply(instagramAccountId, senderId, botReply, integration);
+
+      console.log(`[Instagram Webhook] ✅ Reply sent successfully`);
+
+      // Optional: Save to database (for conversation history)
+      try {
+        // Use organizationId from context (may be from users fallback)
+        const finalOrganizationId = organizationId || orgContext.users[0]?.organizationId;
+        
+        if (!finalOrganizationId) {
+          console.warn('[Instagram Webhook] Cannot save to database - no organizationId available');
+          return; // Don't fail, just skip database save
+        }
+
+        // Find or create customer
+        let customer = await Customer.findOne({
+          'metadata.instagramId': senderId,
+          organizationId: finalOrganizationId
+        });
+
+        if (!customer) {
+          customer = await Customer.create({
+            organizationId: finalOrganizationId,
+            name: senderId,
+            source: 'instagram',
+            metadata: { instagramId: senderId }
+          });
+        }
+
+        // Find or create conversation
+        let conversation = await Conversation.findOne({
+          customerId: customer._id,
+          channel: 'social',
+          'metadata.platform': 'instagram',
+          'metadata.instagramAccountId': instagramAccountId,
+          status: { $in: ['open', 'unread'] }
+        });
+
+        if (!conversation) {
+          conversation = await Conversation.create({
+            organizationId: finalOrganizationId,
+            customerId: customer._id,
+            channel: 'social',
+            status: 'unread',
+            isAiManaging: true,
+            metadata: {
+              platform: 'instagram',
+              instagramAccountId: instagramAccountId
+            }
+          });
+        }
+
+        // Save user message
+        await Message.create({
+          conversationId: conversation._id,
+          organizationId: finalOrganizationId,
+          customerId: customer._id,
+          sender: 'customer',
+          text: messageText,
+          type: 'message',
+          timestamp: new Date(),
+          metadata: {
+            externalId: event.message?.mid,
+            platform: 'instagram'
+          }
+        });
+
+        // Save bot reply
+        await Message.create({
+          conversationId: conversation._id,
+          organizationId: finalOrganizationId,
+          customerId: customer._id,
+          sender: 'ai',
+          text: botReply,
+          type: 'message',
+          timestamp: new Date(),
+          metadata: {
+            platform: 'instagram',
+            generatedBy: 'rag-service',
+            collectionNames: [collectionName]
+          }
+        });
+
+        // Update conversation
+        conversation.updatedAt = new Date();
+        await conversation.save();
+
+        // Emit socket event
+        emitToOrganization(finalOrganizationId.toString(), 'new-message', {
+          conversationId: conversation._id?.toString() || '',
+          message: {
+            text: botReply,
+            sender: 'ai',
+            timestamp: new Date()
+          }
+        });
+      } catch (dbError) {
+        // Don't fail if database save fails - message was already sent
+        console.error('[Instagram Webhook] Error saving to database (message was sent):', dbError);
+      }
+    } catch (error: any) {
+      console.error('[Instagram Webhook] Error processing message:', error.message || error);
+      console.error('[Instagram Webhook] Error stack:', error.stack);
+    }
+  }
+
+  /**
+   * Send Instagram DM reply via Graph API
+   * POST https://graph.facebook.com/v18.0/{instagramAccountId}/messages
+   */
+  private async sendInstagramReply(
+    instagramAccountId: string,
+    senderId: string,
+    messageText: string,
+    integration: any
+  ): Promise<void> {
+    try {
+      // Get Page Access Token from integration credentials
+      // Instagram uses the same Page Access Token as the connected Facebook Page
+      const pageAccessToken = integration.credentials?.pageAccessToken;
+
+      if (!pageAccessToken) {
+        console.error(`[Instagram Webhook] ❌ No Page Access Token found for instagramAccountId: ${instagramAccountId}`);
+        console.error(`[Instagram Webhook] Integration credentials:`, {
+          hasInstagramAccountId: !!integration.credentials?.instagramAccountId,
+          hasPageAccessToken: !!integration.credentials?.pageAccessToken,
+          instagramAccountId: integration.credentials?.instagramAccountId
+        });
+        throw new Error('Page Access Token not found');
+      }
+
+      console.log(`[Instagram Webhook] ✅ Found Page Access Token for instagramAccountId: ${instagramAccountId}`);
+
+      // Defensive logging: App mode and permissions check
+      const appMode = process.env.NODE_ENV || 'development';
+      console.log(`[Instagram Webhook] App mode: ${appMode}`);
+
+      // Check token permissions via debug_token (optional, for debugging)
+      try {
+        const metaAppId = process.env.META_APP_ID;
+        const metaAppSecret = process.env.META_APP_SECRET;
+        
+        if (metaAppId && metaAppSecret) {
+          const debugResponse = await axios.get('https://graph.facebook.com/v18.0/debug_token', {
+            params: {
+              input_token: pageAccessToken,
+              access_token: `${metaAppId}|${metaAppSecret}`
+            }
+          });
+          
+          if (debugResponse.data?.data) {
+            const tokenData = debugResponse.data.data;
+            console.log(`[Instagram Webhook] Token permissions:`, {
+              app_id: tokenData.app_id,
+              type: tokenData.type,
+              scopes: tokenData.scopes || [],
+              is_valid: tokenData.is_valid
+            });
+          }
+        } else {
+          console.warn(`[Instagram Webhook] META_APP_ID or META_APP_SECRET not set, skipping token permission check`);
+        }
+      } catch (debugError: any) {
+        // Don't fail if debug_token fails, just log
+        console.warn(`[Instagram Webhook] Could not check token permissions:`, debugError.message);
+      }
+
+      // Build endpoint URL
+      const endpointUrl = `https://graph.facebook.com/v18.0/${instagramAccountId}/messages`;
+      console.log(`[Instagram Webhook] Endpoint URL: ${endpointUrl}`);
+      console.log(`[Instagram Webhook] Recipient ID: ${senderId}`);
+      console.log(`[Instagram Webhook] Message length: ${messageText.length} characters`);
+
+      // Build payload (EXACT format required by Instagram Messaging API)
+      const payload = {
+        recipient: {
+          id: senderId
+        },
+        message: {
+          text: messageText
+        }
+      };
+
+      console.log(`[Instagram Webhook] Payload:`, JSON.stringify(payload, null, 2));
+
+      // Send message via Instagram Graph API
+      // POST /v18.0/{instagramAccountId}/messages
+      const response = await axios.post(
+        endpointUrl,
+        payload,
+        {
+          headers: {
+            'Authorization': `Bearer ${pageAccessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      console.log(`[Instagram Webhook] ✅ Instagram reply sent successfully`);
+      console.log(`[Instagram Webhook] Response:`, JSON.stringify(response.data, null, 2));
+    } catch (error: any) {
+      const errorData = error.response?.data?.error || {};
+      const errorCode = errorData.code;
+      const errorMessage = errorData.message || error.message;
+
+      // Guard for error code 3: Application does not have the capability
+      if (errorCode === 3) {
+        console.error(`[Instagram Webhook] ❌ ERROR CODE 3: Application does not have the capability to make this API call`);
+        console.error(`[Instagram Webhook] Instagram Messaging API capability not enabled.`);
+        console.error(`[Instagram Webhook] Check:`);
+        console.error(`[Instagram Webhook]   - App is LIVE (not in Development mode)`);
+        console.error(`[Instagram Webhook]   - instagram_business_manage_messages permission is Advanced`);
+        console.error(`[Instagram Webhook]   - Instagram Messaging product is added to the app`);
+        console.error(`[Instagram Webhook]   - App Review is approved for instagram_business_manage_messages`);
+        console.error(`[Instagram Webhook] Full error:`, JSON.stringify(error.response?.data, null, 2));
+      } else {
+        console.error(`[Instagram Webhook] ❌ Error sending Instagram message (code: ${errorCode}):`, errorMessage);
+        console.error(`[Instagram Webhook] Full error:`, JSON.stringify(error.response?.data, null, 2));
+      }
+
+      throw error;
     }
   }
 

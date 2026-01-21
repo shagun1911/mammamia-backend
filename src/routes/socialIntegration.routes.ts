@@ -3,6 +3,9 @@ import socialIntegrationController from '../controllers/socialIntegration.contro
 import metaWebhookController from '../controllers/metaWebhook.controller';
 import { authenticate } from '../middleware/auth.middleware';
 
+// Note: Instagram webhook routes have been moved to /api/v1/webhooks/instagram
+// See instagramWebhook.routes.ts for Instagram webhook handling
+
 const router = Router();
 
 // ============================================
@@ -20,9 +23,7 @@ router.post('/whatsapp/webhook', metaWebhookController.handleWhatsApp.bind(metaW
 router.get('/messenger/webhook', (req, res) => metaWebhookController.verify(req, res, 'messenger'));
 router.post('/messenger/webhook', metaWebhookController.handleMessenger.bind(metaWebhookController));
 
-// Instagram webhook
-router.get('/instagram/webhook', (req, res) => metaWebhookController.verify(req, res, 'instagram'));
-router.post('/instagram/webhook', metaWebhookController.handleInstagram.bind(metaWebhookController));
+// Note: Instagram webhook is now at /api/v1/webhooks/instagram (see instagramWebhook.routes.ts)
 
 // OAuth callback routes - MUST BE PUBLIC (Meta redirects here without JWT tokens)
 // These routes handle OAuth redirects from Meta and must remain public forever
