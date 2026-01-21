@@ -268,6 +268,18 @@ export class SocialIntegrationController {
       const organizationId = req.user.organizationId || req.user._id;
       const { platform } = req.params;
 
+      // Handle Gmail OAuth separately (uses Python API, not Meta OAuth)
+      if (platform === 'gmail') {
+        console.log('[Gmail OAuth Initiate] Request:', {
+          platform,
+          userId: req.user._id?.toString(),
+          organizationId: organizationId?.toString(),
+          hasUser: !!req.user
+        });
+        const gmailOAuthService = (await import('../services/gmailOAuth.service')).default;
+        return gmailOAuthService.authorize(req, res);
+      }
+
       console.log('[Meta OAuth Initiate] Request:', {
         platform,
         userId: req.user._id?.toString(),
@@ -275,9 +287,9 @@ export class SocialIntegrationController {
         hasUser: !!req.user
       });
 
-      // Validate platform
+      // Validate platform for Meta OAuth
       if (!['whatsapp', 'instagram', 'facebook'].includes(platform)) {
-        throw new AppError(400, 'INVALID_PLATFORM', `Invalid platform: ${platform}. Must be one of: whatsapp, instagram, facebook`);
+        throw new AppError(400, 'INVALID_PLATFORM', `Invalid platform: ${platform}. Must be one of: whatsapp, instagram, facebook, gmail`);
       }
 
       // Fail-fast validation: Check all required environment variables

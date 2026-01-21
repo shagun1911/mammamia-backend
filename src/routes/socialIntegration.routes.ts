@@ -34,6 +34,18 @@ router.get('/whatsapp/oauth/callback', socialIntegrationController.oauthCallback
 router.post('/whatsapp/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
 router.get('/instagram/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
 router.post('/instagram/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
+
+// Gmail OAuth callback - handled by Python API
+// Support both GET and POST (Python API might redirect with POST or include data in body)
+router.get('/gmail/oauth/callback', async (req, res) => {
+  const gmailOAuthService = (await import('../services/gmailOAuth.service')).default;
+  return gmailOAuthService.handleCallback(req, res);
+});
+router.post('/gmail/oauth/callback', async (req, res) => {
+  const gmailOAuthService = (await import('../services/gmailOAuth.service')).default;
+  return gmailOAuthService.handleCallback(req, res);
+});
+
 // Fallback for any other platform - support both GET and POST
 router.get('/:platform/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
 router.post('/:platform/oauth/callback', socialIntegrationController.oauthCallback.bind(socialIntegrationController));
