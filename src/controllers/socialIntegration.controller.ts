@@ -42,13 +42,13 @@ export class SocialIntegrationController {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
       }
 
-      if (!['whatsapp', 'instagram', 'facebook'].includes(platform)) {
+      if (!['whatsapp', 'instagram', 'facebook', 'gmail'].includes(platform)) {
         throw new AppError(400, 'INVALID_PLATFORM', 'Invalid platform');
       }
 
       const integration = await socialIntegrationService.getIntegration(
         organizationId,
-        platform as 'whatsapp' | 'instagram' | 'facebook'
+        platform as 'whatsapp' | 'instagram' | 'facebook' | 'gmail'
       );
 
       if (!integration) {
@@ -97,11 +97,12 @@ export class SocialIntegrationController {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
       }
 
-      if (!['whatsapp', 'instagram', 'facebook'].includes(platform)) {
+      if (!['whatsapp', 'instagram', 'facebook', 'gmail'].includes(platform)) {
         throw new AppError(400, 'INVALID_PLATFORM', 'Invalid platform');
       }
 
-      if (!apiKey) {
+      // Gmail uses OAuth, not API keys - skip API key validation
+      if (platform !== 'gmail' && !apiKey) {
         throw new AppError(400, 'MISSING_API_KEY', 'API key is required');
       }
 
@@ -121,7 +122,7 @@ export class SocialIntegrationController {
 
       const integration = await socialIntegrationService.upsertIntegration({
         organizationId,
-        platform: platform as 'whatsapp' | 'instagram' | 'facebook',
+        platform: platform as 'whatsapp' | 'instagram' | 'facebook' | 'gmail',
         apiKey,
         clientId,
         phoneNumberId,
@@ -162,7 +163,7 @@ export class SocialIntegrationController {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
       }
 
-      if (!['whatsapp', 'instagram', 'facebook'].includes(platform)) {
+      if (!['whatsapp', 'instagram', 'facebook', 'gmail'].includes(platform)) {
         throw new AppError(400, 'INVALID_PLATFORM', 'Invalid platform');
       }
 
@@ -196,13 +197,13 @@ export class SocialIntegrationController {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
       }
 
-      if (!['whatsapp', 'instagram', 'facebook'].includes(platform)) {
+      if (!['whatsapp', 'instagram', 'facebook', 'gmail'].includes(platform)) {
         throw new AppError(400, 'INVALID_PLATFORM', 'Invalid platform');
       }
 
       await socialIntegrationService.disconnectIntegration(
         organizationId,
-        platform as 'whatsapp' | 'instagram' | 'facebook'
+        platform as 'whatsapp' | 'instagram' | 'facebook' | 'gmail'
       );
 
       res.json({
@@ -227,13 +228,13 @@ export class SocialIntegrationController {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
       }
 
-      if (!['whatsapp', 'instagram', 'facebook'].includes(platform)) {
+      if (!['whatsapp', 'instagram', 'facebook', 'gmail'].includes(platform)) {
         throw new AppError(400, 'INVALID_PLATFORM', 'Invalid platform');
       }
 
       await socialIntegrationService.deleteIntegration(
         organizationId,
-        platform as 'whatsapp' | 'instagram' | 'facebook'
+        platform as 'whatsapp' | 'instagram' | 'facebook' | 'gmail'
       );
 
       res.json({
@@ -612,7 +613,7 @@ export class SocialIntegrationController {
       // Platform-specific handling
       let integrationData: any = {
         organizationId,
-        platform: platform as 'whatsapp' | 'instagram' | 'facebook',
+        platform: platform as 'whatsapp' | 'instagram' | 'facebook' | 'gmail',
         clientId: metaAppId
       };
 

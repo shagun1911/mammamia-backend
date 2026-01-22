@@ -20,22 +20,32 @@ export class GmailOAuthService {
    */
   async authorize(req: any, res: any): Promise<void> {
     try {
-      // Build callback URL for our backend
-      // This is where the Python API should redirect after processing OAuth
-      const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
-      const callbackUrl = `${backendUrl}/api/v1/social-integrations/gmail/oauth/callback`;
+      // Get userId and organizationId from request (needed to save integration later)
+      const userId = req.user?._id?.toString() || req.user?.id?.toString();
+      const organizationId = req.user?.organizationId?.toString() || req.user?._id?.toString();
+      
+      if (!userId || !organizationId) {
+        throw new Error('User ID and Organization ID are required for Gmail OAuth');
+      }
+      
+      // Build callback URL for our backend - use ngrok URL as specified
+      // Include organizationId and userId as query params so we can save the integration
+      const ngrokBackendUrl = 'https://semimanagerially-nonconstructive-gerry.ngrok-free.dev';
+      const callbackUrl = `${ngrokBackendUrl}/api/v1/social-integrations/gmail/oauth/callback?organizationId=${organizationId}&userId=${userId}`;
       
       // Python API flow:
-      // 1. User → Python API /email/authorize?redirect_uri=OUR_CALLBACK
+      // 1. User → Python API /email/authorize?redirect_url=OUR_CALLBACK
       // 2. Python API → Google OAuth (with Python API's own redirect_uri)
       // 3. Google → Python API /email/oauth2callback?code=...
-      // 4. Python API processes code and should redirect to OUR_CALLBACK
+      // 4. Python API processes code and redirects to OUR_CALLBACK (redirect_url from step 1)
       // 5. Our callback handler receives the request and redirects to frontend
-      const pythonUrl = `${this.pythonApiUrl}/email/authorize?redirect_uri=${encodeURIComponent(callbackUrl)}`;
+      const pythonUrl = `${this.pythonApiUrl}/email/authorize?redirect_url=${encodeURIComponent(callbackUrl)}`;
       console.log('[Gmail OAuth] Initiating OAuth flow');
       console.log('[Gmail OAuth] Python API URL:', pythonUrl);
       console.log('[Gmail OAuth] Our callback URL (Python API should redirect here):', callbackUrl);
-      console.log('[Gmail OAuth] ⚠️  Ensure Python API is configured to redirect to this callback URL');
+      console.log('[Gmail OAuth] Organization ID:', organizationId);
+      console.log('[Gmail OAuth] User ID:', userId);
+      console.log('[Gmail OAuth] Using redirect_url parameter (not redirect_uri)');
       
       // Check if this is an AJAX/fetch request (frontend expects JSON response)
       const isAjaxRequest = req.headers['x-requested-with'] === 'XMLHttpRequest' || 
@@ -86,30 +96,85 @@ export class GmailOAuthService {
    */
   async handleCallback(req: any, res: any): Promise<void> {
     try {
-      const { code, state, user_email, email, success, message } = req.query;
+      const { code, state, user_email, email, success, message, organizationId, userId } = req.query;
       const body = req.body || {};
       
       console.log('[Gmail OAuth Callback] Received callback:', {
         hasCode: !!code,
         hasState: !!state,
         hasUserEmail: !!(user_email || email || body.user_email || body.email),
+        hasOrganizationId: !!organizationId,
+        hasUserId: !!userId,
         query: req.query,
         body: Object.keys(body).length > 0 ? body : 'empty'
       });
       
       let userEmail = user_email || email || body.user_email || body.email || '';
       
-      // If we have a code, forward it to Python API
+      // Get organizationId and userId from query (passed via callback URL)
+      const orgId = organizationId || body.organizationId;
+      const usrId = userId || body.userId;
+      
+      if (!orgId) {
+        console.error('[Gmail OAuth Callback] Missing organizationId');
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        return res.redirect(
+          `${frontendUrl}/settings/socials?error=${encodeURIComponent('Missing organization ID')}&platform=gmail`
+        );
+      }
+      
+      // Save Gmail integration if we have userEmail
+      if (userEmail) {
+        try {
+          const socialIntegrationService = (await import('./socialIntegration.service')).default;
+          
+          console.log('[Gmail OAuth Callback] Saving Gmail integration:', {
+            organizationId: orgId,
+            userEmail,
+            userId: usrId
+          });
+          
+          // Save integration - Gmail uses userEmail as the identifier
+          // For Gmail, we don't have an API key, so we'll use the userEmail as a placeholder
+          // The actual authentication is handled by the Python API using X-User-Email header
+          await socialIntegrationService.upsertIntegration({
+            organizationId: orgId,
+            platform: 'gmail',
+            apiKey: userEmail, // Use email as identifier (will be encrypted)
+            credentials: {
+              userEmail: userEmail,
+              connectedAt: new Date()
+            },
+            metadata: {
+              userId: usrId,
+              connectedAt: new Date(),
+              email: userEmail
+            },
+            skipVerification: true, // Gmail OAuth is already verified by Python API
+            webhookVerified: false // Gmail doesn't use webhooks
+          });
+          
+          console.log('[Gmail OAuth Callback] ✅ Gmail integration saved successfully');
+        } catch (saveError: any) {
+          console.error('[Gmail OAuth Callback] Error saving integration:', saveError.message);
+          // Don't throw - still redirect to frontend, but log the error
+        }
+      }
+      
+      // If we have a code, forward it to Python API via POST
       if (code) {
         console.log('[Gmail OAuth Callback] Code received, forwarding to Python API');
         const pythonUrl = `${this.pythonApiUrl}/email/oauth2callback`;
-        console.log('[Gmail OAuth Callback] Forwarding to Python API:', pythonUrl);
+        console.log('[Gmail OAuth Callback] Forwarding to Python API (POST):', pythonUrl);
         
         try {
-          const response = await axios.get(pythonUrl, {
-            params: {
-              code,
-              state: state || null
+          // Use POST request with code and state only (no redirect_uri)
+          const response = await axios.post(pythonUrl, {
+            code,
+            state: state || null
+          }, {
+            headers: {
+              'Content-Type': 'application/json'
             }
           });
 
@@ -140,15 +205,19 @@ export class GmailOAuthService {
       }
 
       // ALWAYS redirect to frontend (never return JSON)
+      // This ensures users are successfully redirected back to the platform after OAuth
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       const redirectUrl = userEmail 
         ? `${frontendUrl}/settings/socials?success=true&platform=gmail&email=${encodeURIComponent(userEmail)}`
         : `${frontendUrl}/settings/socials?success=true&platform=gmail`;
       
-      console.log('[Gmail OAuth Callback] ✅ Redirecting to frontend:', redirectUrl);
+      console.log('[Gmail OAuth Callback] ✅ OAuth successful, redirecting to frontend');
+      console.log('[Gmail OAuth Callback] Redirect URL:', redirectUrl);
       console.log('[Gmail OAuth Callback] User email:', userEmail || 'not provided');
+      console.log('[Gmail OAuth Callback] Source:', code ? 'Python API processed code' : 'Direct redirect from Python API');
       
       // Ensure we always redirect (never send JSON)
+      // This is the final step - user gets redirected back to platform
       return res.redirect(redirectUrl);
     } catch (error: any) {
       console.error('[Gmail OAuth Callback] ❌ Error handling callback:', error.response?.data || error.message);
