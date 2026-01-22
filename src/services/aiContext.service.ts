@@ -40,7 +40,16 @@ export class AIContextService {
         if (mongoose.Types.ObjectId.isValid(organizationId)) {
           const user = await User.findById(organizationId);
           if (user) {
-            console.log(`[AI Context] organizationId is actually a userId, resolving from user`);
+            console.log(`[AI Context] organizationId is actually a userId, checking user's actual organizationId`);
+            
+            // CRITICAL: If user has an actual organizationId, use that instead!
+            if (user.organizationId && user.organizationId.toString() !== organizationId) {
+              console.log(`[AI Context] User has actual organizationId: ${user.organizationId}, resolving from that`);
+              return this.resolveFromOrganization(user.organizationId.toString());
+            }
+            
+            // Otherwise, resolve from user directly (single-tenant case)
+            console.log(`[AI Context] Resolving from user directly (single-tenant)`);
             return this.resolveFromUser(user._id.toString());
           }
         }
@@ -310,12 +319,45 @@ export class AIContextService {
         console.warn(`[AI Context] Could not fetch AIBehavior for user ${userId}, using default prompt:`, error.message);
       }
 
+      // Determine autoReplyEnabled: 
+      // 1. If ANY SocialIntegration exists with status="connected", default to true
+      // 2. User settings may explicitly disable it (autoReplyEnabled: false), but absence must NOT disable it
+      let autoReplyEnabled = true; // Default to true
+      
+      try {
+        const SocialIntegration = (await import('../models/SocialIntegration')).default;
+        const hasConnectedIntegration = await SocialIntegration.exists({
+          organizationId: organizationId,
+          status: 'connected'
+        });
+        
+        if (hasConnectedIntegration) {
+          // If connected social integration exists, default to true
+          autoReplyEnabled = true;
+          console.log(`[AI Context] ✅ Connected social integration found for organization ${organizationId}, autoReplyEnabled defaults to true`);
+        } else {
+          // No connected integration, but still default to true (absence must NOT disable it)
+          autoReplyEnabled = true;
+          console.log(`[AI Context] No connected social integration found, autoReplyEnabled defaults to true`);
+        }
+      } catch (error: any) {
+        console.warn(`[AI Context] Could not check SocialIntegration, using default true:`, error.message);
+        autoReplyEnabled = true; // Default to true on error
+      }
+      
+      // User settings can explicitly disable autoReplyEnabled
+      // Only set to false if explicitly set to false in settings
+      if (settings.autoReplyEnabled === false) {
+        autoReplyEnabled = false;
+        console.log(`[AI Context] ⚠️  autoReplyEnabled explicitly disabled in user settings`);
+      }
+
       console.log(`[AI Context] ✅ Resolved context:`, {
         userId,
         organizationId,
         collectionNames,
         systemPromptLength: systemPrompt.length,
-        autoReplyEnabled: settings.autoReplyEnabled !== false
+        autoReplyEnabled: autoReplyEnabled
       });
 
       return {
@@ -323,7 +365,7 @@ export class AIContextService {
         systemPrompt,
         userId,
         organizationId,
-        autoReplyEnabled: settings.autoReplyEnabled !== false
+        autoReplyEnabled: autoReplyEnabled
       };
     } catch (error: any) {
       console.error(`[AI Context] Error building context:`, error.message);

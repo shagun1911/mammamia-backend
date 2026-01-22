@@ -277,33 +277,105 @@ export class ConversationService {
           text: messageText
         });
       } else if (channel === 'social' && metadata.platform === 'instagram') {
-        const dialog360 = await socialIntegrationService.getDialog360Service(
-          conversation.organizationId.toString(),
-          'instagram'
-        );
+        // Instagram uses Meta Graph API, not Dialog360
         const instagramId = customer.metadata?.instagramId;
         if (!instagramId) {
           throw new AppError(400, 'INVALID_CUSTOMER', 'Instagram ID not found for customer');
         }
-        await dialog360.sendInstagramMessage({
-          to: instagramId,
-          type: 'text',
-          text: messageText
+        
+        // Find integration to get page access token
+        const SocialIntegration = (await import('../models/SocialIntegration')).default;
+        const instagramAccountId = metadata.instagramAccountId;
+        
+        if (!instagramAccountId) {
+          throw new AppError(400, 'INVALID_CONVERSATION', 'Instagram Account ID not found in conversation metadata');
+        }
+        
+        const integration = await SocialIntegration.findOne({
+          'credentials.instagramAccountId': instagramAccountId,
+          platform: 'instagram',
+          organizationId: conversation.organizationId,
+          status: 'connected'
         });
-      } else if (channel === 'social' && metadata.platform === 'facebook') {
-        const dialog360 = await socialIntegrationService.getDialog360Service(
-          conversation.organizationId.toString(),
-          'facebook'
+        
+        if (!integration) {
+          throw new AppError(404, 'INTEGRATION_NOT_FOUND', 'Instagram integration not found');
+        }
+        
+        // Get page access token (Instagram uses the connected Facebook Page's access token)
+        let pageAccessToken = integration.credentials?.pageAccessToken;
+        if (!pageAccessToken) {
+          pageAccessToken = (integration as any).getDecryptedApiKey?.();
+        }
+        
+        if (!pageAccessToken) {
+          throw new AppError(400, 'INVALID_TOKEN', 'Page access token not found');
+        }
+        
+        // Use Meta Graph API to send message to Instagram
+        const axios = (await import('axios')).default;
+        await axios.post(
+          `https://graph.facebook.com/v18.0/${instagramAccountId}/messages`,
+          {
+            recipient: { id: instagramId },
+            message: { text: messageText }
+          },
+          {
+            headers: {
+              'Authorization': `Bearer ${pageAccessToken}`,
+              'Content-Type': 'application/json'
+            }
+          }
         );
+      } else if (channel === 'social' && metadata.platform === 'facebook') {
+        // Messenger uses Meta Graph API, not Dialog360
         const facebookId = customer.metadata?.facebookId;
         if (!facebookId) {
           throw new AppError(400, 'INVALID_CUSTOMER', 'Facebook ID not found for customer');
         }
-        await dialog360.sendFacebookMessage({
-          to: facebookId,
-          type: 'text',
-          text: messageText
+        
+        // Find integration to get page access token
+        const SocialIntegration = (await import('../models/SocialIntegration')).default;
+        const pageId = metadata.facebookPageId;
+        
+        if (!pageId) {
+          throw new AppError(400, 'INVALID_CONVERSATION', 'Facebook Page ID not found in conversation metadata');
+        }
+        
+        const integration = await SocialIntegration.findOne({
+          'credentials.facebookPageId': pageId,
+          platform: 'facebook',
+          organizationId: conversation.organizationId,
+          status: 'connected'
         });
+        
+        if (!integration) {
+          throw new AppError(404, 'INTEGRATION_NOT_FOUND', 'Facebook integration not found');
+        }
+        
+        const pageAccessToken = integration.credentials?.pageAccessToken;
+        if (!pageAccessToken) {
+          throw new AppError(400, 'INVALID_TOKEN', 'Page access token not found');
+        }
+        
+        // Use Meta Graph API to send message
+        const { MetaOAuthService } = await import('../services/metaOAuth.service');
+        const metaAppId = process.env.META_APP_ID || '';
+        const metaAppSecret = process.env.META_APP_SECRET || '';
+        const backendUrl = process.env.BACKEND_URL || '';
+        
+        const metaOAuth = new MetaOAuthService({
+          appId: metaAppId,
+          appSecret: metaAppSecret,
+          redirectUri: `${backendUrl}/api/v1/social-integrations/facebook/oauth/callback`
+        });
+        
+        await metaOAuth.sendMessengerMessage(
+          pageId,
+          pageAccessToken,
+          facebookId, // PSID
+          messageText
+        );
       } else if (channel === 'website') {
         // Website messages are handled via Socket.io (existing implementation)
         // No external API call needed

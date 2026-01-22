@@ -8,6 +8,68 @@ import { pythonRagService } from '../services/pythonRag.service';
 import { SocialIntegrationService } from '../services/socialIntegration.service';
 import axios from 'axios';
 import mongoose from 'mongoose';
+import KnowledgeBase from '../models/KnowledgeBase';
+import Settings from '../models/Settings';
+import { aiBehaviorService } from '../services/aiBehavior.service';
+import { getEcommerceCredentials } from '../utils/ecommerce.util';
+
+// Helper function to determine collection names from Settings ONLY (NO AIBehavior fallback)
+async function determineCollectionNames(userId: string, knowledgeBaseId?: string): Promise<string[]> {
+  let collectionNames: string[] = [];
+  
+  if (knowledgeBaseId) {
+    // Use specified knowledge base
+    const kb = await KnowledgeBase.findById(knowledgeBaseId);
+    if (!kb) {
+      throw new Error('Knowledge base not found');
+    }
+    collectionNames = [kb.collectionName];
+  } else {
+    // Fetch Settings using userId ONLY
+    const settings = await Settings.findOne({ userId });
+    
+    if (!settings) {
+      console.error(`[Social Webhook] ❌ No Settings found for userId: ${userId}`);
+      throw new Error('No knowledge base configured. Please configure a knowledge base in Settings → Knowledge Base.');
+    }
+    
+    // Use KB in EXACT priority order (NO AIBehavior fallback):
+    // Priority 1: Use collection names from Settings (new format - multiple KBs)
+    if (settings.defaultKnowledgeBaseNames && settings.defaultKnowledgeBaseNames.length > 0) {
+      collectionNames = settings.defaultKnowledgeBaseNames;
+      console.log('[Social Webhook] ✅ Using knowledge bases from Settings.defaultKnowledgeBaseNames:', collectionNames);
+    }
+    // Priority 2: Resolve knowledge base IDs from Settings to collection names
+    else if (settings.defaultKnowledgeBaseIds && settings.defaultKnowledgeBaseIds.length > 0) {
+      const knowledgeBases = await KnowledgeBase.find({ 
+        _id: { $in: settings.defaultKnowledgeBaseIds } 
+      }).select('collectionName').lean();
+      collectionNames = knowledgeBases.map((kb: any) => kb.collectionName).filter(Boolean);
+      console.log('[Social Webhook] ✅ Resolved knowledge base IDs to collection names:', collectionNames);
+    }
+    // Priority 3: Use single knowledge base name from Settings (legacy format)
+    else if (settings.defaultKnowledgeBaseName) {
+      collectionNames = [settings.defaultKnowledgeBaseName];
+      console.log('[Social Webhook] ✅ Using knowledge base from Settings.defaultKnowledgeBaseName:', collectionNames);
+    }
+    // Priority 4: Resolve single knowledge base ID from Settings (legacy format)
+    else if (settings.defaultKnowledgeBaseId) {
+      const kb = await KnowledgeBase.findById(settings.defaultKnowledgeBaseId).select('collectionName').lean();
+      if (kb && kb.collectionName) {
+        collectionNames = [kb.collectionName];
+        console.log('[Social Webhook] ✅ Resolved knowledge base ID from Settings:', collectionNames);
+      }
+    }
+    
+    // CRITICAL: Fail loudly if no KB found - NO DEFAULT FALLBACK, NO AIBehavior fallback
+    if (collectionNames.length === 0) {
+      console.error(`[Social Webhook] ❌ No knowledge base found in Settings for userId: ${userId}`);
+      throw new Error('No knowledge base configured. Please configure a knowledge base in Settings → Knowledge Base.');
+    }
+  }
+  
+  return collectionNames;
+}
 
 const socialIntegrationService = new SocialIntegrationService();
 
@@ -398,37 +460,57 @@ export class MetaWebhookController {
       const phoneNumberId = data.metadata?.phone_number_id;
 
       // Find integration
+      // CRITICAL: MUST filter by userId existence to prevent orphan integrations
       const integration = await SocialIntegration.findOne({
         'credentials.phoneNumberId': phoneNumberId,
         platform: 'whatsapp',
-        status: 'connected'
+        status: 'connected',
+        userId: { $exists: true, $ne: null } // CRITICAL: Only get integrations with userId
       });
 
       if (!integration) {
         console.warn(`[WhatsApp Webhook] No integration found for phone number ID: ${phoneNumberId}`);
+        console.warn(`[WhatsApp Webhook] Searched for: credentials.phoneNumberId === ${phoneNumberId}, platform: whatsapp, status: connected, userId exists`);
         return;
       }
 
+      // RUNTIME ASSERTION: If integration.userId missing → THROW
+      if (!integration.userId) {
+        console.error(`[WhatsApp Webhook] ❌ CRITICAL: Integration found but userId is missing! Integration ID: ${integration._id}`);
+        throw new Error(`Integration ${integration._id} is missing userId. This is a data integrity issue.`);
+      }
+
+      console.log(`[WhatsApp Webhook] ✅ Found integration with userId: ${integration.userId.toString()}`);
+
       // Find or create customer
       let customer = await Customer.findOne({
-        phoneNumber: from,
+        phone: from,
         organizationId: integration.organizationId
       });
 
       if (!customer) {
+        // Try to get customer name from message contacts if available
+        const contactName = data.contacts?.[0]?.profile?.name || from;
         customer = await Customer.create({
           organizationId: integration.organizationId,
-          phoneNumber: from,
-          name: from,
+          phone: from,
+          name: contactName,
           source: 'whatsapp'
         });
+      } else if (!customer.name || customer.name === customer.phone) {
+        // Update customer name if available from contacts
+        const contactName = data.contacts?.[0]?.profile?.name;
+        if (contactName) {
+          customer.name = contactName;
+          await customer.save();
+        }
       }
 
-      // Find or create conversation
+      // Find or create conversation (check any status to find existing conversation)
       let conversation = await Conversation.findOne({
         customerId: customer._id,
         channel: 'whatsapp',
-        status: { $in: ['open', 'unread'] }
+        'metadata.phoneNumberId': phoneNumberId
       });
 
       if (!conversation) {
@@ -436,13 +518,29 @@ export class MetaWebhookController {
           organizationId: integration.organizationId,
           customerId: customer._id,
           channel: 'whatsapp',
-          status: 'unread',
+          status: 'open', // Set to 'open' so it appears in conversations tab
           isAiManaging: true,
           metadata: {
             phoneNumberId,
             externalMessageId: messageId
           }
         });
+        
+        // Emit new conversation event so it appears immediately in UI
+        emitToOrganization(integration.organizationId.toString(), 'new-conversation', {
+          conversationId: conversation._id?.toString() || '',
+          customer: {
+            id: customer._id,
+            name: customer.name
+          }
+        });
+      } else {
+        // Update existing conversation status if it was closed
+        if (conversation.status === 'closed') {
+          conversation.status = 'open';
+          conversation.updatedAt = new Date();
+          await conversation.save();
+        }
       }
 
       // Extract message content
@@ -484,11 +582,146 @@ export class MetaWebhookController {
         }
       });
 
-      // Trigger AI reply if enabled
+      // Generate chatbot reply using Settings + AIBehavior ONLY
       if (conversation.isAiManaging) {
-        this.triggerAIReply(conversation, messageText, integration.organizationId.toString(), from, 'whatsapp').catch(err => {
-          console.error('[WhatsApp Webhook] AI auto-reply error:', err);
-        });
+        // CRITICAL: userId MUST come from integration.userId (SINGLE SOURCE OF TRUTH)
+        const userId = integration.userId?.toString();
+        
+        if (!userId) {
+          console.error('[WhatsApp Webhook] ❌ CRITICAL: integration.userId is missing. Cannot proceed without userId.');
+          throw new Error('integration.userId is required for data isolation. Integration is missing userId field.');
+        }
+        
+        console.log('[WhatsApp Webhook] ✅ Using userId from integration.userId:', userId);
+
+        try {
+          // 1. KNOWLEDGE BASE: Fetch from Settings using userId ONLY
+          let collectionNames: string[] = [];
+          try {
+            collectionNames = await determineCollectionNames(userId);
+            console.log('[WhatsApp Webhook] ✅ Resolved Collection Names from Settings:', collectionNames);
+          } catch (error: any) {
+            console.error('[WhatsApp Webhook] ❌ Failed to resolve KB from Settings:', error.message);
+            return; // NO REPLY if KB not found
+          }
+
+          // 2. SYSTEM PROMPT: Fetch from AIBehavior using userId ONLY
+          const aiBehavior = await aiBehaviorService.get(userId);
+          let systemPrompt = aiBehavior.chatAgent.systemPrompt || 
+            'You are a helpful AI assistant designed to provide excellent customer service. Be friendly, professional, and helpful.';
+          
+          console.log('[WhatsApp Webhook] ✅ Using system prompt from AIBehavior.chatAgent.systemPrompt (length:', systemPrompt.length, ')');
+
+          // 4. Get WooCommerce credentials if available (OPTIONAL)
+          const ecommerceCredentials = await getEcommerceCredentials(userId);
+          
+          // 5. Append enhanced instructions to system prompt (SAME as ChatbotController)
+          systemPrompt += '\n\nIMPORTANT INSTRUCTIONS:\n';
+          systemPrompt += '1. Always use the knowledge base (retrieved documents) as the PRIMARY source for answering questions.\n';
+          systemPrompt += '2. Generate concise, natural language answers (4-6 sentences max) from the retrieved documents.\n';
+          systemPrompt += '3. Do NOT include document labels, metadata, or raw text dumps in your answer.\n';
+          systemPrompt += '4. Summarize and merge relevant information into a clean, readable response.\n';
+          
+          if (ecommerceCredentials && ecommerceCredentials.platform === 'woocommerce') {
+            systemPrompt += '\n5. For product-related queries (e.g., "list products", "woocommerce products", "show products", "product price", "inventory"), use the provided WooCommerce credentials to fetch real-time data from the store.\n';
+            systemPrompt += '6. For all other questions, use the knowledge base as the primary source.\n';
+            systemPrompt += '7. If WooCommerce is not connected or credentials are invalid, politely inform the user: "The store is not connected yet. Please contact support to set up the store integration."\n';
+          } else {
+            systemPrompt += '\n5. Focus on providing accurate answers from the knowledge base.\n';
+          }
+
+          // 6. Get API keys for LLM generation (REQUIRED for Python backend)
+          let provider: string | undefined;
+          let apiKey: string | undefined;
+          try {
+            const { apiKeysService } = await import('../services/apiKeys.service');
+            const apiKeys = await apiKeysService.getApiKeys(userId);
+            
+            // CRITICAL: Validate API keys belong to the correct user
+            if (apiKeys.userId && apiKeys.userId.toString() !== userId) {
+              throw new Error(`API keys userId mismatch: expected ${userId}, got ${apiKeys.userId}`);
+            }
+            
+            provider = apiKeys.llmProvider;
+            apiKey = apiKeys.apiKey;
+            console.log('[WhatsApp Webhook] ✅ API keys fetched for LLM generation for userId:', userId, ':', { provider });
+          } catch (error: any) {
+            console.error('[WhatsApp Webhook] ❌ Failed to fetch API keys for userId:', userId, ':', error.message);
+            throw error; // THROW ERROR instead of warning
+          }
+
+          console.log('[WhatsApp Webhook] Using ChatbotController logic:', {
+            userId,
+            collectionNames,
+            systemPromptLength: systemPrompt.length,
+            hasProvider: !!provider,
+            hasApiKey: !!apiKey,
+            hasEcommerceCredentials: !!ecommerceCredentials
+          });
+
+          // 7. Call RAG service with EXACT SAME parameters as ChatbotController
+          const ragResponse = await pythonRagService.chat({
+            query: messageText,
+            collectionNames: collectionNames,
+            threadId: conversation._id.toString(),
+            systemPrompt: systemPrompt,
+            provider: provider,
+            apiKey: apiKey,
+            ecommerceCredentials: ecommerceCredentials,
+            topK: 5,
+            elaborate: false,
+            skipHistory: false
+          });
+
+          const aiResponse = ragResponse.answer;
+          if (!aiResponse) {
+            console.error('[WhatsApp Webhook] No response from RAG service');
+            return;
+          }
+
+          console.log(`[WhatsApp Webhook] Got reply from RAG: ${aiResponse.substring(0, 100)}...`);
+
+          // Save AI message
+          await Message.create({
+            conversationId: conversation._id,
+            organizationId: conversation.organizationId,
+            customerId: customer._id,
+            sender: 'ai',
+            text: aiResponse,
+            type: 'message',
+            timestamp: new Date(),
+            metadata: {
+              generatedBy: 'rag-service',
+              collectionNames: collectionNames
+            }
+          });
+
+          // Send response via WhatsApp
+          const dialog360 = await socialIntegrationService.getDialog360Service(userId, 'whatsapp');
+          await dialog360.sendWhatsAppMessage({
+            to: from,
+            type: 'text',
+            text: aiResponse
+          });
+
+          // Update conversation
+          conversation.updatedAt = new Date();
+          conversation.unread = false;
+          await conversation.save();
+
+          // Emit socket event
+          emitToOrganization(conversation.organizationId.toString(), 'new-message', {
+            conversationId: conversation._id.toString(),
+            message: {
+              text: aiResponse,
+              sender: 'ai',
+              timestamp: new Date()
+            }
+          });
+        } catch (error: any) {
+          console.error('[WhatsApp Webhook] AI auto-reply error:', error.message);
+          // Don't throw - we don't want to break the webhook flow
+        }
       }
     } catch (error) {
       console.error('[WhatsApp Webhook] Error handling message:', error);
@@ -519,19 +752,29 @@ export class MetaWebhookController {
       }
 
       // Find integration using page_id (matching OAuth storage structure)
+      // CRITICAL: MUST filter by userId existence to prevent orphan integrations
       // OAuth stores: credentials.facebookPageId and credentials.pageAccessToken
       // Webhook only provides page_id, so we use it as the primary key
       const integration = await SocialIntegration.findOne({
         'credentials.facebookPageId': pageId,
         platform: 'facebook',
-        status: 'connected'
+        status: 'connected',
+        userId: { $exists: true, $ne: null } // CRITICAL: Only get integrations with userId
       });
 
       if (!integration) {
         console.warn(`[Messenger Webhook] No integration found for page_id: ${pageId}`);
-        console.warn(`[Messenger Webhook] Searched for: credentials.facebookPageId === ${pageId}`);
+        console.warn(`[Messenger Webhook] Searched for: credentials.facebookPageId === ${pageId}, platform: facebook, status: connected, userId exists`);
         return;
       }
+
+      // RUNTIME ASSERTION: If integration.userId missing → THROW
+      if (!integration.userId) {
+        console.error(`[Messenger Webhook] ❌ CRITICAL: Integration found but userId is missing! Integration ID: ${integration._id}`);
+        throw new Error(`Integration ${integration._id} is missing userId. This is a data integrity issue.`);
+      }
+
+      console.log(`[Messenger Webhook] ✅ Found integration with userId: ${integration.userId.toString()}`);
 
       // Check if chatbot is enabled
       const chatbotEnabled = integration.metadata?.chatbotEnabled === true;
@@ -558,9 +801,6 @@ export class MetaWebhookController {
 
       console.log(`[Messenger Webhook] Processing message - Page: ${pageId}, PSID: ${senderPsid}, Text: ${messageText}`);
 
-      // Generate chatbot reply using AIContextService for consistent KB and system prompt resolution
-      // This ensures Messenger uses the same user-selected KB and custom system prompt as other platforms
-      const { aiContextService } = await import('../services/aiContext.service');
       const organizationId = integration.organizationId?.toString();
       
       if (!organizationId) {
@@ -568,149 +808,121 @@ export class MetaWebhookController {
         return;
       }
 
-      // Resolve AI context (KB + system prompt) from organization
-      const aiContext = await aiContextService.resolveFromOrganization(organizationId);
-      
-      if (!aiContext) {
-        console.log('[Messenger Webhook] No AI context available (no KB or settings configured)');
-        return;
+      // CRITICAL: Create conversation FIRST so it's visible in UI immediately
+      // Get actual organizationId for customer storage
+      const UserForCustomer = (await import('../models/User')).default;
+      let customerOrgId = integration.organizationId;
+      if (mongoose.Types.ObjectId.isValid(integration.organizationId)) {
+        const user = await UserForCustomer.findById(integration.organizationId);
+        if (user && user.organizationId) {
+          customerOrgId = user.organizationId;
+        }
       }
 
-      if (!aiContext.autoReplyEnabled) {
-        console.log('[Messenger Webhook] Auto-reply is disabled in settings');
-        return;
-      }
-
-      console.log('[Messenger Webhook] Using AI context:', {
-        collectionNames: aiContext.collectionNames,
-        systemPromptLength: aiContext.systemPrompt.length,
-        userId: aiContext.userId
+      // Find or create customer
+      let customer = await Customer.findOne({
+        'metadata.facebookId': senderPsid,
+        organizationId: customerOrgId
       });
 
-      // Call RAG service with resolved context (user's selected KBs and custom system prompt)
-      const ragResponse = await pythonRagService.chat({
-        query: messageText,
-        collectionNames: aiContext.collectionNames,
-        topK: 5,
-        threadId: `messenger_${pageId}_${senderPsid}`, // Simple thread ID
-        systemPrompt: aiContext.systemPrompt // Use user's custom system prompt
-      });
-
-      const botReply = ragResponse.answer;
-      if (!botReply || botReply.trim() === '') {
-        console.warn('[Messenger Webhook] No reply generated from RAG service');
-        return;
-      }
-
-      console.log(`[Messenger Webhook] Got reply from RAG: ${botReply.substring(0, 100)}...`);
-      console.log(`[Messenger Webhook] Sending reply to PSID: ${senderPsid}`);
-
-      // Send reply immediately using Messenger Send API (EXACT MATCH with Python script)
-      // Python: POST https://graph.facebook.com/v18.0/{PAGE_ID}/messages
-      const { MetaOAuthService } = await import('../services/metaOAuth.service');
-      const metaAppId = process.env.META_APP_ID || '';
-      const metaAppSecret = process.env.META_APP_SECRET || '';
-      const backendUrl = process.env.BACKEND_URL || '';
-      
-      const metaOAuth = new MetaOAuthService({
-        appId: metaAppId,
-        appSecret: metaAppSecret,
-        redirectUri: `${backendUrl}/api/v1/social-integrations/facebook/oauth/callback`
-      });
-
-      // Send message (matching Python script exactly)
-      const messageId = await metaOAuth.sendMessengerMessage(
-        pageId,
-        pageAccessToken,
-        senderPsid, // PSID
-        botReply
-      );
-
-      console.log(`[Messenger Webhook] ✅ Reply sent successfully. Message ID: ${messageId || 'N/A'}`);
-
-      // Optional: Save to database (for conversation history)
-      // This is additional functionality beyond Python script, but useful for our system
-      try {
-        // Find or create customer
-        let customer = await Customer.findOne({
-          'metadata.facebookId': senderPsid,
-          organizationId: integration.organizationId
-        });
-
-        if (!customer) {
-          // Try to fetch sender name from Meta Graph API
-          let senderName = senderPsid;
-          try {
-            const pageAccessToken = integration.credentials?.pageAccessToken;
-            if (pageAccessToken) {
-              const response = await axios.get(
-                `https://graph.facebook.com/v18.0/${senderPsid}?fields=first_name,last_name,name&access_token=${pageAccessToken}`
-              );
-              if (response.data?.name) {
-                senderName = response.data.name;
-              } else if (response.data?.first_name) {
-                senderName = response.data.first_name + (response.data.last_name ? ` ${response.data.last_name}` : '');
-              }
-              console.log('[Messenger] Fetched sender name:', senderName);
+      if (!customer) {
+        // Try to fetch sender name from Meta Graph API
+        let senderName = senderPsid;
+        try {
+          if (pageAccessToken) {
+            const response = await axios.get(
+              `https://graph.facebook.com/v18.0/${senderPsid}?fields=first_name,last_name,name&access_token=${pageAccessToken}`
+            );
+            if (response.data?.name) {
+              senderName = response.data.name;
+            } else if (response.data?.first_name) {
+              senderName = response.data.first_name + (response.data.last_name ? ` ${response.data.last_name}` : '');
             }
-          } catch (error: any) {
-            console.warn('[Messenger] Could not fetch sender name, using PSID:', error.message);
+            console.log('[Messenger] Fetched sender name:', senderName);
           }
-          
+        } catch (error: any) {
+          console.warn('[Messenger] Could not fetch sender name, using PSID:', error.message);
+        }
+        
           customer = await Customer.create({
-            organizationId: integration.organizationId,
+            organizationId: customerOrgId,
             name: senderName,
             source: 'facebook',
             metadata: { facebookId: senderPsid }
           });
-        } else if (!customer.name || customer.name === customer.metadata?.facebookId) {
-          // Update customer name if it's still an ID
-          try {
-            const pageAccessToken = integration.credentials?.pageAccessToken;
-            if (pageAccessToken) {
-              const response = await axios.get(
-                `https://graph.facebook.com/v18.0/${senderPsid}?fields=first_name,last_name,name&access_token=${pageAccessToken}`
-              );
-              if (response.data?.name) {
-                customer.name = response.data.name;
-                await customer.save();
-              } else if (response.data?.first_name) {
-                customer.name = response.data.first_name + (response.data.last_name ? ` ${response.data.last_name}` : '');
-                await customer.save();
-              }
+      } else if (!customer.name || customer.name === customer.metadata?.facebookId) {
+        // Update customer name if it's still an ID
+        try {
+          if (pageAccessToken) {
+            const response = await axios.get(
+              `https://graph.facebook.com/v18.0/${senderPsid}?fields=first_name,last_name,name&access_token=${pageAccessToken}`
+            );
+            if (response.data?.name) {
+              customer.name = response.data.name;
+              await customer.save();
+            } else if (response.data?.first_name) {
+              customer.name = response.data.first_name + (response.data.last_name ? ` ${response.data.last_name}` : '');
+              await customer.save();
             }
-          } catch (error: any) {
-            console.warn('[Messenger] Could not update sender name:', error.message);
+          }
+        } catch (error: any) {
+          console.warn('[Messenger] Could not update sender name:', error.message);
+        }
+      }
+
+      // Find or create conversation (check any status to find existing conversation)
+      let conversation = await Conversation.findOne({
+        customerId: customer._id,
+        channel: 'social',
+        'metadata.platform': 'facebook',
+        'metadata.facebookPageId': pageId
+      });
+
+        // CRITICAL: Get actual organizationId for conversation storage (so it's visible to user)
+        const UserForConv = (await import('../models/User')).default;
+        let conversationOrgId = integration.organizationId;
+        if (mongoose.Types.ObjectId.isValid(integration.organizationId)) {
+          const user = await UserForConv.findById(integration.organizationId);
+          if (user && user.organizationId) {
+            conversationOrgId = user.organizationId;
+            console.log(`[Messenger Webhook] Using actual organizationId for conversation: ${conversationOrgId}`);
           }
         }
 
-        // Find or create conversation
-        let conversation = await Conversation.findOne({
-          customerId: customer._id,
-          channel: 'social',
-          'metadata.platform': 'facebook',
-          'metadata.facebookPageId': pageId,
-          status: { $in: ['open', 'unread'] }
-        });
-
         if (!conversation) {
           conversation = await Conversation.create({
-            organizationId: integration.organizationId,
+            organizationId: conversationOrgId, // Use actual organizationId so user can see it
             customerId: customer._id,
             channel: 'social',
-            status: 'unread',
+            status: 'open', // Set to 'open' so it appears in conversations tab
             isAiManaging: true,
             metadata: {
               platform: 'facebook',
               facebookPageId: pageId
             }
           });
+          
+          // Emit new conversation event so it appears immediately in UI
+          emitToOrganization(conversationOrgId.toString(), 'new-conversation', {
+            conversationId: conversation._id?.toString() || '',
+            customer: {
+              id: customer._id,
+              name: customer.name
+            }
+          });
+        } else {
+          // Update existing conversation status if it was closed
+          if (conversation.status === 'closed') {
+            conversation.status = 'open';
+            conversation.updatedAt = new Date();
+            await conversation.save();
+          }
         }
 
-        // Save user message
+        // Save user message FIRST (use conversation's organizationId)
         await Message.create({
           conversationId: conversation._id,
-          organizationId: integration.organizationId,
+          organizationId: conversation.organizationId, // Use conversation's organizationId
           customerId: customer._id,
           sender: 'customer',
           text: messageText,
@@ -722,39 +934,177 @@ export class MetaWebhookController {
           }
         });
 
-        // Save bot reply
-        await Message.create({
-          conversationId: conversation._id,
-          organizationId: integration.organizationId,
-          customerId: customer._id,
-          sender: 'ai',
-          text: botReply,
-          type: 'message',
-          timestamp: new Date(),
-          metadata: {
-            externalId: messageId,
-            platform: 'facebook',
-            generatedBy: 'rag-service'
-          }
-        });
-
         // Update conversation
         conversation.updatedAt = new Date();
+        conversation.unread = true;
         await conversation.save();
 
-        // Emit socket event
-        emitToOrganization(integration.organizationId.toString(), 'new-message', {
+        // Emit socket event for new message
+        emitToOrganization(conversation.organizationId.toString(), 'new-message', {
           conversationId: conversation._id?.toString() || '',
           message: {
-            text: botReply,
-            sender: 'ai',
+            text: messageText,
+            sender: 'customer',
             timestamp: new Date()
           }
         });
-      } catch (dbError) {
-        // Don't fail if database save fails - message was already sent
-        console.error('[Messenger Webhook] Error saving to database (message was sent):', dbError);
+
+      // Generate chatbot reply using Settings + AIBehavior ONLY
+      // CRITICAL: userId MUST come from integration.userId (SINGLE SOURCE OF TRUTH)
+      const userId = integration.userId?.toString();
+      
+      if (!userId) {
+        console.error('[Messenger Webhook] ❌ CRITICAL: integration.userId is missing. Cannot proceed without userId.');
+        throw new Error('integration.userId is required for data isolation. Integration is missing userId field.');
       }
+      
+      console.log('[Messenger Webhook] ✅ Using userId from integration.userId:', userId);
+
+      if (!conversation.isAiManaging) {
+        console.log('[Messenger Webhook] AI management is disabled for this conversation');
+        return;
+      }
+
+      // 1. KNOWLEDGE BASE: Fetch from Settings using userId ONLY
+      let collectionNames: string[] = [];
+      try {
+        collectionNames = await determineCollectionNames(userId);
+        console.log('[Messenger Webhook] ✅ Resolved Collection Names from Settings:', collectionNames);
+      } catch (error: any) {
+        console.error('[Messenger Webhook] ❌ Failed to resolve KB from Settings:', error.message);
+        return; // NO REPLY if KB not found
+      }
+
+      // 2. SYSTEM PROMPT: Fetch from AIBehavior using userId ONLY
+      const aiBehavior = await aiBehaviorService.get(userId);
+      let systemPrompt = aiBehavior.chatAgent.systemPrompt || 
+        'You are a helpful AI assistant designed to provide excellent customer service. Be friendly, professional, and helpful.';
+      
+      console.log('[Messenger Webhook] ✅ Using system prompt from AIBehavior.chatAgent.systemPrompt (length:', systemPrompt.length, ')');
+
+      // 4. Get WooCommerce credentials if available (OPTIONAL)
+      const ecommerceCredentials = await getEcommerceCredentials(userId);
+      
+      // 5. Append enhanced instructions to system prompt (SAME as ChatbotController)
+      systemPrompt += '\n\nIMPORTANT INSTRUCTIONS:\n';
+      systemPrompt += '1. Always use the knowledge base (retrieved documents) as the PRIMARY source for answering questions.\n';
+      systemPrompt += '2. Generate concise, natural language answers (4-6 sentences max) from the retrieved documents.\n';
+      systemPrompt += '3. Do NOT include document labels, metadata, or raw text dumps in your answer.\n';
+      systemPrompt += '4. Summarize and merge relevant information into a clean, readable response.\n';
+      
+      if (ecommerceCredentials && ecommerceCredentials.platform === 'woocommerce') {
+        systemPrompt += '\n5. For product-related queries (e.g., "list products", "woocommerce products", "show products", "product price", "inventory"), use the provided WooCommerce credentials to fetch real-time data from the store.\n';
+        systemPrompt += '6. For all other questions, use the knowledge base as the primary source.\n';
+        systemPrompt += '7. If WooCommerce is not connected or credentials are invalid, politely inform the user: "The store is not connected yet. Please contact support to set up the store integration."\n';
+      } else {
+        systemPrompt += '\n5. Focus on providing accurate answers from the knowledge base.\n';
+      }
+
+      // 6. Get API keys for LLM generation (REQUIRED for Python backend)
+      let provider: string | undefined;
+      let apiKey: string | undefined;
+      try {
+        const { apiKeysService } = await import('../services/apiKeys.service');
+        const apiKeys = await apiKeysService.getApiKeys(userId);
+        
+        // CRITICAL: Validate API keys belong to the correct user
+        if (apiKeys.userId && apiKeys.userId.toString() !== userId) {
+          throw new Error(`API keys userId mismatch: expected ${userId}, got ${apiKeys.userId}`);
+        }
+        
+        provider = apiKeys.llmProvider;
+        apiKey = apiKeys.apiKey;
+        console.log('[Messenger Webhook] ✅ API keys fetched for LLM generation for userId:', userId, ':', { provider });
+      } catch (error: any) {
+        console.error('[Messenger Webhook] ❌ Failed to fetch API keys for userId:', userId, ':', error.message);
+        throw error; // THROW ERROR instead of warning
+      }
+
+      console.log('[Messenger Webhook] Using ChatbotController logic:', {
+        userId,
+        collectionNames,
+        systemPromptLength: systemPrompt.length,
+        hasProvider: !!provider,
+        hasApiKey: !!apiKey,
+        hasEcommerceCredentials: !!ecommerceCredentials
+      });
+
+      // 7. Call RAG service with EXACT SAME parameters as ChatbotController
+      const ragResponse = await pythonRagService.chat({
+        query: messageText,
+        collectionNames: collectionNames,
+        threadId: conversation._id.toString(),
+        systemPrompt: systemPrompt,
+        provider: provider,
+        apiKey: apiKey,
+        ecommerceCredentials: ecommerceCredentials,
+        topK: 5,
+        elaborate: false,
+        skipHistory: false
+      });
+
+      const botReply = ragResponse.answer;
+      if (!botReply || botReply.trim() === '') {
+        console.warn('[Messenger Webhook] No reply generated from RAG service');
+        return;
+      }
+
+      console.log(`[Messenger Webhook] Got reply from RAG: ${botReply.substring(0, 100)}...`);
+      console.log(`[Messenger Webhook] Sending reply to PSID: ${senderPsid}`);
+
+      // Send reply immediately using Messenger Send API
+      const { MetaOAuthService } = await import('../services/metaOAuth.service');
+      const metaAppId = process.env.META_APP_ID || '';
+      const metaAppSecret = process.env.META_APP_SECRET || '';
+      const backendUrl = process.env.BACKEND_URL || '';
+      
+      const metaOAuth = new MetaOAuthService({
+        appId: metaAppId,
+        appSecret: metaAppSecret,
+        redirectUri: `${backendUrl}/api/v1/social-integrations/facebook/oauth/callback`
+      });
+
+      // Send message
+      const messageId = await metaOAuth.sendMessengerMessage(
+        pageId,
+        pageAccessToken,
+        senderPsid, // PSID
+        botReply
+      );
+
+      console.log(`[Messenger Webhook] ✅ Reply sent successfully. Message ID: ${messageId || 'N/A'}`);
+
+      // Save bot reply to database (use same organizationId as conversation)
+      await Message.create({
+        conversationId: conversation._id,
+        organizationId: conversation.organizationId, // Use conversation's organizationId
+        customerId: customer._id,
+        sender: 'ai',
+        text: botReply,
+        type: 'message',
+        timestamp: new Date(),
+        metadata: {
+          externalId: messageId,
+          platform: 'facebook',
+          generatedBy: 'rag-service',
+          collectionNames: collectionNames
+        }
+      });
+
+      // Update conversation
+      conversation.updatedAt = new Date();
+      conversation.unread = false;
+      await conversation.save();
+
+      // Emit socket event
+      emitToOrganization(conversation.organizationId.toString(), 'new-message', {
+        conversationId: conversation._id?.toString() || '',
+        message: {
+          text: botReply,
+          sender: 'ai',
+          timestamp: new Date()
+        }
+      });
     } catch (error: any) {
       console.error('[Messenger Webhook] Error processing message:', error.message || error);
     }
@@ -793,85 +1143,65 @@ export class MetaWebhookController {
       }
 
       // Find integration using instagramAccountId (matching OAuth storage structure)
+      // CRITICAL: MUST filter by userId existence to prevent orphan integrations
       const integration = await SocialIntegration.findOne({
         'credentials.instagramAccountId': instagramAccountId,
         platform: 'instagram',
-        status: 'connected'
+        status: 'connected',
+        userId: { $exists: true, $ne: null } // CRITICAL: Only get integrations with userId
       });
 
       if (!integration) {
         console.warn(`[Instagram Webhook] No integration found for instagramAccountId: ${instagramAccountId}`);
-        console.warn(`[Instagram Webhook] Searched for: credentials.instagramAccountId === ${instagramAccountId}`);
+        console.warn(`[Instagram Webhook] Searched for: credentials.instagramAccountId === ${instagramAccountId}, platform: instagram, status: connected, userId exists`);
         return;
       }
+
+      // RUNTIME ASSERTION: If integration.userId missing → THROW
+      if (!integration.userId) {
+        console.error(`[Instagram Webhook] ❌ CRITICAL: Integration found but userId is missing! Integration ID: ${integration._id}`);
+        throw new Error(`Integration ${integration._id} is missing userId. This is a data integrity issue.`);
+      }
+
+      console.log(`[Instagram Webhook] ✅ Found integration with userId: ${integration.userId.toString()}`);
 
       console.log(`[Instagram] Integration found for instagramAccountId: ${instagramAccountId}`);
 
-      // Resolve organization context with robust fallbacks
-      const orgContext = await this.resolveOrgContextFromIntegration(integration);
+      const organizationId = integration.organizationId?.toString();
       
-      if (!orgContext) {
-        console.error('[Instagram Webhook] ❌ Failed to resolve organization context');
+      if (!organizationId) {
+        console.error('[Instagram Webhook] No organizationId found in integration');
         return;
       }
 
-      if (!orgContext.collectionName) {
-        console.error('[Instagram Webhook] ❌ No knowledge base collection name resolved');
-        return;
-      }
-
-      const collectionName = orgContext.collectionName;
-      const organizationId = integration.organizationId || 
-                           integration.metadata?.organizationId || 
-                           (orgContext.users[0]?.organizationId?.toString());
+      // CRITICAL: Create conversation FIRST so it's visible in UI immediately
+      // CRITICAL: userId MUST come from integration.userId (SINGLE SOURCE OF TRUTH)
+      const userId = integration.userId?.toString();
       
-      console.log(`[Instagram] Organization resolved: ${organizationId || 'via users fallback'}`);
-      console.log(`[Instagram] KB selected: ${collectionName}`);
-
-      // Generate AI reply using RAG service
-      console.log(`[Instagram Webhook] Generating AI reply for message: ${messageText.substring(0, 100)}...`);
-      
-      const ragResponse = await pythonRagService.chat({
-        query: messageText,
-        collectionNames: [collectionName],
-        topK: 5,
-        threadId: `instagram_${instagramAccountId}_${senderId}`, // Simple thread ID
-        systemPrompt: 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.'
-      });
-
-      const botReply = ragResponse.answer;
-      if (!botReply || botReply.trim() === '') {
-        console.warn('[Instagram Webhook] No reply generated from RAG service');
-        // Use fallback text
-        const fallbackText = 'Thank you for your message. I am processing your request.';
-        console.log(`[Instagram Webhook] Using fallback text: ${fallbackText}`);
-        await this.sendInstagramReply(instagramAccountId, senderId, fallbackText, integration);
-        return;
+      if (!userId) {
+        console.error('[Instagram Webhook] ❌ CRITICAL: integration.userId is missing. Cannot proceed without userId.');
+        throw new Error('integration.userId is required for data isolation. Integration is missing userId field.');
       }
-
-      console.log(`[Instagram Webhook] Got reply from RAG: ${botReply.substring(0, 100)}...`);
-      console.log(`[Instagram Webhook] Sending reply...`);
-
-      // Send reply immediately using Instagram Messaging API
-      await this.sendInstagramReply(instagramAccountId, senderId, botReply, integration);
-
-      console.log(`[Instagram Webhook] ✅ Reply sent successfully`);
-
-      // Optional: Save to database (for conversation history)
-      try {
-        // Use organizationId from context (may be from users fallback)
-        const finalOrganizationId = organizationId || orgContext.users[0]?.organizationId;
-        
-        if (!finalOrganizationId) {
-          console.warn('[Instagram Webhook] Cannot save to database - no organizationId available');
-          return; // Don't fail, just skip database save
+      
+      console.log('[Instagram Webhook] ✅ Using userId from integration.userId:', userId);
+      
+      const UserForCustomer = (await import('../models/User')).default;
+      let customerOrgId: string | mongoose.Types.ObjectId = organizationId;
+      
+      // Get actual organizationId for conversation storage (so it's visible to user)
+      if (mongoose.Types.ObjectId.isValid(organizationId)) {
+        const user = await UserForCustomer.findById(organizationId);
+        if (user && user.organizationId) {
+          customerOrgId = user.organizationId.toString();
+          console.log(`[Instagram Webhook] Using actual organizationId for conversation: ${customerOrgId}`);
         }
+      }
 
-        // Find or create customer
-        let customer = await Customer.findOne({
-          'metadata.instagramId': senderId,
-          organizationId: finalOrganizationId
-        });
+      // Find or create customer
+      let customer = await Customer.findOne({
+        'metadata.instagramId': senderId,
+        organizationId: customerOrgId.toString()
+      });
 
         if (!customer) {
           // Try to fetch sender name from Meta Graph API
@@ -894,7 +1224,7 @@ export class MetaWebhookController {
           }
           
           customer = await Customer.create({
-            organizationId: finalOrganizationId,
+            organizationId: customerOrgId.toString(),
             name: senderName,
             source: 'instagram',
             metadata: { instagramId: senderId }
@@ -920,77 +1250,206 @@ export class MetaWebhookController {
           }
         }
 
-        // Find or create conversation
+        // Find or create conversation (check any status to find existing conversation)
         let conversation = await Conversation.findOne({
           customerId: customer._id,
           channel: 'social',
           'metadata.platform': 'instagram',
-          'metadata.instagramAccountId': instagramAccountId,
-          status: { $in: ['open', 'unread'] }
+          'metadata.instagramAccountId': instagramAccountId
         });
 
         if (!conversation) {
           conversation = await Conversation.create({
-            organizationId: finalOrganizationId,
+            organizationId: customerOrgId.toString(), // Use actual organizationId
             customerId: customer._id,
             channel: 'social',
-            status: 'unread',
+            status: 'open', // Set to 'open' so it appears in conversations tab
             isAiManaging: true,
             metadata: {
               platform: 'instagram',
               instagramAccountId: instagramAccountId
             }
           });
+          
+          // Emit new conversation event so it appears immediately in UI
+          emitToOrganization(customerOrgId.toString(), 'new-conversation', {
+            conversationId: conversation._id?.toString() || '',
+            customer: {
+              id: customer._id,
+              name: customer.name
+            }
+          });
+        } else {
+          // Update existing conversation status if it was closed
+          if (conversation.status === 'closed') {
+            conversation.status = 'open';
+            conversation.updatedAt = new Date();
+            await conversation.save();
+          }
         }
 
-        // Save user message
-        await Message.create({
-          conversationId: conversation._id,
-          organizationId: finalOrganizationId,
-          customerId: customer._id,
-          sender: 'customer',
+      // Save user message FIRST
+      await Message.create({
+        conversationId: conversation._id,
+        organizationId: customerOrgId.toString(), // Use actual organizationId
+        customerId: customer._id,
+        sender: 'customer',
+        text: messageText,
+        type: 'message',
+        timestamp: new Date(),
+        metadata: {
+          externalId: event.message?.mid,
+          platform: 'instagram'
+        }
+      });
+
+      // Update conversation
+      conversation.updatedAt = new Date();
+      conversation.unread = true;
+      await conversation.save();
+
+      // Emit socket event for new message
+      emitToOrganization(customerOrgId.toString(), 'new-message', {
+        conversationId: conversation._id?.toString() || '',
+        message: {
           text: messageText,
-          type: 'message',
-          timestamp: new Date(),
-          metadata: {
-            externalId: event.message?.mid,
-            platform: 'instagram'
-          }
-        });
+          sender: 'customer',
+          timestamp: new Date()
+        }
+      });
 
-        // Save bot reply
-        await Message.create({
-          conversationId: conversation._id,
-          organizationId: finalOrganizationId,
-          customerId: customer._id,
-          sender: 'ai',
-          text: botReply,
-          type: 'message',
-          timestamp: new Date(),
-          metadata: {
-            platform: 'instagram',
-            generatedBy: 'rag-service',
-            collectionNames: [collectionName]
-          }
-        });
-
-        // Update conversation
-        conversation.updatedAt = new Date();
-        await conversation.save();
-
-        // Emit socket event
-        emitToOrganization(finalOrganizationId.toString(), 'new-message', {
-          conversationId: conversation._id?.toString() || '',
-          message: {
-            text: botReply,
-            sender: 'ai',
-            timestamp: new Date()
-          }
-        });
-      } catch (dbError) {
-        // Don't fail if database save fails - message was already sent
-        console.error('[Instagram Webhook] Error saving to database (message was sent):', dbError);
+      // Generate chatbot reply using Settings + AIBehavior ONLY
+      // userId is already set above (from integration.userId)
+      
+      if (!conversation.isAiManaging) {
+        console.log('[Instagram Webhook] AI management is disabled for this conversation');
+        return;
       }
+
+      // 1. KNOWLEDGE BASE: Fetch from Settings using userId ONLY
+      let collectionNames: string[] = [];
+      try {
+        collectionNames = await determineCollectionNames(userId);
+        console.log('[Instagram Webhook] ✅ Resolved Collection Names from Settings for userId:', userId, ':', collectionNames);
+      } catch (error: any) {
+        console.error('[Instagram Webhook] ❌ Failed to resolve KB from Settings for userId:', userId, ':', error.message);
+        return; // NO REPLY if KB not found
+      }
+
+      // 2. SYSTEM PROMPT: Fetch from AIBehavior using userId ONLY
+      const aiBehavior = await aiBehaviorService.get(userId);
+      let systemPrompt = aiBehavior.chatAgent.systemPrompt || 
+        'You are a helpful AI assistant designed to provide excellent customer service. Be friendly, professional, and helpful.';
+      
+      console.log('[Instagram Webhook] ✅ Using system prompt from AIBehavior.chatAgent.systemPrompt for userId:', userId, '(length:', systemPrompt.length, ')');
+
+      // 4. Get WooCommerce credentials if available (OPTIONAL)
+      const ecommerceCredentials = await getEcommerceCredentials(userId);
+      
+      // 5. Append enhanced instructions to system prompt (SAME as ChatbotController)
+      systemPrompt += '\n\nIMPORTANT INSTRUCTIONS:\n';
+      systemPrompt += '1. Always use the knowledge base (retrieved documents) as the PRIMARY source for answering questions.\n';
+      systemPrompt += '2. Generate concise, natural language answers (4-6 sentences max) from the retrieved documents.\n';
+      systemPrompt += '3. Do NOT include document labels, metadata, or raw text dumps in your answer.\n';
+      systemPrompt += '4. Summarize and merge relevant information into a clean, readable response.\n';
+      
+      if (ecommerceCredentials && ecommerceCredentials.platform === 'woocommerce') {
+        systemPrompt += '\n5. For product-related queries (e.g., "list products", "woocommerce products", "show products", "product price", "inventory"), use the provided WooCommerce credentials to fetch real-time data from the store.\n';
+        systemPrompt += '6. For all other questions, use the knowledge base as the primary source.\n';
+        systemPrompt += '7. If WooCommerce is not connected or credentials are invalid, politely inform the user: "The store is not connected yet. Please contact support to set up the store integration."\n';
+      } else {
+        systemPrompt += '\n5. Focus on providing accurate answers from the knowledge base.\n';
+      }
+
+      // 6. Get API keys for LLM generation (REQUIRED for Python backend)
+      let provider: string | undefined;
+      let apiKey: string | undefined;
+      try {
+        const { apiKeysService } = await import('../services/apiKeys.service');
+        const apiKeys = await apiKeysService.getApiKeys(userId);
+        
+        // CRITICAL: Validate API keys belong to the correct user
+        if (apiKeys.userId && apiKeys.userId.toString() !== userId) {
+          throw new Error(`API keys userId mismatch: expected ${userId}, got ${apiKeys.userId}`);
+        }
+        
+        provider = apiKeys.llmProvider;
+        apiKey = apiKeys.apiKey;
+        console.log('[Instagram Webhook] ✅ API keys fetched for LLM generation for userId:', userId, ':', { provider });
+      } catch (error: any) {
+        console.error('[Instagram Webhook] ❌ Failed to fetch API keys for userId:', userId, ':', error.message);
+        throw error; // THROW ERROR instead of warning
+      }
+
+      console.log('[Instagram Webhook] Using ChatbotController logic:', {
+        userId,
+        collectionNames,
+        systemPromptLength: systemPrompt.length,
+        hasProvider: !!provider,
+        hasApiKey: !!apiKey,
+        hasEcommerceCredentials: !!ecommerceCredentials
+      });
+
+      // 7. Generate AI reply using RAG service with EXACT SAME parameters as ChatbotController
+      console.log(`[Instagram Webhook] Generating AI reply for message: ${messageText.substring(0, 100)}...`);
+      
+      const ragResponse = await pythonRagService.chat({
+        query: messageText,
+        collectionNames: collectionNames,
+        threadId: conversation._id.toString(),
+        systemPrompt: systemPrompt,
+        provider: provider,
+        apiKey: apiKey,
+        ecommerceCredentials: ecommerceCredentials,
+        topK: 5,
+        elaborate: false,
+        skipHistory: false
+      });
+
+      const botReply = ragResponse.answer;
+      if (!botReply || botReply.trim() === '') {
+        console.warn('[Instagram Webhook] No reply generated from RAG service');
+        return;
+      }
+
+      console.log(`[Instagram Webhook] Got reply from RAG: ${botReply.substring(0, 100)}...`);
+      console.log(`[Instagram Webhook] Sending reply...`);
+
+      // Send reply immediately using Instagram Messaging API
+      await this.sendInstagramReply(instagramAccountId, senderId, botReply, integration);
+
+      console.log(`[Instagram Webhook] ✅ Reply sent successfully`);
+
+      // Save bot reply to database
+      await Message.create({
+        conversationId: conversation._id,
+        organizationId: customerOrgId.toString(), // Use actual organizationId
+        customerId: customer._id,
+        sender: 'ai',
+        text: botReply,
+        type: 'message',
+        timestamp: new Date(),
+        metadata: {
+          platform: 'instagram',
+          generatedBy: 'rag-service',
+          collectionNames: collectionNames
+        }
+      });
+
+      // Update conversation
+      conversation.updatedAt = new Date();
+      conversation.unread = false;
+      await conversation.save();
+
+      // Emit socket event
+      emitToOrganization(customerOrgId.toString(), 'new-message', {
+        conversationId: conversation._id?.toString() || '',
+        message: {
+          text: botReply,
+          sender: 'ai',
+          timestamp: new Date()
+        }
+      });
     } catch (error: any) {
       console.error('[Instagram Webhook] Error processing message:', error.message || error);
       console.error('[Instagram Webhook] Error stack:', error.stack);
@@ -1254,11 +1713,138 @@ export class MetaWebhookController {
         }
       });
 
-      // Trigger AI reply if enabled
+      // Generate chatbot reply using Settings + AIBehavior ONLY
       if (conversation.isAiManaging) {
-        this.triggerAIReply(conversation, messageText, integration.organizationId.toString(), senderId, 'instagram').catch(err => {
-          console.error('[Instagram Webhook] AI auto-reply error:', err);
-        });
+        // CRITICAL: userId MUST come from integration.userId (SINGLE SOURCE OF TRUTH)
+        const userId = integration.userId?.toString();
+        
+        if (!userId) {
+          console.error('[Instagram Webhook] ❌ CRITICAL: integration.userId is missing. Cannot proceed without userId.');
+          throw new Error('integration.userId is required for data isolation. Integration is missing userId field.');
+        }
+        
+        console.log('[Instagram Webhook] ✅ Using userId from integration.userId:', userId);
+
+        try {
+          // 1. KNOWLEDGE BASE: Fetch from Settings using userId ONLY
+          let collectionNames: string[] = [];
+          try {
+            collectionNames = await determineCollectionNames(userId);
+            console.log('[Instagram Webhook] ✅ Resolved Collection Names from Settings:', collectionNames);
+          } catch (error: any) {
+            console.error('[Instagram Webhook] ❌ Failed to resolve KB from Settings:', error.message);
+            return; // NO REPLY if KB not found
+          }
+
+          // 2. SYSTEM PROMPT: Fetch from AIBehavior using userId ONLY
+          const aiBehavior = await aiBehaviorService.get(userId);
+          let systemPrompt = aiBehavior.chatAgent.systemPrompt || 
+            'You are a helpful AI assistant designed to provide excellent customer service. Be friendly, professional, and helpful.';
+          
+          console.log('[Instagram Webhook] ✅ Using system prompt from AIBehavior.chatAgent.systemPrompt (length:', systemPrompt.length, ')');
+
+          // 4. Get WooCommerce credentials if available (OPTIONAL)
+          const ecommerceCredentials = await getEcommerceCredentials(userId);
+          
+          // 5. Append enhanced instructions to system prompt (SAME as ChatbotController)
+          systemPrompt += '\n\nIMPORTANT INSTRUCTIONS:\n';
+          systemPrompt += '1. Always use the knowledge base (retrieved documents) as the PRIMARY source for answering questions.\n';
+          systemPrompt += '2. Generate concise, natural language answers (4-6 sentences max) from the retrieved documents.\n';
+          systemPrompt += '3. Do NOT include document labels, metadata, or raw text dumps in your answer.\n';
+          systemPrompt += '4. Summarize and merge relevant information into a clean, readable response.\n';
+          
+          if (ecommerceCredentials && ecommerceCredentials.platform === 'woocommerce') {
+            systemPrompt += '\n5. For product-related queries (e.g., "list products", "woocommerce products", "show products", "product price", "inventory"), use the provided WooCommerce credentials to fetch real-time data from the store.\n';
+            systemPrompt += '6. For all other questions, use the knowledge base as the primary source.\n';
+            systemPrompt += '7. If WooCommerce is not connected or credentials are invalid, politely inform the user: "The store is not connected yet. Please contact support to set up the store integration."\n';
+          } else {
+            systemPrompt += '\n5. Focus on providing accurate answers from the knowledge base.\n';
+          }
+
+          // 6. Get API keys for LLM generation (REQUIRED for Python backend)
+          let provider: string | undefined;
+          let apiKey: string | undefined;
+          try {
+            const { apiKeysService } = await import('../services/apiKeys.service');
+            const apiKeys = await apiKeysService.getApiKeys(userId);
+            provider = apiKeys.llmProvider;
+            apiKey = apiKeys.apiKey;
+            console.log('[Instagram Webhook] ✅ API keys fetched for LLM generation:', { provider });
+          } catch (error: any) {
+            console.warn('[Instagram Webhook] ⚠️  Failed to fetch API keys:', error.message);
+          }
+
+          console.log('[Instagram Webhook] Using ChatbotController logic:', {
+            userId,
+            collectionNames,
+            systemPromptLength: systemPrompt.length,
+            hasProvider: !!provider,
+            hasApiKey: !!apiKey,
+            hasEcommerceCredentials: !!ecommerceCredentials
+          });
+
+          // 7. Call RAG service with EXACT SAME parameters as ChatbotController
+          const ragResponse = await pythonRagService.chat({
+            query: messageText,
+            collectionNames: collectionNames,
+            threadId: conversation._id.toString(),
+            systemPrompt: systemPrompt,
+            provider: provider,
+            apiKey: apiKey,
+            ecommerceCredentials: ecommerceCredentials,
+            topK: 5,
+            elaborate: false,
+            skipHistory: false
+          });
+
+          const aiResponse = ragResponse.answer;
+          if (!aiResponse) {
+            console.error('[Instagram Webhook] No response from RAG service');
+            return;
+          }
+
+          console.log(`[Instagram Webhook] Got reply from RAG: ${aiResponse.substring(0, 100)}...`);
+
+          // Send reply via Instagram
+          const instagramAccountId = integration.credentials?.instagramAccountId;
+          if (instagramAccountId) {
+            await this.sendInstagramReply(instagramAccountId, senderId, aiResponse, integration);
+          }
+
+          // Save AI message
+          await Message.create({
+            conversationId: conversation._id,
+            organizationId: conversation.organizationId,
+            customerId: customer._id,
+            sender: 'ai',
+            text: aiResponse,
+            type: 'message',
+            timestamp: new Date(),
+            metadata: {
+              platform: 'instagram',
+              generatedBy: 'rag-service',
+              collectionNames: collectionNames
+            }
+          });
+
+          // Update conversation
+          conversation.updatedAt = new Date();
+          conversation.unread = false;
+          await conversation.save();
+
+          // Emit socket event
+          emitToOrganization(conversation.organizationId.toString(), 'new-message', {
+            conversationId: conversation._id.toString(),
+            message: {
+              text: aiResponse,
+              sender: 'ai',
+              timestamp: new Date()
+            }
+          });
+        } catch (error: any) {
+          console.error('[Instagram Webhook] AI auto-reply error:', error.message);
+          // Don't throw - we don't want to break the webhook flow
+        }
       }
     } catch (error) {
       console.error('[Instagram Webhook] Error handling message:', error);
@@ -1291,10 +1877,12 @@ export class MetaWebhookController {
   }
 
   /**
-   * Trigger AI auto-reply
-   * Uses AIContextService for consistent KB and system prompt resolution
+   * DEPRECATED: triggerAIReply - REMOVED
+   * This function used aiContextService which is no longer used for social webhooks.
+   * All social webhook handlers now use Settings + AIBehavior directly.
+   * This function has been removed to prevent accidental usage.
    */
-  private async triggerAIReply(
+  private async triggerAIReply_DEPRECATED(
     conversation: any,
     userMessage: string,
     organizationId: string,

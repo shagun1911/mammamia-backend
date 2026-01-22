@@ -9,6 +9,7 @@ export class SocialIntegrationService {
    * Create or update social integration
    */
   async upsertIntegration(data: {
+    userId: string; // REQUIRED: User who owns this integration
     organizationId: string;
     platform: 'whatsapp' | 'instagram' | 'facebook' | 'gmail';
     apiKey: string;
@@ -22,6 +23,12 @@ export class SocialIntegrationService {
     metadata?: any; // Additional metadata (e.g., chatbotEnabled)
     webhookVerified?: boolean; // Whether webhook is verified/subscribed
   }): Promise<ISocialIntegration> {
+    // CRITICAL: Validate userId is provided
+    if (!data.userId) {
+      throw new AppError(400, 'MISSING_USER_ID', 'userId is required for data isolation. Cannot create integration without userId.');
+    }
+
+    console.log('[Social Integration Service] Creating/updating integration with userId:', data.userId, 'organizationId:', data.organizationId);
     try {
       // Only verify 360dialog for WhatsApp manual connections
       // OAuth connections (Instagram/Facebook) use Meta Graph API, not 360dialog
@@ -94,6 +101,10 @@ export class SocialIntegrationService {
         });
       }
 
+      // CRITICAL: Always set userId in updateData
+      updateData.userId = new mongoose.Types.ObjectId(data.userId);
+      updateData.organizationId = new mongoose.Types.ObjectId(data.organizationId);
+
       // Update or create integration
       const integration = await SocialIntegration.findOneAndUpdate(
         {
@@ -106,12 +117,15 @@ export class SocialIntegrationService {
         { upsert: true, new: true }
       );
 
+      console.log('[Social Integration Service] ✅ Integration saved with userId:', integration.userId?.toString(), 'organizationId:', integration.organizationId?.toString());
+
       return integration;
     } catch (error: any) {
       console.error('Error upserting social integration:', error);
       
       // Save as error state - DO NOT overwrite existing credentials
       // Only update status and error message to preserve valid tokens
+      // CRITICAL: Still set userId even in error state
       const integration = await SocialIntegration.findOneAndUpdate(
         {
           organizationId: new mongoose.Types.ObjectId(data.organizationId),
@@ -119,6 +133,7 @@ export class SocialIntegrationService {
         },
         {
           $set: {
+            userId: new mongoose.Types.ObjectId(data.userId),
             status: 'error',
             errorMessage: error.message,
             webhookVerified: false

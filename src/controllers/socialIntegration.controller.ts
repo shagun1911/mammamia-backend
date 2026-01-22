@@ -81,8 +81,20 @@ export class SocialIntegrationController {
    */
   async connect(req: Request, res: Response, next: NextFunction) {
     try {
-      // Use organizationId if available, otherwise fall back to userId
+      // CRITICAL: Get userId from authenticated user (REQUIRED for data isolation)
+      const userId = (req as any).user?._id?.toString();
       const organizationId = (req as any).user?.organizationId || (req as any).user?._id;
+      
+      if (!userId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'User ID not found. User must be authenticated.');
+      }
+      
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+
+      console.log('[Social Integration Connect] Creating integration with userId:', userId, 'organizationId:', organizationId);
+      
       const { platform } = req.params;
       const {
         apiKey,
@@ -92,10 +104,6 @@ export class SocialIntegrationController {
         instagramAccountId,
         facebookPageId
       } = req.body;
-
-      if (!organizationId) {
-        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
-      }
 
       if (!['whatsapp', 'instagram', 'facebook', 'gmail'].includes(platform)) {
         throw new AppError(400, 'INVALID_PLATFORM', 'Invalid platform');
@@ -121,6 +129,7 @@ export class SocialIntegrationController {
       }
 
       const integration = await socialIntegrationService.upsertIntegration({
+        userId, // REQUIRED: User who owns this integration
         organizationId,
         platform: platform as 'whatsapp' | 'instagram' | 'facebook' | 'gmail',
         apiKey,
@@ -611,7 +620,17 @@ export class SocialIntegrationController {
       });
 
       // Platform-specific handling
+      // CRITICAL: Use appUserId from state as userId (this is the authenticated user who initiated OAuth)
+      const userId = appUserId; // appUserId from OAuth state is the authenticated user
+      
+      if (!userId) {
+        throw new AppError(400, 'MISSING_USER_ID', 'User ID not found in OAuth state. Cannot create integration without userId.');
+      }
+
+      console.log('[Meta OAuth Callback] Using userId from OAuth state:', userId, 'organizationId:', organizationId);
+
       let integrationData: any = {
+        userId, // REQUIRED: User who owns this integration
         organizationId,
         platform: platform as 'whatsapp' | 'instagram' | 'facebook' | 'gmail',
         clientId: metaAppId
@@ -627,12 +646,12 @@ export class SocialIntegrationController {
 
       // Get user information (matching Python reference implementation)
       const userInfo = await metaOAuth.getUserInfo(accessToken);
-      const userId = userInfo.id;
+      const metaUserId = userInfo.id; // Meta Facebook user ID (for reference only)
       const userName = userInfo.name || 'Unknown';
       const userEmail = userInfo.email || '';
 
       console.log('[Meta OAuth Callback] User info retrieved:', {
-        userId,
+        metaUserId,
         userName,
         hasEmail: !!userEmail
       });
@@ -720,7 +739,7 @@ export class SocialIntegrationController {
           chatbotEnabled: true,
           connectedAt: new Date().toISOString(),
           appUserId: appUserId, // Internal app userId for KB lookup
-          metaUserId: userId, // Meta Facebook userId (for reference only)
+          metaUserId: metaUserId, // Meta Facebook userId (for reference only)
           userName: userName
         };
 
@@ -855,7 +874,7 @@ export class SocialIntegrationController {
           chatbotEnabled: true,
           connectedAt: new Date().toISOString(),
           appUserId: appUserId, // Internal app userId for KB lookup
-          metaUserId: userId, // Meta Facebook userId (for reference only)
+          metaUserId: metaUserId, // Meta Facebook userId (for reference only)
           userName: userName
         };
         

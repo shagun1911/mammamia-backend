@@ -6,6 +6,7 @@ const ENCRYPTION_KEY =
 const ENCRYPTION_ALGORITHM = 'aes-256-cbc';
 
 export interface ISocialIntegration extends Document {
+  userId: mongoose.Types.ObjectId; // REQUIRED: User who owns this integration
   organizationId: mongoose.Types.ObjectId;
   platform: 'whatsapp' | 'instagram' | 'facebook' | 'gmail';
   status: 'connected' | 'disconnected' | 'error';
@@ -38,11 +39,15 @@ export interface ISocialIntegration extends Document {
 
 const SocialIntegrationSchema = new Schema<ISocialIntegration>(
   {
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
     organizationId: {
       type: Schema.Types.ObjectId,
       ref: 'Organization',
-      required: true,
-      index: true
+      required: true
     },
     platform: {
       type: String,
@@ -96,6 +101,17 @@ SocialIntegrationSchema.index(
   { organizationId: 1, platform: 1 },
   { unique: true }
 );
+
+// Compound unique index: (platform, credentials.facebookPageId, userId)
+// Prevents multiple integrations for same page by different users
+SocialIntegrationSchema.index(
+  { platform: 1, 'credentials.facebookPageId': 1, userId: 1 },
+  { unique: true, sparse: true } // sparse: only index documents where facebookPageId exists
+);
+
+// Indexes for fast lookups (avoid duplicate by not using index: true in field definition)
+SocialIntegrationSchema.index({ userId: 1 });
+SocialIntegrationSchema.index({ organizationId: 1 });
 
 // Encrypt USER access token only (apiKey)
 SocialIntegrationSchema.pre('save', function (next) {

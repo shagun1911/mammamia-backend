@@ -137,7 +137,12 @@ export class GmailOAuthService {
           // Save integration - Gmail uses userEmail as the identifier
           // For Gmail, we don't have an API key, so we'll use the userEmail as a placeholder
           // The actual authentication is handled by the Python API using X-User-Email header
+          if (!usrId) {
+            throw new Error('User ID not found. Cannot create Gmail integration without userId.');
+          }
+          
           await socialIntegrationService.upsertIntegration({
+            userId: usrId, // REQUIRED: User who owns this integration
             organizationId: orgId,
             platform: 'gmail',
             apiKey: userEmail, // Use email as identifier (will be encrypted)
