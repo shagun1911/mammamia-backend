@@ -47,22 +47,56 @@ export class AIContextService {
         return null;
       }
 
-      // Get settings for the organization owner first
+      // Priority order for settings resolution:
+      // 1. Organization owner (highest priority)
+      // 2. Admin users (if role field exists)
+      // 3. First user with valid KB settings
+      
       let settings = await Settings.findOne({ userId: organization.ownerId });
       let userId = organization.ownerId?.toString();
 
-      // If owner doesn't have settings, try finding any user in this organization with settings
+      // If owner doesn't have settings, try finding admin users first
       if (!settings) {
-        const users = await User.find({ organizationId: organizationId }).limit(10);
+        const users = await User.find({ organizationId: organizationId }).limit(20);
+        
+        // First pass: Look for admin users (if role field exists)
         for (const user of users) {
-          const userSettings = await Settings.findOne({ userId: user._id });
-          if (userSettings && (
-            (userSettings.defaultKnowledgeBaseNames && userSettings.defaultKnowledgeBaseNames.length > 0) ||
-            userSettings.defaultKnowledgeBaseName
-          )) {
-            settings = userSettings;
-            userId = user._id.toString();
-            break;
+          // Check if user has admin role (common field names: role, isAdmin, userType)
+          const isAdmin = (user as any).role === 'admin' || 
+                         (user as any).isAdmin === true || 
+                         (user as any).userType === 'admin';
+          
+          if (isAdmin) {
+            const userSettings = await Settings.findOne({ userId: user._id });
+            if (userSettings && (
+              (userSettings.defaultKnowledgeBaseNames && userSettings.defaultKnowledgeBaseNames.length > 0) ||
+              userSettings.defaultKnowledgeBaseName ||
+              (userSettings.defaultKnowledgeBaseIds && userSettings.defaultKnowledgeBaseIds.length > 0) ||
+              userSettings.defaultKnowledgeBaseId
+            )) {
+              settings = userSettings;
+              userId = user._id.toString();
+              console.log(`[AI Context] Using admin user's settings: ${userId}`);
+              break;
+            }
+          }
+        }
+        
+        // Second pass: If no admin found, use first user with valid KB settings
+        if (!settings) {
+          for (const user of users) {
+            const userSettings = await Settings.findOne({ userId: user._id });
+            if (userSettings && (
+              (userSettings.defaultKnowledgeBaseNames && userSettings.defaultKnowledgeBaseNames.length > 0) ||
+              userSettings.defaultKnowledgeBaseName ||
+              (userSettings.defaultKnowledgeBaseIds && userSettings.defaultKnowledgeBaseIds.length > 0) ||
+              userSettings.defaultKnowledgeBaseId
+            )) {
+              settings = userSettings;
+              userId = user._id.toString();
+              console.log(`[AI Context] Using first available user's settings: ${userId}`);
+              break;
+            }
           }
         }
       }

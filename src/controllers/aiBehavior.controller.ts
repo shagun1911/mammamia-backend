@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { aiBehaviorService } from '../services/aiBehavior.service';
 import { successResponse } from '../utils/response.util';
+import { AppError } from '../middleware/error.middleware';
 
 export class AIBehaviorController {
   /**
@@ -277,16 +278,18 @@ export class AIBehaviorController {
           }
         }
         
-        // Final fallback: use 'default' if nothing found
+        // CRITICAL: Fail loudly if no KB found - NO DEFAULT FALLBACK
         if (collectionNames.length === 0) {
-          collectionNames = ['default'];
-          console.warn(`[Test Call] No knowledge base configured - using 'default' collection`);
-        } else {
-          console.log(`[Test Call] Using ${collectionNames.length} knowledge base(s):`, collectionNames);
+          throw new AppError(400, 'NO_KNOWLEDGE_BASE', 'No knowledge base configured. Please configure a knowledge base in Settings → Knowledge Base.');
         }
+        console.log(`[Test Call] Using ${collectionNames.length} knowledge base(s):`, collectionNames);
       } catch (error: any) {
+        // Re-throw AppError as-is
+        if (error instanceof AppError) {
+          throw error;
+        }
         console.error(`[Test Call] Error fetching knowledge bases:`, error.message);
-        collectionNames = ['default']; // Fallback on error
+        throw new AppError(500, 'KB_FETCH_ERROR', `Failed to fetch knowledge bases: ${error.message}`);
       }
 
       // Get e-commerce credentials if available

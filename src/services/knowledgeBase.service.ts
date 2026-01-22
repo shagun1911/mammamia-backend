@@ -36,7 +36,7 @@ export class KnowledgeBaseService {
    * 
    * This method:
    * 1. Creates a collection in Python RAG system
-   * 2. Ingests data sources if provided (URLs, PDFs, Excel files)
+   * 2. Ingests data sources if provided (URLs, PDFs, Excel files) 
    * 3. Saves KB record to MongoDB with proper user reference
    * 4. Auto-links KB to user's Settings (enables chatbot, sets as default if first KB)
    * 5. Syncs with InboundAgentConfig for voice/call functionality
@@ -345,6 +345,65 @@ export class KnowledgeBaseService {
       } catch (error: any) {
         console.error(`[KB Service] ⚠️ Failed to delete collection from Python RAG:`, error.message);
         // Continue with MongoDB cleanup even if Python deletion fails
+      }
+
+      // Clean up Settings references before deleting KB
+      const userId = kb.userId.toString();
+      const collectionName = kb.collectionName;
+      const kbObjectId = new mongoose.Types.ObjectId(kbId);
+      
+      try {
+        const Settings = (await import('../models/Settings')).default;
+        const settings = await Settings.findOne({ userId });
+        
+        if (settings) {
+          // Remove from arrays
+          const updatedNames = Array.isArray(settings.defaultKnowledgeBaseNames)
+            ? settings.defaultKnowledgeBaseNames.filter((name: string) => name !== collectionName)
+            : [];
+          
+          const updatedIds = Array.isArray(settings.defaultKnowledgeBaseIds)
+            ? settings.defaultKnowledgeBaseIds.filter((id: any) => id.toString() !== kbId)
+            : [];
+          
+          // Update Settings - remove KB references
+          const updateData: any = {
+            defaultKnowledgeBaseNames: updatedNames,
+            defaultKnowledgeBaseIds: updatedIds
+          };
+          
+          // If this was the default KB, clear default fields or set to next available
+          if (settings.defaultKnowledgeBaseId?.toString() === kbId || 
+              settings.defaultKnowledgeBaseName === collectionName) {
+            // If there are other KBs, set the first one as default
+            if (updatedNames.length > 0) {
+              // Find the first remaining KB
+              const remainingKB = await KnowledgeBase.findOne({
+                userId: kb.userId,
+                _id: { $ne: kbId }
+              }).sort({ isDefault: -1, createdAt: -1 });
+              
+              if (remainingKB) {
+                updateData.defaultKnowledgeBaseId = remainingKB._id;
+                updateData.defaultKnowledgeBaseName = remainingKB.collectionName;
+              } else {
+                // No more KBs - clear default fields
+                updateData.defaultKnowledgeBaseId = null;
+                updateData.defaultKnowledgeBaseName = null;
+              }
+            } else {
+              // No more KBs - clear default fields
+              updateData.defaultKnowledgeBaseId = null;
+              updateData.defaultKnowledgeBaseName = null;
+            }
+          }
+          
+          await Settings.updateOne({ userId }, { $set: updateData });
+          console.log(`[KB Service] ✅ Cleaned up Settings references for deleted KB`);
+        }
+      } catch (error: any) {
+        console.error(`[KB Service] ⚠️  Failed to clean up Settings references:`, error.message);
+        // Continue with deletion even if cleanup fails
       }
 
       // Delete all associated data from MongoDB

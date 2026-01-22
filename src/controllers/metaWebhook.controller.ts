@@ -558,54 +558,42 @@ export class MetaWebhookController {
 
       console.log(`[Messenger Webhook] Processing message - Page: ${pageId}, PSID: ${senderPsid}, Text: ${messageText}`);
 
-      // Generate chatbot reply immediately (synchronous, like Python script)
-      // NOTE: Messenger chatbot uses KnowledgeBase directly via appUserId from OAuth state
-      // Python reference: Only needs Page → Integration → appUserId → KnowledgeBase → RAG
-      const KnowledgeBase = (await import('../models/KnowledgeBase')).default;
-      const mongoose = (await import('mongoose')).default;
-
-      // Get internal app userId from integration metadata (stored during OAuth)
-      const appUserId = integration.metadata?.appUserId;
-
-      if (!appUserId) {
-        console.error('[Messenger Webhook] No appUserId found in integration metadata');
-        console.error('[Messenger Webhook] Integration metadata:', {
-          hasMetadata: !!integration.metadata,
-          metadataKeys: integration.metadata ? Object.keys(integration.metadata) : []
-        });
-        return;
-      }
-
-      // Validate appUserId is a valid ObjectId
-      if (!mongoose.Types.ObjectId.isValid(appUserId)) {
-        console.error('[Messenger Webhook] Invalid appUserId format:', appUserId);
-        return;
-      }
-
-      // Find KnowledgeBase directly by userId (stored during OAuth)
-      const kb = await KnowledgeBase.findOne({
-        userId: new mongoose.Types.ObjectId(appUserId)
-      }).sort({ createdAt: -1 });
-
-      if (!kb) {
-        console.warn('[Messenger Webhook] No KnowledgeBase found for user:', appUserId);
-        return;
-      }
-
-      const collectionName = kb.collectionName;
+      // Generate chatbot reply using AIContextService for consistent KB and system prompt resolution
+      // This ensures Messenger uses the same user-selected KB and custom system prompt as other platforms
+      const { aiContextService } = await import('../services/aiContext.service');
+      const organizationId = integration.organizationId?.toString();
       
-      console.log('[Messenger Webhook] Using KnowledgeBase:', {
-        kbId: kb._id.toString(),
-        collectionName
+      if (!organizationId) {
+        console.error('[Messenger Webhook] No organizationId found in integration');
+        return;
+      }
+
+      // Resolve AI context (KB + system prompt) from organization
+      const aiContext = await aiContextService.resolveFromOrganization(organizationId);
+      
+      if (!aiContext) {
+        console.log('[Messenger Webhook] No AI context available (no KB or settings configured)');
+        return;
+      }
+
+      if (!aiContext.autoReplyEnabled) {
+        console.log('[Messenger Webhook] Auto-reply is disabled in settings');
+        return;
+      }
+
+      console.log('[Messenger Webhook] Using AI context:', {
+        collectionNames: aiContext.collectionNames,
+        systemPromptLength: aiContext.systemPrompt.length,
+        userId: aiContext.userId
       });
 
-      // Call RAG service to get reply
+      // Call RAG service with resolved context (user's selected KBs and custom system prompt)
       const ragResponse = await pythonRagService.chat({
         query: messageText,
-        collectionNames: [collectionName],
+        collectionNames: aiContext.collectionNames,
         topK: 5,
         threadId: `messenger_${pageId}_${senderPsid}`, // Simple thread ID
-        systemPrompt: 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.'
+        systemPrompt: aiContext.systemPrompt // Use user's custom system prompt
       });
 
       const botReply = ragResponse.answer;

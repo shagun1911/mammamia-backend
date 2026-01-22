@@ -6,21 +6,25 @@ import { inboundAgentConfigService } from './inboundAgentConfig.service';
 export class SettingsService {
   /**
    * Get widget settings by widgetId (public access)
-   * For now, get the first settings or default. In production, map widgetId to organization
+   * CRITICAL: widgetId IS userId (validated as ObjectId in controller)
+   * NO FALLBACKS - must find settings for the exact userId
+   * FAILS LOUDLY if settings not found
    */
   async getWidgetSettings(widgetId: string) {
-    // Try to find settings. For now, just get the first one
-    // In production, you'd map widgetId to specific organization/user
-    let settings = await Settings.findOne();
+    // CRITICAL: widgetId must be a valid ObjectId (validated in controller)
+    // widgetId === userId (no mapping table exists)
+    const mongoose = (await import('mongoose')).default;
+    
+    if (!mongoose.Types.ObjectId.isValid(widgetId)) {
+      throw new AppError(400, 'INVALID_WIDGET_ID', `Invalid widget ID format: ${widgetId}`);
+    }
+    
+    const userId = new mongoose.Types.ObjectId(widgetId);
+    const settings = await Settings.findOne({ userId });
     
     if (!settings) {
-      // Return default settings if none exist
-      return {
-        chatbotName: 'AI Assistant',
-        chatbotAvatar: null,
-        primaryColor: '#6366f1',
-        autoReplyMessage: 'Hello! How can I help you today?'
-      };
+      // CRITICAL: Fail loudly - do NOT return default settings
+      throw new AppError(404, 'WIDGET_SETTINGS_NOT_FOUND', `Widget settings not found for widget ID: ${widgetId}. Please configure settings for this widget.`);
     }
     
     return settings;
@@ -61,11 +65,34 @@ export class SettingsService {
         ...data
       });
     } else {
-      // Update existing
-      const { ecommerceIntegration, ...safeData } = data;
-Object.assign(settings, safeData);
-
-      await settings.save();
+      // Update existing - use MongoDB $set for arrays to ensure proper replacement
+      const { ecommerceIntegration, defaultKnowledgeBaseNames, defaultKnowledgeBaseIds, ...safeData } = data;
+      
+      // Use $set operator for array fields to ensure proper replacement (not merge)
+      const updateData: any = { ...safeData };
+      
+      // Explicitly handle array fields with $set
+      if (defaultKnowledgeBaseNames !== undefined) {
+        updateData.defaultKnowledgeBaseNames = defaultKnowledgeBaseNames;
+      }
+      
+      if (defaultKnowledgeBaseIds !== undefined) {
+        updateData.defaultKnowledgeBaseIds = defaultKnowledgeBaseIds;
+      }
+      
+      // Use updateOne with $set for proper array handling
+      await Settings.updateOne(
+        { userId },
+        { $set: updateData }
+      );
+      
+      // Reload settings to return updated document
+      settings = await Settings.findOne({ userId });
+      
+      // Ensure settings is not null (should always exist after update)
+      if (!settings) {
+        throw new AppError(500, 'SETTINGS_ERROR', 'Failed to update settings');
+      }
     }
     
     // Sync inbound agent config if knowledge base settings were updated

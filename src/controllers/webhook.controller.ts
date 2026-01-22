@@ -560,47 +560,36 @@ export class WebhookController {
    */
   private async triggerAIReplyForSocial(conversation: any, userMessage: string, organizationId: string, customerId: string, platform: 'instagram' | 'facebook') {
     try {
-      // Find the organization and its owner
-      const organization = await Organization.findById(organizationId);
-      if (!organization) {
-        console.log(`[AI Auto-Reply ${platform}] Organization not found: ${organizationId}`);
+      // Use centralized AI context service for consistent behavior across all platforms
+      // This ensures we use user's selected KBs and custom system prompt
+      const { aiContextService } = await import('../services/aiContext.service');
+      
+      // Resolve AI context (KB + system prompt) from organization
+      const aiContext = await aiContextService.resolveFromOrganization(organizationId);
+      
+      if (!aiContext) {
+        console.log(`[AI Auto-Reply ${platform}] No AI context available (no KB or settings configured)`);
         return;
       }
 
-      // Get settings for the organization owner
-      let settings = await Settings.findOne({ userId: organization.ownerId });
-      
-      // If owner doesn't have settings, try finding any user in this organization with settings
-      if (!settings) {
-        const users = await User.find({ organizationId: organizationId }).limit(5);
-        for (const user of users) {
-          settings = await Settings.findOne({ userId: user._id });
-          if (settings?.defaultKnowledgeBaseName) break;
-        }
-      }
-      
-      // Log for debugging
-      console.log(`[AI Auto-Reply ${platform}] Organization: ${organizationId}, Owner: ${organization.ownerId}`);
-      console.log(`[AI Auto-Reply ${platform}] Settings found: ${settings ? 'YES' : 'NO'}`);
-      if (settings) {
-        console.log(`[AI Auto-Reply ${platform}] defaultKnowledgeBaseName: ${settings.defaultKnowledgeBaseName || 'NOT SET'}`);
-      }
-      
-      if (!settings || !settings.defaultKnowledgeBaseName) {
-        console.log(`[AI Auto-Reply ${platform}] No default knowledge base configured in settings`);
+      if (!aiContext.autoReplyEnabled) {
+        console.log(`[AI Auto-Reply ${platform}] Auto-reply is disabled in settings`);
         return;
       }
 
-      const collectionName = settings.defaultKnowledgeBaseName;
-      console.log(`[AI Auto-Reply ${platform}] Using knowledge base collection: ${collectionName}`);
+      console.log(`[AI Auto-Reply ${platform}] Using context:`, {
+        collectionNames: aiContext.collectionNames,
+        systemPromptLength: aiContext.systemPrompt.length,
+        userId: aiContext.userId
+      });
       
-      // Call Python RAG service to generate response
+      // Call Python RAG service with resolved context (user's selected KBs and custom system prompt)
       const ragResponse = await pythonRagService.chat({
         query: userMessage,
-        collectionNames: [collectionName], // Updated to array for multiple collections support
+        collectionNames: aiContext.collectionNames, // Supports multiple KBs
         topK: 5,
         threadId: conversation._id.toString(),
-        systemPrompt: 'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.'
+        systemPrompt: aiContext.systemPrompt // Use user's custom system prompt
       });
 
       const aiResponse = ragResponse.answer;
@@ -621,7 +610,7 @@ export class WebhookController {
         timestamp: new Date(),
         metadata: {
           generatedBy: 'rag-service',
-          collectionNames: [collectionName], // Updated to array for multiple collections support
+          collectionNames: aiContext.collectionNames, // Use resolved collection names (supports multiple KBs)
           retrievedDocs: ragResponse.retrieved_docs || []
         }
       });

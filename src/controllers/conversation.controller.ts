@@ -235,11 +235,21 @@ export class ConversationController {
   };
 
   // Save widget conversation (no auth required for public widget)
+  // CRITICAL: Requires widgetId in request body
+  // Service resolves userId and organizationId internally with strict validation
+  // NO FALLBACKS - fails loudly if widgetId invalid or user/org not found
   saveWidgetConversation = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { name, threadId, collection, messages } = req.body;
+      const { widgetId, name, threadId, collection, messages } = req.body;
       
+      // CRITICAL: Validate widgetId is present
+      if (!widgetId) {
+        throw new AppError(400, 'MISSING_WIDGET_ID', 'widgetId is required in request body');
+      }
+
+      // Service validates widgetId, resolves userId/organizationId, and ensures tenant isolation
       const conversation = await this.conversationService.saveWidgetConversation({
+        widgetId,
         name,
         threadId,
         collection,

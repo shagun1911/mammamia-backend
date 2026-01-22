@@ -694,32 +694,81 @@ export class ConversationService {
   }
 
   // Save widget conversation (from public widget, no user account required)
+  // CRITICAL: Requires widgetId and resolves userId/organizationId internally to prevent cross-tenant data leakage
+  // NO FALLBACKS - fails loudly if widgetId invalid or user/org not found
   async saveWidgetConversation(data: {
+    widgetId: string; // REQUIRED: widgetId === userId (validated ObjectId)
     name: string;
     threadId: string;
     collection?: string;
     messages: Array<{ role: string; content: string; timestamp: Date }>;
-    organizationId?: string;
   }) {
     try {
-      console.log('[Widget Conversation] Saving conversation for:', data.name);
+      const mongoose = (await import('mongoose')).default;
+      const User = (await import('../models/User')).default;
+      const Organization = (await import('../models/Organization')).default;
+
+      // CRITICAL: Validate widgetId is present and valid ObjectId
+      if (!data.widgetId || data.widgetId === 'undefined' || data.widgetId === '') {
+        throw new AppError(400, 'MISSING_WIDGET_ID', 'widgetId is required and cannot be undefined');
+      }
+
+      if (!mongoose.Types.ObjectId.isValid(data.widgetId)) {
+        throw new AppError(400, 'INVALID_WIDGET_ID', `Invalid widget ID format: ${data.widgetId}`);
+      }
+
+      // CRITICAL: Resolve userId from widgetId (widgetId === userId)
+      const userId = data.widgetId;
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+
+      // CRITICAL: Verify user exists
+      const user = await User.findById(userObjectId);
+      if (!user) {
+        throw new AppError(404, 'USER_NOT_FOUND', `User not found for widget ID: ${data.widgetId}`);
+      }
+
+      // CRITICAL: Resolve organizationId from user
+      let organizationId: string;
+      if (user.organizationId) {
+        organizationId = user.organizationId.toString();
+      } else {
+        // Try to find organization by ownerId
+        const organization = await Organization.findOne({ ownerId: userObjectId });
+        if (organization) {
+          organizationId = organization._id.toString();
+        } else {
+          // Single-tenant: use userId as organizationId
+          organizationId = userId;
+        }
+      }
+
+      // CRITICAL: Validate organizationId is valid
+      if (!mongoose.Types.ObjectId.isValid(organizationId)) {
+        throw new AppError(500, 'INVALID_ORGANIZATION_ID', `Invalid organization ID format: ${organizationId}`);
+      }
+
+      console.log('[Widget Conversation] Saving conversation with strict isolation:', {
+        widgetId: data.widgetId,
+        userId: userId,
+        organizationId: organizationId,
+        name: data.name,
+        threadId: data.threadId
+      });
       
-      // Find or create customer by name (with organizationId if provided)
-      let customer = await Customer.findOne({ name: data.name });
+      // Find or create customer by name WITH organizationId (strict isolation)
+      const orgObjectId = new mongoose.Types.ObjectId(organizationId);
+      let customer = await Customer.findOne({ 
+        name: data.name,
+        organizationId: orgObjectId // CRITICAL: Scoped to organization
+      });
       
       if (!customer) {
         console.log('[Widget Conversation] Creating new customer:', data.name);
-        const customerData: any = {
+        customer = await Customer.create({
           name: data.name,
-          source: 'widget'
-        };
-        
-        // Add organizationId if provided
-        if (data.organizationId) {
-          customerData.organizationId = data.organizationId;
-        }
-        
-        customer = await Customer.create(customerData);
+          source: 'widget',
+          organizationId: orgObjectId // CRITICAL: Always set organizationId
+        });
       } else {
         // Update customer if name was empty/missing
         if (!customer.name || customer.name === '') {
@@ -729,49 +778,35 @@ export class ConversationService {
         }
       }
 
-      // Find existing conversation by threadId using dot notation
+      // Find existing conversation by threadId AND organizationId (strict isolation)
       let conversation = await Conversation.findOne({ 
-        'metadata.threadId': data.threadId 
+        'metadata.threadId': data.threadId,
+        organizationId: orgObjectId // CRITICAL: Scoped to organization
       });
 
       if (!conversation) {
         console.log('[Widget Conversation] Creating new conversation for thread:', data.threadId);
         const conversationData: any = {
           customerId: customer._id,
+          organizationId: orgObjectId, // CRITICAL: Always set organizationId (no fallback)
           channel: 'website',
-          status: 'unread', // Valid status: 'open', 'unread', 'support_request', 'closed'
-          isAiManaging: true, // Widget conversations are AI managed
+          status: 'unread',
+          isAiManaging: true,
           metadata: {
             threadId: data.threadId,
             collection: data.collection
           }
         };
         
-        // Add organizationId if provided, otherwise use a default
-        if (data.organizationId) {
-          conversationData.organizationId = data.organizationId;
-        } else if (customer.organizationId) {
-          conversationData.organizationId = customer.organizationId;
-        } else {
-          // Get first organization as fallback for widget conversations
-          const Organization = mongoose.model('Organization');
-          const defaultOrg = await Organization.findOne();
-          if (defaultOrg) {
-            conversationData.organizationId = defaultOrg._id;
-          }
-        }
-        
         conversation = await Conversation.create(conversationData);
 
-        // Track chat conversation usage
-        // Get the user (owner) of this organization to track usage
-        if (conversationData.organizationId) {
-          const User = mongoose.model('User');
-          const orgOwner = await User.findOne({ organizationId: conversationData.organizationId, role: 'admin' });
-          if (orgOwner) {
-            await trackUsage(String(orgOwner._id), 'chat', 1);
-            console.log(`[Widget Conversation] Tracked 1 chat conversation for user ${orgOwner._id}`);
-          }
+        // Track chat conversation usage for the resolved userId
+        try {
+          await trackUsage(userId, 'chat', 1);
+          console.log(`[Widget Conversation] Tracked 1 chat conversation for user ${userId}`);
+        } catch (trackError: any) {
+          console.warn('[Widget Conversation] Failed to track usage:', trackError.message);
+          // Don't fail conversation save if usage tracking fails
         }
       }
 

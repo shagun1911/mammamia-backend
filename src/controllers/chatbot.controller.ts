@@ -64,10 +64,9 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
       }
     }
     
-    // Final fallback: use 'default' if nothing found
+    // CRITICAL: Fail loudly if no KB found - NO DEFAULT FALLBACK
     if (collectionNames.length === 0) {
-      collectionNames = ['default'];
-      console.log('[Chatbot] No knowledge base configured - using default collection');
+      throw new AppError(400, 'NO_KNOWLEDGE_BASE', 'No knowledge base configured. Please configure a knowledge base in Settings → Knowledge Base.');
     }
   }
   
@@ -171,7 +170,7 @@ export class ChatbotController {
       // Log what we're sending to Python RAG service
       console.log('\n========== CHATBOT - PAYLOAD TO PYTHON RAG ==========');
       console.log('[Chatbot] Query:', query);
-      console.log('[Chatbot] Collection Names:', collectionNames.length > 0 ? collectionNames : ['default']);
+      console.log('[Chatbot] Collection Names:', collectionNames);
       console.log('[Chatbot] Provider:', provider);
       console.log('[Chatbot] Has API Key:', !!apiKey);
       console.log('[Chatbot] Has E-commerce Credentials:', !!ecommerceCredentials);
@@ -188,7 +187,7 @@ export class ChatbotController {
       // Chat with RAG system - include provider, apiKey, and ecommerceCredentials (if available)
       const response = await pythonRagService.chat({
         query,
-        collectionNames: collectionNames.length > 0 ? collectionNames : ['default'],
+        collectionNames: collectionNames,
         threadId,
         systemPrompt,
         provider,
@@ -287,7 +286,7 @@ export class ChatbotController {
       // Chat with RAG system - include provider, apiKey, and ecommerceCredentials (if available)
       const response = await pythonRagService.chat({
         query,
-        collectionNames: collectionNames.length > 0 ? collectionNames : ['default'],
+        collectionNames: collectionNames,
         threadId,
         systemPrompt,
         provider,
@@ -308,105 +307,99 @@ export class ChatbotController {
    * POST /chatbot/widget/:widgetId/chat
    * Public widget chat endpoint (no auth required)
    * Uses widgetId to find user settings and API keys
+   * 
+   * CRITICAL: This endpoint MUST maintain strict user isolation:
+   * - widgetId MUST be a valid ObjectId (treated as userId)
+   * - NO fallbacks to other users' settings or API keys
+   * - KBs MUST belong to the resolved userId
+   * - API keys MUST belong to the resolved userId
    */
   widgetChat = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      // Log full request details for debugging
+      // ========== PHASE 1: STRICT VALIDATION ==========
       console.log('\n========== CHATBOT /widget/:widgetId/chat ENDPOINT - INCOMING REQUEST ==========');
       console.log('[Widget Chat] Full URL:', req.url);
       console.log('[Widget Chat] Original URL:', req.originalUrl);
-      console.log('[Widget Chat] Base URL:', req.baseUrl);
       console.log('[Widget Chat] Path:', req.path);
       console.log('[Widget Chat] Params:', JSON.stringify(req.params, null, 2));
-      console.log('[Widget Chat] Query:', JSON.stringify(req.query, null, 2));
       
       const { widgetId } = req.params;
       const { query, threadId } = req.body;
 
-      console.log('[Widget Chat] Widget ID from params:', widgetId);
-      console.log('[Widget Chat] Request Body:', JSON.stringify(req.body, null, 2));
-      console.log('[Widget Chat] Query:', query);
-      console.log('[Widget Chat] Thread ID:', threadId || 'not provided');
-      console.log('===============================================================================\n');
-
-      if (!query) {
-        throw new AppError(400, 'VALIDATION_ERROR', 'Query is required');
-      }
-
-      // Validate widgetId
-      if (!widgetId) {
-        console.error('[Widget Chat] ❌ widgetId is missing from request params');
-        console.error('[Widget Chat] This usually means the route parameter is not being captured correctly.');
+      // CRITICAL: Validate widgetId is present and not undefined
+      if (widgetId === undefined || widgetId === null || widgetId === 'undefined' || widgetId === '') {
+        console.error('[Widget Chat] ❌ CRITICAL: widgetId is missing or undefined');
+        console.error('[Widget Chat] Params object:', req.params);
         console.error('[Widget Chat] Expected URL format: /api/v1/chatbot/widget/{widgetId}/chat');
-        throw new AppError(400, 'MISSING_WIDGET_ID', 'Widget ID is required. Please ensure the widget URL includes a valid widget ID.');
+        throw new AppError(400, 'MISSING_WIDGET_ID', 'Widget ID is required and cannot be undefined. Please ensure the widget URL includes a valid widget ID.');
       }
 
-      // Get settings by widgetId
-      // For now, we'll try to find settings by widgetId if it's a valid ObjectId
-      // Otherwise, find the first settings (legacy behavior)
-      let settings;
-      let userId: string;
-      
-      console.log('[Widget Chat] Resolving userId from widgetId:', widgetId);
-      
-      // Try to use widgetId as userId if it's a valid ObjectId format
-      if (widgetId && /^[0-9a-fA-F]{24}$/.test(widgetId)) {
-        console.log('[Widget Chat] Widget ID looks like ObjectId, trying to use as userId:', widgetId);
-        settings = await Settings.findOne({ userId: widgetId });
-        if (settings && settings.userId) {
-          userId = settings.userId.toString();
-          console.log('[Widget Chat] ✅ Found settings for userId:', userId);
-        } else {
-          console.log('[Widget Chat] No settings found for widgetId as userId:', widgetId);
-        }
-      } else {
-        console.log('[Widget Chat] Widget ID does not match ObjectId format:', widgetId);
-      }
-      
-      // If not found, try to find by widgetId in a future widget mapping table
-      // For now, fallback to finding first settings (but log a warning)
-      if (!settings) {
-        console.warn('[Widget Chat] ⚠️  Could not find settings for widgetId:', widgetId);
-        console.warn('[Widget Chat] ⚠️  Falling back to first settings document (this may not be correct)');
-        settings = await Settings.findOne().sort({ createdAt: -1 }); // Get most recent
-        if (!settings || !settings.userId) {
-          throw new AppError(404, 'NOT_FOUND', 'Widget settings not found');
-        }
-        userId = settings.userId.toString();
-        console.warn('[Widget Chat] ⚠️  Using settings for userId:', userId, '(may not match widgetId)');
-      } else if (!settings.userId) {
-        throw new AppError(404, 'NOT_FOUND', 'Settings found but userId is missing');
-      } else {
-        userId = settings.userId.toString();
+      // CRITICAL: Validate widgetId is a valid MongoDB ObjectId (24 hex characters)
+      const objectIdPattern = /^[0-9a-fA-F]{24}$/;
+      if (!objectIdPattern.test(widgetId)) {
+        console.error('[Widget Chat] ❌ CRITICAL: widgetId is not a valid ObjectId format');
+        console.error('[Widget Chat] widgetId value:', widgetId);
+        console.error('[Widget Chat] widgetId type:', typeof widgetId);
+        throw new AppError(400, 'INVALID_WIDGET_ID', `Widget ID must be a valid 24-character hexadecimal string. Received: ${widgetId}`);
       }
 
-      console.log('[Widget Chat] ✅ Resolved userId:', userId, 'from widgetId:', widgetId);
+      if (!query || typeof query !== 'string' || query.trim() === '') {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Query is required and cannot be empty');
+      }
 
-      // Get organizationId from user for better context resolution
+      console.log('[Widget Chat] ✅ Validation passed');
+      console.log('[Widget Chat] widgetId:', widgetId);
+      console.log('[Widget Chat] query length:', query.length);
+      console.log('[Widget Chat] threadId:', threadId || 'not provided');
+
+      // ========== PHASE 2: DETERMINISTIC USER RESOLUTION ==========
+      // widgetId IS the userId (no mapping table exists)
+      // This is the SINGLE SOURCE OF TRUTH for identity resolution
+      const userId = widgetId; // widgetId === userId (validated as ObjectId above)
+      const mongoose = (await import('mongoose')).default;
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+
+      console.log('[Widget Chat] ✅ Resolved userId from widgetId:', userId);
+      console.log('[Widget Chat] userId ObjectId:', userObjectId.toString());
+
+      // Verify user exists
       const User = (await import('../models/User')).default;
+      const user = await User.findById(userObjectId);
+      if (!user) {
+        console.error('[Widget Chat] ❌ CRITICAL: User not found for widgetId/userId:', userId);
+        throw new AppError(404, 'USER_NOT_FOUND', `User not found for widget ID: ${widgetId}`);
+      }
+
+      console.log('[Widget Chat] ✅ User exists:', {
+        userId: user._id.toString(),
+        email: user.email,
+        organizationId: user.organizationId?.toString() || 'none'
+      });
+
+      // ========== PHASE 3: ORGANIZATION RESOLUTION ==========
       const Organization = (await import('../models/Organization')).default;
-      const user = await User.findById(userId);
       let organizationId: string | null = null;
 
-      if (user?.organizationId) {
+      if (user.organizationId) {
         organizationId = user.organizationId.toString();
-        console.log('[Widget Chat] Found organizationId from user:', organizationId);
+        console.log('[Widget Chat] ✅ Found organizationId from user:', organizationId);
       } else {
         // Try to find organization by ownerId
-        const organization = await Organization.findOne({ ownerId: userId });
+        const organization = await Organization.findOne({ ownerId: userObjectId });
         if (organization) {
           organizationId = organization._id.toString();
-          console.log('[Widget Chat] Found organizationId from ownerId:', organizationId);
+          console.log('[Widget Chat] ✅ Found organizationId from ownerId:', organizationId);
         } else {
-          // Fallback: use userId as organizationId (single-tenant)
+          // Single-tenant: use userId as organizationId
           organizationId = userId;
           console.log('[Widget Chat] Using userId as organizationId (single-tenant):', organizationId);
         }
       }
 
-      // Use AIContextService for consistent KB and system prompt resolution
-      // Try organization-based resolution first (better for multi-tenant), fallback to user-based
+      // ========== PHASE 4: KB RESOLUTION (STRICT - MUST BELONG TO USER) ==========
       const { aiContextService } = await import('../services/aiContext.service');
+      
+      // Try organization-based resolution first, then user-based
       let aiContext = organizationId 
         ? await aiContextService.resolveFromOrganization(organizationId)
         : null;
@@ -417,16 +410,43 @@ export class ChatbotController {
       }
 
       if (!aiContext) {
-        console.error('[Widget Chat] ❌ No AI context available:', {
-          userId,
-          organizationId,
-          message: 'No knowledge base or settings configured'
-        });
+        console.error('[Widget Chat] ❌ CRITICAL: No AI context available for userId:', userId);
         throw new AppError(400, 'NO_KNOWLEDGE_BASE', 'No knowledge base configured. Please configure a knowledge base in Settings → Knowledge Base.');
+      }
+
+      // CRITICAL: Validate that resolved context belongs to the correct user
+      if (aiContext.userId !== userId) {
+        console.error('[Widget Chat] ❌ CRITICAL: AI context userId mismatch!');
+        console.error('[Widget Chat] Expected userId:', userId);
+        console.error('[Widget Chat] Resolved context userId:', aiContext.userId);
+        throw new AppError(500, 'CONTEXT_MISMATCH', 'Resolved AI context does not match the widget user. This is a system error.');
       }
 
       const collectionNames = aiContext.collectionNames;
       let systemPrompt = aiContext.systemPrompt;
+
+      // CRITICAL: Validate KBs belong to this user
+      const KnowledgeBase = (await import('../models/KnowledgeBase')).default;
+      const Settings = (await import('../models/Settings')).default;
+      const settings = await Settings.findOne({ userId: userObjectId });
+      
+      if (settings) {
+        // Verify collection names are from this user's KBs
+        const userKBs = await KnowledgeBase.find({ userId: userObjectId }).select('collectionName').lean();
+        const userCollectionNames = userKBs.map((kb: any) => kb.collectionName).filter(Boolean);
+        
+        const invalidCollections = collectionNames.filter((name: string) => !userCollectionNames.includes(name));
+        if (invalidCollections.length > 0) {
+          console.error('[Widget Chat] ❌ CRITICAL: Collection names do not belong to user!');
+          console.error('[Widget Chat] Invalid collections:', invalidCollections);
+          console.error('[Widget Chat] User collections:', userCollectionNames);
+          console.error('[Widget Chat] Resolved collections:', collectionNames);
+          throw new AppError(500, 'INVALID_KB_ACCESS', 'Knowledge base collections do not belong to this user. This is a system error.');
+        }
+        
+        console.log('[Widget Chat] ✅ Validated KBs belong to userId:', userId);
+        console.log('[Widget Chat] User KB collections:', userCollectionNames);
+      }
 
       console.log('[Widget Chat] ✅ Using AI context:', {
         collectionNames,
@@ -438,7 +458,7 @@ export class ChatbotController {
       });
 
       if (collectionNames.length === 0) {
-        console.error('[Widget Chat] ❌ Collection names array is empty!');
+        console.error('[Widget Chat] ❌ CRITICAL: Collection names array is empty!');
         throw new AppError(400, 'NO_KNOWLEDGE_BASE', 'No knowledge base collection names found. Please configure a knowledge base in Settings → Knowledge Base.');
       }
 
@@ -475,46 +495,25 @@ export class ChatbotController {
         console.log('[Widget Chat] Enhanced system prompt with KB-first instructions');
       }
 
-      // Get API keys for LLM generation (REQUIRED for Python backend to generate answers)
+      // ========== PHASE 5: API KEY RESOLUTION (STRICT - MUST BELONG TO USER) ==========
       let provider: string | undefined;
       let apiKey: string | undefined;
+      
       try {
         const { apiKeysService } = await import('../services/apiKeys.service');
-        const ApiKeys = (await import('../models/ApiKeys')).default;
         
-        console.log('[Widget Chat] Fetching API keys for userId:', userId);
-        let apiKeys;
+        console.log('[Widget Chat] Fetching API keys STRICTLY for userId:', userId);
         
-        try {
-          apiKeys = await apiKeysService.getApiKeys(userId);
-        } catch (apiKeysError: any) {
-          // If API keys not found for this userId, try to find any API keys as fallback
-          // This helps when widgetId resolution picks the wrong user
-          console.warn('[Widget Chat] ⚠️  API keys not found for resolved userId, trying to find any API keys...');
-          
-          const anyApiKeys = await ApiKeys.findOne({ 
-            $and: [
-              { apiKey: { $exists: true } },
-              { apiKey: { $ne: null } },
-              { apiKey: { $ne: '' } }
-            ]
-          }).sort({ updatedAt: -1 });
-          
-          if (anyApiKeys && anyApiKeys.apiKey && anyApiKeys.apiKey.trim() !== '') {
-            console.warn('[Widget Chat] ⚠️  Using API keys from different user:', {
-              apiKeysUserId: anyApiKeys.userId.toString(),
-              resolvedUserId: userId,
-              provider: anyApiKeys.llmProvider
-            });
-            apiKeys = anyApiKeys;
-          } else {
-            // Re-throw the original error if no fallback found
-            throw apiKeysError;
-          }
-        }
+        // CRITICAL: NO FALLBACK - API keys MUST belong to this userId
+        const apiKeys = await apiKeysService.getApiKeys(userId);
         
-        if (!apiKeys) {
-          throw new AppError(404, 'API_KEYS_NOT_CONFIGURED', 'API keys not found. Please configure your API keys in Settings → API Keys.');
+        // CRITICAL: Validate API keys belong to the correct user
+        const apiKeysUserId = apiKeys.userId.toString();
+        if (apiKeysUserId !== userId) {
+          console.error('[Widget Chat] ❌ CRITICAL: API keys userId mismatch!');
+          console.error('[Widget Chat] Expected userId:', userId);
+          console.error('[Widget Chat] API keys userId:', apiKeysUserId);
+          throw new AppError(500, 'API_KEYS_MISMATCH', 'API keys do not belong to this user. This is a system error.');
         }
 
         provider = apiKeys.llmProvider;
@@ -524,12 +523,13 @@ export class ChatbotController {
           throw new AppError(400, 'API_KEY_EMPTY', 'API key is not set. Please configure your API key in Settings → API Keys.');
         }
 
-        console.log('[Widget Chat] ✅ API keys fetched for LLM generation:', { 
+        console.log('[Widget Chat] ✅ API keys fetched and validated for userId:', userId, {
           provider,
           hasApiKey: !!apiKey,
           apiKeyLength: apiKey?.length || 0,
-          apiKeysUserId: apiKeys.userId.toString(),
-          resolvedUserId: userId
+          apiKeysUserId: apiKeysUserId,
+          resolvedUserId: userId,
+          match: apiKeysUserId === userId ? '✅ MATCH' : '❌ MISMATCH'
         });
       } catch (error: any) {
         // Log detailed error information
@@ -555,22 +555,46 @@ export class ChatbotController {
         );
       }
 
-      // Chat with RAG system - include provider, apiKey, and ecommerceCredentials (if available)
-      // DO NOT fallback to 'default' - use the actual configured knowledge bases
-      console.log('[Widget Chat] Calling Python RAG with collectionNames:', collectionNames);
+      // ========== PHASE 6: PYTHON RAG REQUEST (STRICT VALIDATION) ==========
+      // CRITICAL: Final validation before sending to Python RAG
+      console.log('[Widget Chat] ========== FINAL VALIDATION BEFORE RAG REQUEST ==========');
+      console.log('[Widget Chat] widgetId:', widgetId);
+      console.log('[Widget Chat] resolved userId:', userId);
+      console.log('[Widget Chat] collectionNames:', collectionNames);
+      console.log('[Widget Chat] collectionNames count:', collectionNames.length);
+      console.log('[Widget Chat] systemPrompt length:', systemPrompt.length);
+      console.log('[Widget Chat] provider:', provider);
+      console.log('[Widget Chat] hasApiKey:', !!apiKey);
+      console.log('[Widget Chat] apiKey userId match:', '✅ VALIDATED');
+      console.log('[Widget Chat] KBs userId match:', '✅ VALIDATED');
+      console.log('[Widget Chat] =========================================================');
+
+      // CRITICAL: Ensure collectionNames are not empty and are valid
+      if (!collectionNames || collectionNames.length === 0) {
+        throw new AppError(400, 'NO_COLLECTIONS', 'No knowledge base collections available. Please configure a knowledge base.');
+      }
+
+      // CRITICAL: Ensure API key is present
+      if (!apiKey || !provider) {
+        throw new AppError(400, 'API_KEYS_REQUIRED', 'API keys are required for chat generation. Please configure API keys in Settings → API Keys.');
+      }
+
+      // Call Python RAG with validated data
+      console.log('[Widget Chat] Calling Python RAG with validated data...');
       const response = await pythonRagService.chat({
         query,
-        collectionNames: collectionNames, // Use actual configured KBs, no fallback to 'default'
+        collectionNames: collectionNames, // Validated: belongs to userId
         threadId,
-        systemPrompt,
-        provider,
-        apiKey,
+        systemPrompt, // Validated: from userId's AIBehavior
+        provider, // Validated: from userId's API keys
+        apiKey, // Validated: from userId's API keys
         ecommerceCredentials,
         topK: 5,
         elaborate: false,
         skipHistory: false
       });
 
+      console.log('[Widget Chat] ✅ RAG response received successfully');
       res.json(successResponse(response));
     } catch (error) {
       next(error);
@@ -649,7 +673,10 @@ export class ChatbotController {
       let finalCollectionNames = collection_names;
       if (finalCollectionNames.length === 0) {
         const collectionNames = await determineCollectionNames(userId);
-        finalCollectionNames = collectionNames.length > 0 ? collectionNames : ['default'];
+        if (collectionNames.length === 0) {
+          throw new AppError(400, 'NO_KNOWLEDGE_BASE', 'No knowledge base configured. Please configure a knowledge base in Settings → Knowledge Base.');
+        }
+        finalCollectionNames = collectionNames;
         console.log('[Test Chatbot] Using collection names from settings:', finalCollectionNames);
       }
 

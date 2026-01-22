@@ -5,12 +5,13 @@ import { successResponse } from '../utils/response.util';
 
 export class SettingsController {
   // Public endpoint for widget settings (no auth required)
+  // CRITICAL: widgetId === userId (validated in service)
+  // NO FALLBACKS - fails loudly if settings not found
   getWidgetSettings = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { widgetId } = req.params;
       
-      // For now, get the first user's settings (in production, map widgetId to organization/user)
-      // You can enhance this to fetch settings based on widgetId -> organizationId mapping
+      // Service validates widgetId and throws if settings not found
       const settings = await settingsService.getWidgetSettings(widgetId);
       
       // Return only public-safe settings (no sensitive data)
