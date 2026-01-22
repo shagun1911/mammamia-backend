@@ -6,7 +6,6 @@ import { GCSService } from '../services/gcs.service';
 import { DocumentProcessorService } from '../services/documentProcessor.service';
 import { successResponse, paginatedResponse } from '../utils/response.util';
 import { AppError } from '../middleware/error.middleware';
-import multer from 'multer';
 
 export class KnowledgeBaseController {
   private kbService: KnowledgeBaseService;
@@ -47,7 +46,7 @@ export class KnowledgeBaseController {
       }
       
       // Get uploaded files
-      const files = req.files as { [fieldname: string]: multer.File[] };
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
       const pdfFiles = files?.pdf_files || [];
       const excelFiles = files?.excel_files || [];
 

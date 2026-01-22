@@ -4,7 +4,6 @@ import { ConversationService } from '../services/conversation.service';
 import { successResponse, paginatedResponse } from '../utils/response.util';
 import { gcsService } from '../services/gcs.service';
 import { AppError } from '../middleware/error.middleware';
-import multer from 'multer';
 
 export class ConversationController {
   private conversationService: ConversationService;
@@ -66,7 +65,7 @@ export class ConversationController {
       // Handle file attachments if any
       let attachments: any[] = [];
       if (req.files && Array.isArray(req.files) && req.files.length > 0) {
-        const files = req.files as multer.File[];
+        const files = req.files as Express.Multer.File[];
         try {
           attachments = await Promise.all(
             files.map(async (file) => {

@@ -3,13 +3,10 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User';
 import { AppError } from './error.middleware';
 
-// Import multer types
-import multer from 'multer';
-
 export interface AuthRequest extends Request {
   user?: any;
-  file?: multer.File;
-  files?: multer.File[] | { [fieldname: string]: multer.File[] };
+  file?: Express.Multer.File;
+  files?: Express.Multer.File[] | { [fieldname: string]: Express.Multer.File[] };
 }
 
 export const authenticate = async (
