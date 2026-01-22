@@ -168,7 +168,7 @@ app.use('*', (req, res) => {
 app.use(errorHandler);
 
 // Port configuration - Render uses PORT env variable
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT;
 
 // Log configuration on startup
 console.log('🔧 Server Configuration:');
