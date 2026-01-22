@@ -374,7 +374,7 @@ export class ContactService {
             // Clean and trim values
             return value ? value.trim() : '';
           },
-          complete: async (parseResult) => {
+          complete: async (parseResult: any) => {
             const rows = parseResult.data as any[];
             console.log('[CSV Import Service] Parsed rows:', rows.length);
             console.log('[CSV Import Service] First row:', rows[0]);
