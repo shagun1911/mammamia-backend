@@ -105,7 +105,7 @@ export class PlanService {
   }
 
   /**
-   * Assign plan to organization (or user without organization)
+   * Assign plan to individual user (user-based system)
    */
   async assignPlanToOrganization(organizationIdOrUserId: string, planIdOrSlug: string) {
     try {
@@ -119,88 +119,73 @@ export class PlanService {
         throw new Error('Plan not found');
       }
 
-      // Try to find organization first
-      let organization = await Organization.findById(organizationIdOrUserId);
+      // Find the specific user (NOT organization)
+      const user = await User.findById(organizationIdOrUserId);
       
-      // If not found, check if it's a user ID and create organization
-      if (!organization) {
-        const user = await User.findById(organizationIdOrUserId);
-        if (user) {
-          // User has no organization, create one
-          logger.info(`User ${user.email} has no organization, creating one`);
-          organization = await Organization.create({
-            name: `${user.firstName}'s Organization`,
-            ownerId: user._id,
-            plan: plan.slug,
-            planId: plan._id,
-            status: 'active'
-          });
-          
-          // Update user with new organization
-          user.organizationId = organization._id as any;
-          await user.save();
-          
-          logger.info(`Created organization ${organization._id} for user ${user.email}`);
-        } else {
-          throw new Error('Organization or user not found');
-        }
+      if (!user) {
+        throw new Error('User not found');
       }
 
-      // Update organization with new plan
-      organization.plan = plan.slug;
-      if (plan._id) {
-        organization.planId = plan._id as mongoose.Types.ObjectId;
-      }
-      await organization.save();
+      // Update ONLY this user's plan (not all users)
+      user.selectedProfile = plan.slug;
+      await user.save();
 
-      // Update all users in this organization
-      await User.updateMany(
-        { organizationId: organization._id },
-        { $set: { selectedProfile: plan.slug } }
-      );
+      logger.info(`✅ Assigned plan ${plan.name} to user ${user.email} ONLY`);
 
-      // Update all profiles for users in this organization
-      const users = await User.find({ organizationId: organization._id }).select('_id').lean();
-      const userIds = users.map(u => u._id);
+      // Update or create profile for THIS USER ONLY
 
       const now = new Date();
       const billingCycleEnd = new Date(now);
       billingCycleEnd.setMonth(billingCycleEnd.getMonth() + 1);
 
-      // Update or create profiles
-      await Promise.all(userIds.map(async (userId) => {
-        let profile = await Profile.findOne({ userId });
-        
-        if (!profile) {
-          profile = await Profile.create({
-            userId,
-            profileType: plan.slug as any,
-            chatConversationsLimit: plan.features.chatConversations,
-            voiceMinutesLimit: plan.features.callMinutes,
-            chatConversationsUsed: 0,
-            voiceMinutesUsed: 0,
-            billingCycleStart: now,
-            billingCycleEnd,
-            isActive: true
-          });
-        } else {
-          profile.profileType = plan.slug as any;
-          profile.chatConversationsLimit = plan.features.chatConversations;
-          profile.voiceMinutesLimit = plan.features.callMinutes;
-          // Don't reset usage, just update limits
-          profile.billingCycleStart = now;
-          profile.billingCycleEnd = billingCycleEnd;
-          profile.isActive = true;
-          await profile.save();
-        }
-      }));
-
-      logger.info(`Assigned plan ${plan.slug} to organization ${organization._id}`);
+      // Update or create profile for THIS USER ONLY
+      let profile = await Profile.findOne({ userId: user._id });
+      
+      if (!profile) {
+        profile = await Profile.create({
+          userId: user._id,
+          profileType: plan.slug as any,
+          chatConversationsLimit: plan.features.chatConversations,
+          voiceMinutesLimit: plan.features.callMinutes,
+          chatConversationsUsed: 0,
+          voiceMinutesUsed: 0,
+          billingCycleStart: now,
+          billingCycleEnd,
+          isActive: true
+        });
+        logger.info(`✅ Created new profile for ${user.email}`);
+      } else {
+        profile.profileType = plan.slug as any;
+        profile.chatConversationsLimit = plan.features.chatConversations;
+        profile.voiceMinutesLimit = plan.features.callMinutes;
+        profile.billingCycleStart = now;
+        profile.billingCycleEnd = billingCycleEnd;
+        profile.isActive = true;
+        await profile.save();
+        logger.info(`✅ Updated profile for ${user.email}`);
+      }
       
       return {
-        message: 'Plan assigned successfully',
-        organization,
-        plan
+        message: 'Plan assigned successfully to individual user',
+        user: {
+          _id: user._id,
+          email: user.email,
+          name: `${user.firstName} ${user.lastName}`,
+          plan: user.selectedProfile
+        },
+        plan: {
+          _id: plan._id,
+          name: plan.name,
+          slug: plan.slug,
+          features: plan.features
+        },
+        profile: {
+          _id: profile._id,
+          limits: {
+            calls: profile.voiceMinutesLimit,
+            chats: profile.chatConversationsLimit
+          }
+        }
       };
     } catch (error: any) {
       logger.error('Failed to assign plan', { error: error.message });

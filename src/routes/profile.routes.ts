@@ -12,44 +12,71 @@ router.use(authenticate);
 
 /**
  * GET /api/v1/profile/billing
- * Get current user's billing information and usage
+ * Get current user's billing information and usage (user-based system)
  */
 router.get('/billing', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const userId = (req.user as any)?.id;
-    const organizationId = (req.user as any)?.organizationId;
+    const userId = (req.user as any)?._id || (req.user as any)?.id;
 
-    if (!organizationId) {
-      return res.status(404).json({
+    if (!userId) {
+      return res.status(401).json({
         success: false,
-        message: 'No organization found for this user'
+        message: 'User not authenticated'
       });
     }
 
-    // Get organization with plan details
-    const organization = await Organization.findById(organizationId)
-      .populate('planId')
-      .lean();
+    // Get user with their profile
+    const User = require('../models/User').default;
+    const Profile = require('../models/Profile').default;
+    const Plan = require('../models/Plan').default;
 
-    if (!organization) {
+    const user = await User.findById(userId).lean();
+    
+    if (!user) {
       return res.status(404).json({
         success: false,
-        message: 'Organization not found'
+        message: 'User not found'
       });
     }
 
-    // Get usage data
-    const usage = await usageTrackerService.getOrganizationUsage(organizationId.toString());
+    // Get user's profile (for usage tracking)
+    const profile = await Profile.findOne({ userId }).lean();
+
+    // Get plan details if user has one
+    let planDetails = null;
+    if (user.selectedProfile) {
+      planDetails = await Plan.findOne({ slug: user.selectedProfile }).lean();
+    }
+
+    // Get usage data from profile
+    const usage = {
+      callMinutes: profile?.voiceMinutesUsed || 0,
+      chatMessages: profile?.chatConversationsUsed || 0,
+      conversations: 0, // Can be calculated if needed
+      automations: profile?.automationsUsed || 0,
+      campaignSends: 0
+    };
+
+    logger.info(`✅ Billing data fetched for user: ${user.email}`);
 
     res.json({
       success: true,
-      organization: {
-        _id: organization._id,
-        name: organization.name,
-        plan: organization.plan,
-        planId: organization.planId,
-        status: organization.status
+      user: {
+        _id: user._id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        selectedProfile: user.selectedProfile || 'free'
       },
+      plan: planDetails,
+      profile: profile ? {
+        profileType: profile.profileType,
+        chatConversationsLimit: profile.chatConversationsLimit,
+        voiceMinutesLimit: profile.voiceMinutesLimit,
+        chatConversationsUsed: profile.chatConversationsUsed,
+        voiceMinutesUsed: profile.voiceMinutesUsed,
+        automationsUsed: profile.automationsUsed || 0
+      } : null,
       usage
     });
   } catch (error: any) {
