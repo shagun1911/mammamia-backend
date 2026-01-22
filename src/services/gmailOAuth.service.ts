@@ -30,7 +30,7 @@ export class GmailOAuthService {
       
       // Build callback URL for our backend - use ngrok URL as specified
       // Include organizationId and userId as query params so we can save the integration
-      const ngrokBackendUrl = 'https://semimanagerially-nonconstructive-gerry.ngrok-free.dev';
+      const ngrokBackendUrl = 'https://aisteinai-backend-2026.onrender.com';
       const callbackUrl = `${ngrokBackendUrl}/api/v1/social-integrations/gmail/oauth/callback?organizationId=${organizationId}&userId=${userId}`;
       
       // Python API flow:
