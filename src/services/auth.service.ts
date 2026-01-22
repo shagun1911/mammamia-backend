@@ -61,6 +61,65 @@ export class AuthService {
     }
   }
 
+  // Signup
+  async signup(name: string, email: string, password: string) {
+    console.log('[Auth] Signup attempt:', { email, hasPassword: !!password });
+    
+    // Check if user already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      console.log('[Auth] User already exists:', { email });
+      throw new AppError(400, 'USER_EXISTS', 'User with this email already exists');
+    }
+
+    // Split name into firstName and lastName
+    const nameParts = name.trim().split(/\s+/);
+    const firstName = nameParts[0] || name;
+    const lastName = nameParts.slice(1).join(' ') || '';
+
+    // Create new user
+    const user = new User({
+      email,
+      password, // Will be hashed by pre-save hook
+      firstName,
+      lastName,
+      role: 'operator',
+      status: 'active',
+      provider: 'local'
+    });
+
+    await user.save();
+
+    console.log('[Auth] Signup successful:', { email, userId: user._id });
+
+    const userId = (user._id as any).toString();
+    const accessToken = this.generateAccessToken(userId);
+    const refreshToken = this.generateRefreshToken(userId);
+
+    await this.storeRefreshToken(userId, refreshToken);
+
+    // Update last active
+    user.lastActiveAt = new Date();
+    await user.save();
+
+    return {
+      token: accessToken,
+      refreshToken,
+      expiresIn: 3600, // 1 hour in seconds
+      user: {
+        id: user._id,
+        email: user.email,
+        name: `${user.firstName} ${user.lastName}`,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        avatar: user.avatar,
+        role: user.role,
+        isAdmin: user.role === 'admin',
+        organizationId: user.organizationId
+      }
+    };
+  }
+
   // Login
   async login(email: string, password: string) {
     console.log('[Auth] Login attempt:', { email, hasPassword: !!password });
