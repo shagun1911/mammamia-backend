@@ -11,10 +11,12 @@ export class ConversationService {
   async findAll(filters: any = {}, page = 1, limit = 20) {
     const query: any = {};
 
-    // Only add organizationId filter if provided (for multi-tenant support)
-    if (filters.organizationId) {
-      query.organizationId = filters.organizationId;
+    // CRITICAL: ALWAYS filter by organizationId - REQUIRED for data isolation
+    // If organizationId is not provided, throw error (should never happen)
+    if (!filters.organizationId) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'organizationId is required for data isolation');
     }
+    query.organizationId = filters.organizationId;
 
     if (filters.status) query.status = filters.status;
     if (filters.channel) {
@@ -33,13 +35,16 @@ export class ConversationService {
     if (filters.label) query.labels = filters.label;
 
     if (filters.search) {
-      const customers = await Customer.find({
+      // CRITICAL: Filter customers by organizationId to prevent cross-tenant data leakage
+      const customerQuery: any = {
+        organizationId: filters.organizationId,
         $or: [
           { name: { $regex: filters.search, $options: 'i' } },
           { email: { $regex: filters.search, $options: 'i' } },
           { phone: { $regex: filters.search, $options: 'i' } }
         ]
-      });
+      };
+      const customers = await Customer.find(customerQuery);
       query.customerId = { $in: customers.map(c => c._id) };
     }
 
@@ -103,7 +108,7 @@ export class ConversationService {
   }
 
   // Get conversation by ID with all messages
-  async findById(conversationId: string) {
+  async findById(conversationId: string, organizationId: string) {
     console.log(`[Conversation Service] Fetching conversation: ${conversationId}`);
     
     const conversation = await Conversation.findById(conversationId)
@@ -113,6 +118,14 @@ export class ConversationService {
 
     if (!conversation) {
       throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
+    }
+
+    // CRITICAL: Verify ownership - conversation must belong to user's organization
+    const convOrgId = (conversation as any).organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (convOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
 
     console.log(`[Conversation Service] Found conversation for customer: ${(conversation as any).customerId?.name}`);
@@ -152,11 +165,19 @@ export class ConversationService {
   }
 
   // Create new message
-  async addMessage(conversationId: string, messageData: any) {
+  async addMessage(conversationId: string, messageData: any, organizationId: string) {
     const conversation = await Conversation.findById(conversationId);
 
     if (!conversation) {
       throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
+    }
+
+    // CRITICAL: Verify ownership - conversation must belong to user's organization
+    const convOrgId = conversation.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (convOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
 
     const message = await Message.create({
@@ -211,13 +232,21 @@ export class ConversationService {
   }
 
   // Send reply to customer (via appropriate channel)
-  async sendReply(conversationId: string, messageText: string, operatorId?: string, attachments: any[] = []) {
+  async sendReply(conversationId: string, messageText: string, organizationId: string, operatorId?: string, attachments: any[] = []) {
     const conversation = await Conversation.findById(conversationId)
       .populate('customerId')
       .lean();
 
     if (!conversation) {
       throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
+    }
+
+    // CRITICAL: Verify ownership - conversation must belong to user's organization
+    const convOrgId = (conversation as any).organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (convOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
 
     const customer = conversation.customerId as any;
@@ -338,8 +367,22 @@ export class ConversationService {
   }
 
   // Take manual control
-  async takeControl(conversationId: string, operatorId: string) {
-    const conversation = await Conversation.findByIdAndUpdate(
+  async takeControl(conversationId: string, operatorId: string, organizationId: string) {
+    const conversation = await Conversation.findById(conversationId);
+
+    if (!conversation) {
+      throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
+    }
+
+    // CRITICAL: Verify ownership - conversation must belong to user's organization
+    const convOrgId = conversation.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (convOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
+    }
+
+    const updated = await Conversation.findByIdAndUpdate(
       conversationId,
       {
         isAiManaging: false,
@@ -348,64 +391,98 @@ export class ConversationService {
       { new: true }
     );
 
+    return updated!;
+  }
+
+  // Release control back to AI
+  async releaseControl(conversationId: string, organizationId: string) {
+    const conversation = await Conversation.findById(conversationId);
+
     if (!conversation) {
       throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
     }
 
-    return conversation;
-  }
+    // CRITICAL: Verify ownership - conversation must belong to user's organization
+    const convOrgId = conversation.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (convOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
+    }
 
-  // Release control back to AI
-  async releaseControl(conversationId: string) {
-    const conversation = await Conversation.findByIdAndUpdate(
+    const updated = await Conversation.findByIdAndUpdate(
       conversationId,
       { isAiManaging: true },
       { new: true }
     );
 
+    return updated!;
+  }
+
+  // Update conversation status
+  async updateStatus(conversationId: string, status: string, organizationId: string) {
+    const conversation = await Conversation.findById(conversationId);
+
     if (!conversation) {
       throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
     }
 
-    return conversation;
-  }
+    // CRITICAL: Verify ownership - conversation must belong to user's organization
+    const convOrgId = conversation.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (convOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
+    }
 
-  // Update conversation status
-  async updateStatus(conversationId: string, status: string) {
-    const conversation = await Conversation.findByIdAndUpdate(
+    const updated = await Conversation.findByIdAndUpdate(
       conversationId,
       { status },
       { new: true }
     );
 
+    return updated!;
+  }
+
+  // Assign operator
+  async assignOperator(conversationId: string, operatorId: string | null, organizationId: string) {
+    const conversation = await Conversation.findById(conversationId);
+
     if (!conversation) {
       throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
     }
 
-    return conversation;
-  }
+    // CRITICAL: Verify ownership - conversation must belong to user's organization
+    const convOrgId = conversation.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (convOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
+    }
 
-  // Assign operator
-  async assignOperator(conversationId: string, operatorId: string | null) {
-    const conversation = await Conversation.findByIdAndUpdate(
+    const updated = await Conversation.findByIdAndUpdate(
       conversationId,
       { assignedOperatorId: operatorId },
       { new: true }
     );
 
-    if (!conversation) {
-      throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
-    }
-
-    return conversation;
+    return updated!;
   }
 
   // Add/remove labels
-  async updateLabels(conversationId: string, add: string[] = [], remove: string[] = []) {
+  async updateLabels(conversationId: string, add: string[] = [], remove: string[] = [], organizationId: string) {
     const conversation = await Conversation.findById(conversationId);
 
     if (!conversation) {
       throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
+    }
+
+    // CRITICAL: Verify ownership - conversation must belong to user's organization
+    const convOrgId = conversation.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (convOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
 
     if (add.length > 0) {
@@ -421,43 +498,72 @@ export class ConversationService {
   }
 
   // Move to folder
-  async moveToFolder(conversationId: string, folderId: string | null) {
-    const conversation = await Conversation.findByIdAndUpdate(
+  async moveToFolder(conversationId: string, folderId: string | null, organizationId: string) {
+    const conversation = await Conversation.findById(conversationId);
+
+    if (!conversation) {
+      throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
+    }
+
+    // CRITICAL: Verify ownership - conversation must belong to user's organization
+    const convOrgId = conversation.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (convOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
+    }
+
+    const updated = await Conversation.findByIdAndUpdate(
       conversationId,
       { folderId: folderId || null },
       { new: true }
     );
 
+    return updated!;
+  }
+
+  // Toggle bookmark
+  async toggleBookmark(conversationId: string, isBookmarked: boolean, organizationId: string) {
+    const conversation = await Conversation.findById(conversationId);
+
     if (!conversation) {
       throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
     }
 
-    return conversation;
-  }
+    // CRITICAL: Verify ownership - conversation must belong to user's organization
+    const convOrgId = conversation.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (convOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
+    }
 
-  // Toggle bookmark
-  async toggleBookmark(conversationId: string, isBookmarked: boolean) {
-    const conversation = await Conversation.findByIdAndUpdate(
+    const updated = await Conversation.findByIdAndUpdate(
       conversationId,
       { isBookmarked },
       { new: true }
     );
 
-    if (!conversation) {
-      throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
-    }
-
-    return conversation;
+    return updated!;
   }
 
   // Delete conversation
-  async delete(conversationId: string) {
-    const conversation = await Conversation.findByIdAndDelete(conversationId);
+  async delete(conversationId: string, organizationId: string) {
+    const conversation = await Conversation.findById(conversationId);
 
     if (!conversation) {
       throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
     }
 
+    // CRITICAL: Verify ownership - conversation must belong to user's organization
+    const convOrgId = conversation.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (convOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
+    }
+
+    await conversation.deleteOne();
     // Delete all messages
     await Message.deleteMany({ conversationId });
 
@@ -625,13 +731,18 @@ export class ConversationService {
   }
 
   // Bulk create conversations (for campaign transcripts)
-  async bulkCreate(conversationsData: any[]) {
+  async bulkCreate(conversationsData: any[], organizationId: string) {
     const created = [];
     const failed = [];
 
+    // CRITICAL: Validate all conversations have organizationId
     for (const data of conversationsData) {
       try {
-        const conversation = await Conversation.create(data);
+        // CRITICAL: Always set organizationId for data isolation
+        const conversation = await Conversation.create({
+          ...data,
+          organizationId: data.organizationId || organizationId // Use provided or fallback
+        });
         created.push(conversation);
       } catch (error: any) {
         failed.push({

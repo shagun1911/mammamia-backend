@@ -76,11 +76,19 @@ export class ContactService {
     };
   }
 
-  async findById(contactId: string) {
+  async findById(contactId: string, organizationId: string) {
     const contact = await Customer.findById(contactId).lean();
 
     if (!contact) {
       throw new AppError(404, 'NOT_FOUND', 'Contact not found');
+    }
+
+    // CRITICAL: Verify ownership - contact must belong to user's organization
+    const contactOrgId = (contact as any).organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (contactOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this contact');
     }
 
     // Get lists
@@ -188,7 +196,7 @@ export class ContactService {
     return contact;
   }
 
-  async update(contactId: string, contactData: any) {
+  async update(contactId: string, contactData: any, organizationId: string) {
     const { lists, ...updateData } = contactData;
 
     const contact = await Customer.findById(contactId);
@@ -197,11 +205,19 @@ export class ContactService {
       throw new AppError(404, 'NOT_FOUND', 'Contact not found');
     }
 
+    // CRITICAL: Verify ownership - contact must belong to user's organization
+    const contactOrgId = contact.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (contactOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this contact');
+    }
+
     // Check for duplicate email/phone in the same organization (excluding current contact)
-    const organizationId = contact.organizationId || updateData.organizationId;
+    const orgId = contact.organizationId || updateData.organizationId || organizationId;
     if (updateData.email || updateData.phone) {
       const duplicateQuery: any = { 
-        organizationId,
+        organizationId: orgId,
         _id: { $ne: contactId }
       };
       
@@ -238,27 +254,35 @@ export class ContactService {
     return contact;
   }
 
-  async delete(contactId: string) {
+  async delete(contactId: string, organizationId: string) {
     const contact = await Customer.findById(contactId);
 
     if (!contact) {
       throw new AppError(404, 'NOT_FOUND', 'Contact not found');
     }
 
+    // CRITICAL: Verify ownership - contact must belong to user's organization
+    const contactOrgId = contact.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (contactOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this contact');
+    }
+
     // Trigger automation for contact deleted (before deletion)
-    // Get organizationId from contact before deletion
-    const contactOrgId = (contact as any).organizationId;
+    // Use the organizationId we already have (contactOrgId is already a string)
+    const contactOrgIdForAutomation = contact.organizationId;
     automationEngine.triggerByEvent('keplero_contact_deleted', {
       event: 'contact_deleted',
       contactId: contact._id,
-      organizationId: contactOrgId,
+      organizationId: contactOrgIdForAutomation,
       contact: {
         name: contact.name,
         email: contact.email,
         phone: contact.phone
       }
     }, {
-      organizationId: contactOrgId
+      organizationId: contactOrgIdForAutomation
     }).catch(err => console.error('Automation trigger error:', err));
 
     // Delete the contact

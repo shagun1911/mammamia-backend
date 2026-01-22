@@ -40,7 +40,11 @@ export class ContactController {
 
   getById = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const contact = await this.contactService.findById(req.params.contactId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const contact = await this.contactService.findById(req.params.contactId, organizationId.toString());
       res.json(successResponse(contact));
     } catch (error) {
       next(error);
@@ -70,7 +74,11 @@ export class ContactController {
 
   update = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const contact = await this.contactService.update(req.params.contactId, req.body);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const contact = await this.contactService.update(req.params.contactId, req.body, organizationId.toString());
       res.json(successResponse(contact, 'Contact updated'));
     } catch (error) {
       next(error);
@@ -79,7 +87,11 @@ export class ContactController {
 
   delete = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const result = await this.contactService.delete(req.params.contactId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const result = await this.contactService.delete(req.params.contactId, organizationId.toString());
       res.json(successResponse(result));
     } catch (error) {
       next(error);

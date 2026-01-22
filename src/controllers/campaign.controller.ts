@@ -38,7 +38,11 @@ export class CampaignController {
 
   getById = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const campaign = await this.campaignService.findById(req.params.campaignId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const campaign = await this.campaignService.findById(req.params.campaignId, organizationId.toString());
       res.json(successResponse(campaign));
     } catch (error) {
       next(error);
@@ -56,7 +60,11 @@ export class CampaignController {
 
   update = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const campaign = await this.campaignService.update(req.params.campaignId, req.body);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const campaign = await this.campaignService.update(req.params.campaignId, req.body, organizationId.toString());
       res.json(successResponse(campaign, 'Campaign updated'));
     } catch (error) {
       next(error);
@@ -65,7 +73,11 @@ export class CampaignController {
 
   delete = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const result = await this.campaignService.delete(req.params.campaignId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const result = await this.campaignService.delete(req.params.campaignId, organizationId.toString());
       res.json(successResponse(result));
     } catch (error) {
       next(error);
@@ -74,7 +86,11 @@ export class CampaignController {
 
   cancel = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const campaign = await this.campaignService.cancel(req.params.campaignId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const campaign = await this.campaignService.cancel(req.params.campaignId, organizationId.toString());
       res.json(successResponse(campaign, 'Campaign cancelled'));
     } catch (error) {
       next(error);
@@ -84,7 +100,11 @@ export class CampaignController {
   start = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user!.id;
-      const result = await this.campaignService.start(req.params.campaignId, userId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const result = await this.campaignService.start(req.params.campaignId, userId, organizationId.toString());
       res.json(successResponse(result, 'Campaign started successfully'));
     } catch (error) {
       next(error);
@@ -93,7 +113,11 @@ export class CampaignController {
 
   pause = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const campaign = await this.campaignService.pause(req.params.campaignId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const campaign = await this.campaignService.pause(req.params.campaignId, organizationId.toString());
       res.json(successResponse(campaign, 'Campaign paused successfully'));
     } catch (error) {
       next(error);
@@ -103,7 +127,11 @@ export class CampaignController {
   resume = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user!.id;
-      const campaign = await this.campaignService.resume(req.params.campaignId, userId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const campaign = await this.campaignService.resume(req.params.campaignId, userId, organizationId.toString());
       res.json(successResponse(campaign, 'Campaign resumed successfully'));
     } catch (error) {
       next(error);
@@ -113,7 +141,11 @@ export class CampaignController {
   retryFailed = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user!.id;
-      const campaign = await this.campaignService.retryFailed(req.params.campaignId, userId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const campaign = await this.campaignService.retryFailed(req.params.campaignId, userId, organizationId.toString());
       res.json(successResponse(campaign, 'Retrying failed recipients'));
     } catch (error) {
       next(error);
@@ -122,7 +154,11 @@ export class CampaignController {
 
   getProgress = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const campaign = await this.campaignService.findById(req.params.campaignId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const campaign = await this.campaignService.findById(req.params.campaignId, organizationId.toString());
       const progress = {
         totalRecipients: campaign.totalRecipients || 0,
         sentCount: campaign.sentCount || 0,
@@ -143,7 +179,11 @@ export class CampaignController {
 
   getAnalytics = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const analytics = await this.campaignService.getAnalytics(req.params.campaignId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const analytics = await this.campaignService.getAnalytics(req.params.campaignId, organizationId.toString());
       res.json(successResponse(analytics));
     } catch (error) {
       next(error);

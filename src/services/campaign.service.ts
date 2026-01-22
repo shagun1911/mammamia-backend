@@ -190,13 +190,26 @@ export class CampaignService {
     };
   }
 
-  async findById(campaignId: string) {
+  async findById(campaignId: string, organizationId: string) {
     const campaign = await Campaign.findById(campaignId)
-      .populate('listId', 'name')
+      .populate('listId', 'name organizationId')
       .lean();
 
     if (!campaign) {
       throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
+    // CRITICAL: Verify ownership - campaign's list must belong to user's organization
+    const list = await ContactList.findById((campaign as any).listId);
+    if (!list) {
+      throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
+    }
+    
+    const listOrgId = list.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (listOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
 
     const stats = await this.getCampaignStats(campaignId);
@@ -277,11 +290,24 @@ export class CampaignService {
     }
   }
 
-  async update(campaignId: string, campaignData: any) {
+  async update(campaignId: string, campaignData: any, organizationId: string) {
     const campaign = await Campaign.findById(campaignId);
 
     if (!campaign) {
       throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
+    // CRITICAL: Verify ownership - campaign's list must belong to user's organization
+    const list = await ContactList.findById(campaign.listId);
+    if (!list) {
+      throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
+    }
+    
+    const listOrgId = list.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (listOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
 
     // Can only update draft or scheduled campaigns
@@ -295,11 +321,24 @@ export class CampaignService {
     return campaign;
   }
 
-  async delete(campaignId: string) {
+  async delete(campaignId: string, organizationId: string) {
     const campaign = await Campaign.findById(campaignId);
 
     if (!campaign) {
       throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
+    // CRITICAL: Verify ownership - campaign's list must belong to user's organization
+    const list = await ContactList.findById(campaign.listId);
+    if (!list) {
+      throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
+    }
+    
+    const listOrgId = list.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (listOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
 
     // Can only delete draft campaigns
@@ -313,11 +352,24 @@ export class CampaignService {
     return { message: 'Campaign deleted successfully' };
   }
 
-  async pause(campaignId: string) {
+  async pause(campaignId: string, organizationId: string) {
     const campaign = await Campaign.findById(campaignId);
 
     if (!campaign) {
       throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
+    // CRITICAL: Verify ownership - campaign's list must belong to user's organization
+    const list = await ContactList.findById(campaign.listId);
+    if (!list) {
+      throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
+    }
+    
+    const listOrgId = list.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (listOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
 
     if (campaign.status !== 'running') {
@@ -331,10 +383,10 @@ export class CampaignService {
     await this.addCampaignLog(campaign, 'warning', 'Campaign paused by user');
     
     // Get organizationId from listId
-    const list = await ContactList.findById(campaign.listId);
-    const organizationId = list?.organizationId?.toString() || '';
-    if (organizationId) {
-      emitToOrganization(organizationId, 'campaign:status', {
+    const listForEmit = await ContactList.findById(campaign.listId);
+    const listOrgIdForEmit = listForEmit?.organizationId?.toString() || '';
+    if (listOrgIdForEmit) {
+      emitToOrganization(listOrgIdForEmit, 'campaign:status', {
         campaignId: campaign._id.toString(),
         status: 'paused',
         progress: this.calculateProgress(campaign),
@@ -348,11 +400,24 @@ export class CampaignService {
     return campaign;
   }
 
-  async resume(campaignId: string, userId: string) {
+  async resume(campaignId: string, userId: string, organizationId: string) {
     const campaign = await Campaign.findById(campaignId);
 
     if (!campaign) {
       throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
+    // CRITICAL: Verify ownership - campaign's list must belong to user's organization
+    const list = await ContactList.findById(campaign.listId);
+    if (!list) {
+      throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
+    }
+    
+    const listOrgId = list.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (listOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
 
     if (campaign.status !== 'paused') {
@@ -365,10 +430,10 @@ export class CampaignService {
     await this.addCampaignLog(campaign, 'info', 'Campaign resumed by user');
     
     // Get organizationId from listId
-    const list = await ContactList.findById(campaign.listId);
-    const organizationId = list?.organizationId?.toString() || '';
-    if (organizationId) {
-      emitToOrganization(organizationId, 'campaign:status', {
+    const listForEmit = await ContactList.findById(campaign.listId);
+    const listOrgIdForEmit = listForEmit?.organizationId?.toString() || '';
+    if (listOrgIdForEmit) {
+      emitToOrganization(listOrgIdForEmit, 'campaign:status', {
         campaignId: campaign._id.toString(),
         status: 'running',
         progress: this.calculateProgress(campaign),
@@ -386,11 +451,24 @@ export class CampaignService {
     return campaign;
   }
 
-  async retryFailed(campaignId: string, userId: string) {
+  async retryFailed(campaignId: string, userId: string, organizationId: string) {
     const campaign = await Campaign.findById(campaignId);
 
     if (!campaign) {
       throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
+    // CRITICAL: Verify ownership - campaign's list must belong to user's organization
+    const list = await ContactList.findById(campaign.listId);
+    if (!list) {
+      throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
+    }
+    
+    const listOrgId = list.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (listOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
 
     if (campaign.failedCount === 0 || (campaign.failedCount || 0) === 0) {
@@ -418,9 +496,8 @@ export class CampaignService {
     // Process failed recipients
     const contacts = failedRecipients.map(r => r.contactId).filter(Boolean);
     
-    // Get organizationId from listId
-    const list = await ContactList.findById(campaign.listId);
-    const organizationId = list?.organizationId?.toString() || '';
+    // Get organizationId from listId (use parameter, not local variable)
+    // organizationId is already available as parameter
 
     // Process each failed contact
     for (const contact of contacts) {
@@ -463,11 +540,24 @@ export class CampaignService {
     return Math.round((processed / total) * 100);
   }
 
-  async cancel(campaignId: string) {
+  async cancel(campaignId: string, organizationId: string) {
     const campaign = await Campaign.findById(campaignId);
 
     if (!campaign) {
       throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
+    // CRITICAL: Verify ownership - campaign's list must belong to user's organization
+    const list = await ContactList.findById(campaign.listId);
+    if (!list) {
+      throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
+    }
+    
+    const listOrgId = list.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (listOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
 
     if (!['scheduled', 'running', 'paused'].includes(campaign.status)) {
@@ -481,10 +571,10 @@ export class CampaignService {
     await this.addCampaignLog(campaign, 'warning', 'Campaign cancelled by user');
 
     // Get organizationId from listId
-    const list = await ContactList.findById(campaign.listId);
-    const organizationId = list?.organizationId?.toString() || '';
-    if (organizationId) {
-      emitToOrganization(organizationId, 'campaign:status', {
+    const listForEmit = await ContactList.findById(campaign.listId);
+    const listOrgIdForEmit = listForEmit?.organizationId?.toString() || '';
+    if (listOrgIdForEmit) {
+      emitToOrganization(listOrgIdForEmit, 'campaign:status', {
         campaignId: campaign._id.toString(),
         status: 'failed',
         progress: this.calculateProgress(campaign),
@@ -498,11 +588,24 @@ export class CampaignService {
     return campaign;
   }
 
-  async start(campaignId: string, userId: string) {
+  async start(campaignId: string, userId: string, organizationId: string) {
     const campaign = await Campaign.findById(campaignId);
 
     if (!campaign) {
       throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
+    // CRITICAL: Verify ownership - campaign's list must belong to user's organization
+    const list = await ContactList.findById(campaign.listId);
+    if (!list) {
+      throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
+    }
+    
+    const listOrgId = list.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (listOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
 
     // Can only start draft or scheduled campaigns
@@ -535,10 +638,8 @@ export class CampaignService {
     // Add initial log
     await this.addCampaignLog(campaign, 'info', `Campaign started for ${contacts.length} contacts`);
     
-    // Get organizationId from listId
-    const list = await ContactList.findById(campaign.listId);
-    const organizationId = list?.organizationId?.toString() || userId;
-    emitToOrganization(organizationId, 'campaign:status', {
+    // Use organizationId parameter directly
+    emitToOrganization(organizationId.toString(), 'campaign:status', {
       campaignId: campaign._id.toString(),
       status: 'running',
       progress: 0,
@@ -792,7 +893,8 @@ export class CampaignService {
                   await this.saveTranscriptAsConversation(
                     String(contact._id),
                     contactResult.transcript,
-                    String(campaign._id)
+                    String(campaign._id),
+                    organizationId.toString()
                   );
                   console.log(`[Campaign ${campaignId}] Saved transcript for ${contact.name}`);
                 } catch (transcriptError: any) {
@@ -956,15 +1058,12 @@ export class CampaignService {
         }
 
         // Update progress and add logs
-        // Get organizationId from listId
-        const contactList = await ContactList.findById(campaign.listId);
-        const organizationId = contactList?.organizationId?.toString() || userId;
-        
+        // Use organizationId parameter directly
         if (anySuccess) {
-          await this.updateCampaignProgress(campaign, organizationId, { sentCount: 1, pendingCount: -1 });
+          await this.updateCampaignProgress(campaign, organizationId.toString(), { sentCount: 1, pendingCount: -1 });
           await this.addCampaignLog(campaign, 'success', `Message sent to ${contact.name} (${contact.email || contact.phone})`);
         } else {
-          await this.updateCampaignProgress(campaign, organizationId, { failedCount: 1, pendingCount: -1 });
+          await this.updateCampaignProgress(campaign, organizationId.toString(), { failedCount: 1, pendingCount: -1 });
           await this.addCampaignLog(campaign, 'error', `Failed to send to ${contact.name} (${contact.email || contact.phone})`, {
             errors: contactResult.errors
           });
@@ -1040,11 +1139,13 @@ export class CampaignService {
   private async saveTranscriptAsConversation(
     customerId: string,
     transcript: Record<string, any>,
-    campaignId: string
+    campaignId: string,
+    organizationId: string
   ) {
     try {
       console.log(`[Transcript] Raw transcript structure:`, JSON.stringify(transcript, null, 2));
       
+      // CRITICAL: Always set organizationId for data isolation
       // Create conversation
       const conversation = await Conversation.create({
         customerId,
@@ -1052,6 +1153,7 @@ export class CampaignService {
         status: 'closed',
         transcript,
         campaignId,
+        organizationId, // CRITICAL: Always set organizationId
         isAiManaging: true,
         unread: false,
       });
@@ -1169,11 +1271,24 @@ export class CampaignService {
     }
   }
 
-  async getAnalytics(campaignId: string) {
+  async getAnalytics(campaignId: string, organizationId: string) {
     const campaign = await Campaign.findById(campaignId);
 
     if (!campaign) {
       throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
+    // CRITICAL: Verify ownership - campaign's list must belong to user's organization
+    const list = await ContactList.findById(campaign.listId);
+    if (!list) {
+      throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
+    }
+    
+    const listOrgId = list.organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (listOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
 
     const recipients = await CampaignRecipient.find({ campaignId }).lean();

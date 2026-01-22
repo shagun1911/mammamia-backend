@@ -19,11 +19,19 @@ export class AutomationService {
     return automations;
   }
 
-  async findById(automationId: string) {
+  async findById(automationId: string, organizationId: string) {
     const automation = await Automation.findById(automationId).lean();
 
     if (!automation) {
       throw new AppError(404, 'NOT_FOUND', 'Automation not found');
+    }
+
+    // CRITICAL: Verify ownership - automation must belong to user's organization
+    const autoOrgId = (automation as any).organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (autoOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this automation');
     }
 
     return automation;
@@ -34,44 +42,73 @@ export class AutomationService {
     return automation;
   }
 
-  async update(automationId: string, automationData: any) {
-    const automation = await Automation.findByIdAndUpdate(
+  async update(automationId: string, automationData: any, organizationId: string) {
+    const automation = await Automation.findById(automationId);
+
+    if (!automation) {
+      throw new AppError(404, 'NOT_FOUND', 'Automation not found');
+    }
+
+    // CRITICAL: Verify ownership - automation must belong to user's organization
+    const autoOrgId = (automation as any).organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (autoOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this automation');
+    }
+
+    const updated = await Automation.findByIdAndUpdate(
       automationId,
       automationData,
       { new: true }
     );
 
-    if (!automation) {
-      throw new AppError(404, 'NOT_FOUND', 'Automation not found');
-    }
-
-    return automation;
+    return updated!;
   }
 
-  async delete(automationId: string) {
-    const automation = await Automation.findByIdAndDelete(automationId);
+  async delete(automationId: string, organizationId: string) {
+    const automation = await Automation.findById(automationId);
 
     if (!automation) {
       throw new AppError(404, 'NOT_FOUND', 'Automation not found');
     }
 
+    // CRITICAL: Verify ownership - automation must belong to user's organization
+    const autoOrgId = (automation as any).organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (autoOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this automation');
+    }
+
+    await automation.deleteOne();
     await AutomationExecution.deleteMany({ automationId });
 
     return { message: 'Automation deleted successfully' };
   }
 
-  async toggle(automationId: string, isActive: boolean) {
-    const automation = await Automation.findByIdAndUpdate(
-      automationId,
-      { isActive },
-      { new: true }
-    );
+  async toggle(automationId: string, isActive: boolean, organizationId: string) {
+    const automation = await Automation.findById(automationId);
 
     if (!automation) {
       throw new AppError(404, 'NOT_FOUND', 'Automation not found');
     }
 
-    return automation;
+    // CRITICAL: Verify ownership - automation must belong to user's organization
+    const autoOrgId = (automation as any).organizationId?.toString();
+    const userOrgId = organizationId.toString();
+    
+    if (autoOrgId !== userOrgId) {
+      throw new AppError(403, 'FORBIDDEN', 'You do not have access to this automation');
+    }
+
+    const updated = await Automation.findByIdAndUpdate(
+      automationId,
+      { isActive },
+      { new: true }
+    );
+
+    return updated!;
   }
 
   async getExecutionLogs(automationId: string, page = 1, limit = 20, filters: any = {}) {

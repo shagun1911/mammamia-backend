@@ -16,15 +16,17 @@ export class ConversationController {
     try {
       const { page = 1, limit = 20, ...filters } = req.query;
       
-      // CRITICAL: Filter by organization to ensure data isolation
-      const orgFilters: any = {
-        ...filters
-      };
-      
-      // Only add organizationId filter if it exists (for multi-tenant support)
-      if (req.user.organizationId) {
-        orgFilters.organizationId = req.user.organizationId.toString();
+      // CRITICAL: ALWAYS filter by organization/user to ensure data isolation
+      // Use organizationId if available, otherwise fallback to userId
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID or User ID not found');
       }
+      
+      const orgFilters: any = {
+        ...filters,
+        organizationId: organizationId.toString() // ALWAYS set organizationId
+      };
       
       const result = await this.conversationService.findAll(
         orgFilters,
@@ -44,7 +46,11 @@ export class ConversationController {
 
   getById = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const conversation = await this.conversationService.findById(req.params.conversationId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const conversation = await this.conversationService.findById(req.params.conversationId, organizationId.toString());
       res.json(successResponse(conversation));
     } catch (error) {
       next(error);
@@ -87,11 +93,17 @@ export class ConversationController {
         }
       }
       
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      
       // Use sendReply for operator messages to send via appropriate channel (WhatsApp/Instagram/Facebook)
       if (sender === 'operator' && (text || attachments.length > 0)) {
         const message = await this.conversationService.sendReply(
           req.params.conversationId,
           text || (attachments.length > 0 ? '[File attachment]' : ''),
+          organizationId.toString(),
           operatorId,
           attachments
         );
@@ -104,7 +116,8 @@ export class ConversationController {
             ...req.body,
             operatorId,
             attachments
-          }
+          },
+          organizationId.toString()
         );
         res.json(successResponse(message, 'Message added'));
       }
@@ -115,9 +128,14 @@ export class ConversationController {
 
   takeControl = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
       const conversation = await this.conversationService.takeControl(
         req.params.conversationId,
-        req.user._id
+        req.user._id,
+        organizationId.toString()
       );
       res.json(successResponse(conversation, 'Control taken'));
     } catch (error) {
@@ -127,8 +145,13 @@ export class ConversationController {
 
   releaseControl = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
       const conversation = await this.conversationService.releaseControl(
-        req.params.conversationId
+        req.params.conversationId,
+        organizationId.toString()
       );
       res.json(successResponse(conversation, 'Control released'));
     } catch (error) {
@@ -138,9 +161,14 @@ export class ConversationController {
 
   updateStatus = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
       const conversation = await this.conversationService.updateStatus(
         req.params.conversationId,
-        req.body.status
+        req.body.status,
+        organizationId.toString()
       );
       res.json(successResponse(conversation, 'Status updated'));
     } catch (error) {
@@ -150,9 +178,14 @@ export class ConversationController {
 
   assignOperator = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
       const conversation = await this.conversationService.assignOperator(
         req.params.conversationId,
-        req.body.operatorId
+        req.body.operatorId,
+        organizationId.toString()
       );
       res.json(successResponse(conversation, 'Operator assigned'));
     } catch (error) {
@@ -162,10 +195,15 @@ export class ConversationController {
 
   updateLabels = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
       const conversation = await this.conversationService.updateLabels(
         req.params.conversationId,
         req.body.add,
-        req.body.remove
+        req.body.remove,
+        organizationId.toString()
       );
       res.json(successResponse(conversation, 'Labels updated'));
     } catch (error) {
@@ -175,9 +213,14 @@ export class ConversationController {
 
   moveToFolder = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
       const conversation = await this.conversationService.moveToFolder(
         req.params.conversationId,
-        req.body.folderId
+        req.body.folderId,
+        organizationId.toString()
       );
       res.json(successResponse(conversation, 'Moved to folder'));
     } catch (error) {
@@ -187,9 +230,14 @@ export class ConversationController {
 
   toggleBookmark = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
       const conversation = await this.conversationService.toggleBookmark(
         req.params.conversationId,
-        req.body.isBookmarked ?? true
+        req.body.isBookmarked ?? true,
+        organizationId.toString()
       );
       res.json(successResponse(conversation, conversation.isBookmarked ? 'Bookmarked' : 'Unbookmarked'));
     } catch (error) {
@@ -199,7 +247,11 @@ export class ConversationController {
 
   delete = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const result = await this.conversationService.delete(req.params.conversationId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const result = await this.conversationService.delete(req.params.conversationId, organizationId.toString());
       res.json(successResponse(result));
     } catch (error) {
       next(error);
@@ -208,7 +260,11 @@ export class ConversationController {
 
   bulkCreate = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const result = await this.conversationService.bulkCreate(req.body.conversations);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID or User ID not found');
+      }
+      const result = await this.conversationService.bulkCreate(req.body.conversations, organizationId.toString());
       res.json(successResponse(result, 'Conversations created'));
     } catch (error) {
       next(error);

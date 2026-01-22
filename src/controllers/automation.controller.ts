@@ -23,7 +23,11 @@ export class AutomationController {
 
   getById = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const automation = await this.automationService.findById(req.params.automationId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new Error('Organization ID not found');
+      }
+      const automation = await this.automationService.findById(req.params.automationId, organizationId.toString());
       res.json(successResponse(automation));
     } catch (error) {
       next(error);
@@ -54,7 +58,11 @@ export class AutomationController {
 
   update = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const automation = await this.automationService.update(req.params.automationId, req.body);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new Error('Organization ID not found');
+      }
+      const automation = await this.automationService.update(req.params.automationId, req.body, organizationId.toString());
       res.json(successResponse(automation, 'Automation updated'));
     } catch (error) {
       next(error);
@@ -63,7 +71,11 @@ export class AutomationController {
 
   delete = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const result = await this.automationService.delete(req.params.automationId);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new Error('Organization ID not found');
+      }
+      const result = await this.automationService.delete(req.params.automationId, organizationId.toString());
       res.json(successResponse(result));
     } catch (error) {
       next(error);
@@ -73,7 +85,11 @@ export class AutomationController {
   toggle = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const { isActive } = req.body;
-      const automation = await this.automationService.toggle(req.params.automationId, isActive);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new Error('Organization ID not found');
+      }
+      const automation = await this.automationService.toggle(req.params.automationId, isActive, organizationId.toString());
       res.json(successResponse(automation, `Automation ${isActive ? 'activated' : 'deactivated'}`));
     } catch (error) {
       next(error);
