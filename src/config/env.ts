@@ -2,7 +2,7 @@ export const config = {
   env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '5000', 10),
   mongodb: {
-    uri: process.env.MONGODB_URI || 'mongodb+srv://LOVJEET:LOVJEETMONGO@cluster0.zpzj90m.mongodb.net/IslandAI'
+    uri: process.env.MONGODB_URI || 'mongodb+srv://LOVJEET:LOVJEETMONGO@cluster0.zpzj90m.mongodb.net/Aistein.It'
   },
   redis: {
     url: process.env.REDIS_URL || 'redis://localhost:6379'

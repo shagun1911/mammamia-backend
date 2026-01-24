@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
-export type ProfileType = string; // Dynamic plan slugs (free, starter, professional, enterprise, etc.)
+export type ProfileType = string; // Dynamic plan slugs (mileva-pack, nobel-pack, aistein-pro-pack, set-up, etc.)
 
 export interface IProfile extends Document {
   userId: mongoose.Types.ObjectId;
@@ -68,34 +68,21 @@ ProfileSchema.index({ userId: 1 });
 // Legacy profile limits (deprecated - use Plan model instead)
 // Kept for backwards compatibility
 export const PROFILE_LIMITS: Record<string, { chatConversations: number; voiceMinutes: number }> = {
-  mileva: {
-    chatConversations: 500,
-    voiceMinutes: 250
-  },
-  nobel: {
-    chatConversations: 1000,
-    voiceMinutes: 1000
-  },
-  aistein: {
-    chatConversations: 2000,
-    voiceMinutes: 2000
-  },
-  // New plan defaults (if Plan model lookup fails)
-  free: {
-    chatConversations: 100,
-    voiceMinutes: 100
-  },
-  starter: {
+  'mileva-pack': {
     chatConversations: 1000,
     voiceMinutes: 500
   },
-  professional: {
+  'nobel-pack': {
+    chatConversations: 2500,
+    voiceMinutes: 1000
+  },
+  'aistein-pro-pack': {
     chatConversations: 5000,
     voiceMinutes: 2000
   },
-  enterprise: {
-    chatConversations: -1, // unlimited
-    voiceMinutes: -1 // unlimited
+  'set-up': {
+    chatConversations: 0,
+    voiceMinutes: 0
   }
 };
 

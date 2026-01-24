@@ -7,7 +7,7 @@ export interface IOrganization extends Document {
   domain?: string;
 
   // Billing
-  plan: string; // plan slug (free | starter | professional | enterprise)
+  plan: string; // plan slug (mileva-pack | nobel-pack | aistein-pro-pack | set-up)
   planId?: mongoose.Types.ObjectId; // reference to Plan collection
 
   // Status
@@ -52,7 +52,7 @@ const OrganizationSchema = new Schema<IOrganization>(
     // 🔥 Billing fields
     plan: {
       type: String,
-      default: 'free',
+      default: 'mileva-pack',
       index: true
     },
 
@@ -94,20 +94,20 @@ OrganizationSchema.index({ planId: 1 });
 
 // ==============================
 // Pre-save Hook
-// Auto-assign FREE plan for new orgs
+// Auto-assign Mileva Pack plan for new orgs
 // ==============================
 OrganizationSchema.pre('save', async function (next) {
   if (this.isNew && !this.planId) {
     try {
-      const freePlan = await Plan.findOne({ slug: 'free' }).select('_id slug').lean();
+      const defaultPlan = await Plan.findOne({ slug: 'mileva-pack' }).select('_id slug').lean();
 
-      if (freePlan) {
-        this.plan = 'free';
-        this.planId = freePlan._id as mongoose.Types.ObjectId;
-        console.log(`✅ Auto-assigned free plan to organization: ${this.name}`);
+      if (defaultPlan) {
+        this.plan = 'mileva-pack';
+        this.planId = defaultPlan._id as mongoose.Types.ObjectId;
+        console.log(`✅ Auto-assigned mileva-pack plan to organization: ${this.name}`);
       }
     } catch (error) {
-      console.warn('⚠️ Could not auto-assign free plan:', error);
+      console.warn('⚠️ Could not auto-assign default plan:', error);
     }
   }
   next();

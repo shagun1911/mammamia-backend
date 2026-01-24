@@ -46,17 +46,17 @@ export class AdminService {
         AutomationExecution.countDocuments().lean(),
         AutomationExecution.countDocuments({ status: 'failed' }).lean(),
         GoogleIntegration.countDocuments({ status: 'active' }).lean(),
-        SocialIntegration.countDocuments({ 
-          platform: 'whatsapp', 
-          status: 'connected' 
+        SocialIntegration.countDocuments({
+          platform: 'whatsapp',
+          status: 'connected'
         }).lean(),
-        SocialIntegration.countDocuments({ 
-          platform: 'instagram', 
-          status: 'connected' 
+        SocialIntegration.countDocuments({
+          platform: 'instagram',
+          status: 'connected'
         }).lean(),
-        SocialIntegration.countDocuments({ 
-          platform: 'facebook', 
-          status: 'connected' 
+        SocialIntegration.countDocuments({
+          platform: 'facebook',
+          status: 'connected'
         }).lean(),
         Settings.countDocuments({ 'ecommerceIntegration.platform': { $exists: true, $ne: null } }).lean(),
         analyticsService.getSimpleMetrics() // All-time metrics using centralized service
@@ -383,11 +383,11 @@ export class AdminService {
       // Import automation engine and trigger execution
       const { AutomationEngine } = await import('./automationEngine.service');
       const engine = new AutomationEngine();
-      
+
       // Get organizationId from automation
       const automationDoc = await Automation.findById(automation._id).select('organizationId').lean();
       const organizationId = automationDoc?.organizationId?.toString() || '';
-      
+
       await engine.executeAutomation(
         automation._id.toString(),
         execution.triggerData || {},
@@ -500,11 +500,11 @@ export class AdminService {
   async getOrganizations(filters: any = {}) {
     try {
       const query: any = {};
-      
+
       if (filters.plan) {
         query.plan = filters.plan;
       }
-      
+
       if (filters.status) {
         query.status = filters.status;
       }
@@ -714,7 +714,7 @@ export class AdminService {
   async upgradeUserPlan(
     userId: string,
     profileType: ProfileType,
-    organizationPlan?: 'free' | 'starter' | 'professional' | 'enterprise'
+    organizationPlan?: 'mileva-pack' | 'nobel-pack' | 'aistein-pro-pack' | 'set-up'
   ) {
     try {
       const user = await User.findById(userId);
@@ -778,8 +778,7 @@ export class AdminService {
       // No organization plan update logic here
 
       logger.info(
-        `✅ Upgraded user ${userId} to profile ${profileType}${
-          organizationPlan ? ` (organization plan param ignored)` : ''
+        `✅ Upgraded user ${userId} to profile ${profileType}${organizationPlan ? ` (organization plan param ignored)` : ''
         }`
       );
 
@@ -811,11 +810,11 @@ export class AdminService {
   async getAllUsers(filters: any = {}) {
     try {
       const query: any = {};
-      
+
       if (filters.role) {
         query.role = filters.role;
       }
-      
+
       if (filters.status) {
         query.status = filters.status;
       }
@@ -933,7 +932,7 @@ export class AdminService {
         organizations.map(async (org: any) => {
           const orgUsers = await User.find({ organizationId: org._id }).select('_id').lean();
           const orgMetrics = await analyticsService.getOrganizationMetrics(org._id.toString(), dateRange);
-          
+
           return {
             _id: org._id,
             name: org.name,
@@ -964,33 +963,55 @@ export class AdminService {
    */
   async getBillingOverview() {
     try {
-      // Get all organizations with their plans
+      // 1. Get all plans to understand pricing and slugs
+      const plans = await Plan.find().lean();
+      const planMap = plans.reduce((acc, plan) => {
+        acc[plan.slug] = plan;
+        return acc;
+      }, {} as Record<string, any>);
+
+      // 2. Get all active profiles (subscriptions)
+      // This is the source of truth for paid/active plans
+      const activeProfiles = await Profile.find({ isActive: true }).lean();
+
+      // Count profiles by type to get accurate plan distribution
+      const profileBreakdown = activeProfiles.reduce((acc, profile) => {
+        // Only count if it's a known plan
+        if (planMap[profile.profileType]) {
+          acc[profile.profileType] = (acc[profile.profileType] || 0) + 1;
+        } else {
+          // Fallback or legacy plans
+          acc[profile.profileType] = (acc[profile.profileType] || 0) + 1;
+        }
+        return acc;
+      }, {} as Record<string, number>);
+
+      // 3. Get all organizations
       const organizations = await Organization.find().lean();
 
-      // Count organizations by plan
-      const planBreakdown = organizations.reduce((acc, org) => {
-        acc[org.plan] = (acc[org.plan] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>);
-
-      // Get all active profiles (subscriptions)
-      const activeProfiles = await Profile.find({ isActive: true }).lean();
-      
-      // Count profiles by type
-      const profileBreakdown = activeProfiles.reduce((acc, profile) => {
-        acc[profile.profileType] = (acc[profile.profileType] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>);
-
-      // Get organizations with billing info
+      // 4. Map organizations to their billing status based on OWNER's profile
       const organizationsWithBilling = await Promise.all(
         organizations.map(async (org: any) => {
-          const ownerProfile = await Profile.findOne({ userId: org.ownerId }).lean();
+          // Find the owner of the organization
+          const owner = await User.findOne({ organizationId: org._id, role: 'admin' }).lean(); // Assuming admin is owner or using org.ownerId if exists
+
+          let ownerProfile = null;
+          if (org.ownerId) {
+            ownerProfile = await Profile.findOne({ userId: org.ownerId }).lean();
+          } else if (owner) {
+            ownerProfile = await Profile.findOne({ userId: owner._id }).lean();
+          }
+
+          // Determine the effective plan for the organization
+          const effectivePlanSlug = ownerProfile?.profileType || org.plan || 'free';
+          const effectivePlan = planMap[effectivePlanSlug];
+
           return {
             _id: org._id,
             name: org.name,
-            plan: org.plan,
+            plan: effectivePlanSlug, // Use the profile type as the plan
             status: org.status,
+            price: effectivePlan?.price || 0,
             ownerProfile: ownerProfile ? {
               profileType: ownerProfile.profileType,
               billingCycleStart: ownerProfile.billingCycleStart,
@@ -1002,9 +1023,23 @@ export class AdminService {
         })
       );
 
+      // Re-calculate plan breakdown based on organizations to ensure alignment with frontend expectations
+      // (User asked for "real time data if i change there it should refelect here")
+      // If the frontend sums up organizations, we should make sure the breakdown matches.
+      // Actually, profiles (users) pay, not organizations directly in this model?
+      // "Assign plan to individual user" -> So we should count PROFILES.
+      // But frontend shows "Total Organizations" and "Revenue by Plan" (x orgs).
+      // If multiple users in one org have plans, it might be confusing.
+      // Assuming 1 Plan per Org (Owner's plan).
+
+      const orgPlanBreakdown = organizationsWithBilling.reduce((acc, org) => {
+        acc[org.plan] = (acc[org.plan] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+
       return {
-        planBreakdown,
-        profileBreakdown,
+        planBreakdown: orgPlanBreakdown, // Using org-based breakdown for consistency with "Revenue by Plan" cards
+        profileBreakdown, // Keep this for detailed stats if needed
         totalOrganizations: organizations.length,
         activeSubscriptions: activeProfiles.length,
         organizationsWithBilling
@@ -1062,15 +1097,15 @@ export class AdminService {
   async getAuditLogs(filters: any = {}) {
     try {
       const query: any = {};
-      
+
       if (filters.action) {
         query.action = filters.action;
       }
-      
+
       if (filters.userId) {
         query.userId = filters.userId;
       }
-      
+
       if (filters.dateFrom || filters.dateTo) {
         query.timestamp = {};
         if (filters.dateFrom) query.timestamp.$gte = new Date(filters.dateFrom);

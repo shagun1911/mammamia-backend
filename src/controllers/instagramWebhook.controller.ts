@@ -250,7 +250,7 @@ export class InstagramWebhookController {
         timestamp
       });
 
-      // Pass normalized message to KepleroAI processor (trigger AI reply if enabled)
+      // Pass normalized message to Aistein.It processor (trigger AI reply if enabled)
       if (conversation.isAiManaging) {
         console.log('[Instagram Webhook] Triggering AI auto-reply for Instagram...');
         this.triggerAIReply(conversation, messageText, integration.organizationId.toString(), senderId, recipientId).catch(err => {

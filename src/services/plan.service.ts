@@ -224,68 +224,68 @@ export class PlanService {
         
         const defaultPlans = [
           {
-            name: 'Free',
-            slug: 'free',
-            description: 'Perfect for getting started',
-            price: 0,
-            currency: 'USD',
-            features: {
-              callMinutes: 100,
-              chatConversations: 100,
-              automations: 5,
-              users: 1,
-              customFeatures: ['Basic support', '1 workspace']
-            },
-            isActive: true,
-            isDefault: true,
-            displayOrder: 1
-          },
-          {
-            name: 'Starter',
-            slug: 'starter',
-            description: 'For growing businesses',
-            price: 29,
-            currency: 'USD',
-            features: {
-              callMinutes: 500,
-              chatConversations: 1000,
-              automations: 25,
-              users: 5,
-              customFeatures: ['Priority support', '5 workspaces', 'Advanced analytics']
-            },
-            isActive: true,
-            isDefault: false,
-            displayOrder: 2
-          },
-          {
-            name: 'Professional',
-            slug: 'professional',
-            description: 'For established teams',
-            price: 99,
-            currency: 'USD',
+            name: 'Aistein Pro Pack',
+            slug: 'aistein-pro-pack',
+            description: 'Voice and Chat Artificial Intelligence Agents',
+            price: 799.00,
+            currency: 'EUR',
             features: {
               callMinutes: 2000,
               chatConversations: 5000,
               automations: 100,
               users: 20,
-              customFeatures: ['24/7 support', 'Unlimited workspaces', 'Advanced analytics', 'Custom integrations']
+              customFeatures: ['Voice and Chat AI Agents', '1 month duration']
+            },
+            isActive: true,
+            isDefault: false,
+            displayOrder: 1
+          },
+          {
+            name: 'Mileva Pack',
+            slug: 'mileva-pack',
+            description: 'Voice and Chat Artificial Intelligence Agents',
+            price: 299.99,
+            currency: 'EUR',
+            features: {
+              callMinutes: 500,
+              chatConversations: 1000,
+              automations: 25,
+              users: 5,
+              customFeatures: ['Voice and Chat AI Agents', '1 month duration']
+            },
+            isActive: true,
+            isDefault: true,
+            displayOrder: 2
+          },
+          {
+            name: 'Nobel Pack',
+            slug: 'nobel-pack',
+            description: 'Voice and Chat Artificial Intelligence Agents',
+            price: 499.00,
+            currency: 'EUR',
+            features: {
+              callMinutes: 1000,
+              chatConversations: 2500,
+              automations: 50,
+              users: 10,
+              customFeatures: ['Voice and Chat AI Agents', '1 month duration']
             },
             isActive: true,
             isDefault: false,
             displayOrder: 3
           },
           {
-            name: 'Enterprise',
-            slug: 'enterprise',
-            description: 'For large organizations',
-            price: 299,
-            currency: 'USD',
+            name: 'Set Up',
+            slug: 'set-up',
+            description: 'Voice and Chat Artificial Intelligence Agents',
+            price: 699.00,
+            currency: 'EUR',
             features: {
-              callMinutes: -1, // Unlimited
-              chatConversations: -1, // Unlimited
-              automations: -1, // Unlimited
-              users: -1, // Unlimited
-              customFeatures: ['Dedicated support', 'Unlimited workspaces', 'Advanced analytics', 'Custom integrations', 'SLA guarantee', 'On-premise option']
+              callMinutes: 0,
+              chatConversations: 0,
+              automations: 0,
+              users: 1,
+              customFeatures: ['Setup Service', 'One-time fee']
             },
             isActive: true,
             isDefault: false,

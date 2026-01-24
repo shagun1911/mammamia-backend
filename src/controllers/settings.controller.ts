@@ -10,16 +10,17 @@ export class SettingsController {
   getWidgetSettings = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { widgetId } = req.params;
-      
+
       // Service validates widgetId and throws if settings not found
       const settings = await settingsService.getWidgetSettings(widgetId);
-      
+
       // Return only public-safe settings (no sensitive data)
-      res.json(successResponse({ 
+      res.json(successResponse({
         chatbotName: settings.chatbotName || 'Support Assistant',
         chatbotAvatar: settings.chatbotAvatar || null,
         primaryColor: settings.primaryColor || '#6366f1',
-        autoReplyMessage: settings.autoReplyMessage || 'Hello! How can I help you today?'
+        autoReplyMessage: settings.autoReplyMessage || 'Hello! How can I help you today?',
+        language: settings.language || 'en'
       }));
     } catch (error) {
       next(error);
@@ -39,12 +40,12 @@ export class SettingsController {
     try {
       console.log('[Settings Update] userId:', req.user!._id);
       console.log('[Settings Update] Received data:', JSON.stringify(req.body, null, 2));
-      
+
       const settings = await settingsService.updateSettings(req.user!._id, req.body);
-      
+
       console.log('[Settings Update] Saved successfully');
       console.log('[Settings Update] defaultKnowledgeBaseName:', settings.defaultKnowledgeBaseName);
-      
+
       res.json(successResponse({ settings }));
     } catch (error) {
       next(error);
@@ -94,7 +95,7 @@ export class SettingsController {
   saveEcommerceCredentials = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user?._id.toString();
-      const { platform, base_url, api_key, api_secret, access_token} = req.body;
+      const { platform, base_url, api_key, api_secret, access_token } = req.body;
 
       console.log('[Settings Controller] Saving e-commerce credentials:', {
         userId,
