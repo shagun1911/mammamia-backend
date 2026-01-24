@@ -29,6 +29,7 @@ router.post('/login', validate(loginValidation), authController.login);
 router.post('/refresh', validate(refreshTokenValidation), authController.refreshToken);
 router.post('/logout', authenticate, authController.logout);
 router.get('/me', authenticate, authController.getCurrentUser);
+router.delete('/account', authenticate, authController.deleteAccount);
 
 // Google OAuth Routes
 router.get('/google', 

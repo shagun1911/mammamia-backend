@@ -1,7 +1,31 @@
 import jwt, { SignOptions } from 'jsonwebtoken';
+import mongoose from 'mongoose';
 import User, { IUser } from '../models/User';
 import redisClient, { isRedisAvailable } from '../config/redis';
 import { AppError } from '../middleware/error.middleware';
+import Profile from '../models/Profile';
+import Settings from '../models/Settings';
+import ApiKeys from '../models/ApiKeys';
+import SocialIntegration from '../models/SocialIntegration';
+import GoogleIntegration from '../models/GoogleIntegration';
+import PhoneSettings from '../models/PhoneSettings';
+import InboundAgentConfig from '../models/InboundAgentConfig';
+import AIBehavior from '../models/AIBehavior';
+import Tool from '../models/Tool';
+import Automation from '../models/Automation';
+import AutomationExecution from '../models/AutomationExecution';
+import KnowledgeBase from '../models/KnowledgeBase';
+import Organization from '../models/Organization';
+import Conversation from '../models/Conversation';
+import Customer from '../models/Customer';
+import Message from '../models/Message';
+import Campaign from '../models/Campaign';
+import ContactList from '../models/ContactList';
+import ContactListMember from '../models/ContactListMember';
+import CampaignRecipient from '../models/CampaignRecipient';
+import File from '../models/File';
+import Folder from '../models/Folder';
+import Label from '../models/Label';
 
 export class AuthService {
   // In-memory store as fallback when Redis is not available
@@ -284,6 +308,126 @@ export class AuthService {
       permissions: user.permissions,
       createdAt: user.createdAt
     };
+  }
+
+  // Delete account - removes all user-related data
+  async deleteAccount(userId: string) {
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+    
+    console.log('[Auth] Starting account deletion for userId:', userId);
+
+    try {
+      // Find user's organization(s) where they are the owner
+      const organizations = await Organization.find({ ownerId: userObjectId });
+      const organizationIds = organizations.map(org => org._id);
+
+      // Get knowledge base IDs before deleting them (needed for file deletion)
+      const knowledgeBaseIds = await KnowledgeBase.find({ userId: userObjectId }).distinct('_id');
+      
+      // Get automation IDs before deleting them (needed for automation execution deletion)
+      const automationIds = await Automation.find({ userId: userObjectId }).distinct('_id');
+      
+      // Delete files associated with user's knowledge bases first
+      if (knowledgeBaseIds.length > 0) {
+        const fileDeletion = await File.deleteMany({ knowledgeBaseId: { $in: knowledgeBaseIds } });
+        console.log('[Auth] Deleted files for knowledge bases:', fileDeletion.deletedCount);
+      }
+
+      // Delete automation executions associated with user's automations
+      if (automationIds.length > 0) {
+        const automationExecutionDeletion = await AutomationExecution.deleteMany({ automationId: { $in: automationIds } });
+        console.log('[Auth] Deleted automation executions:', automationExecutionDeletion.deletedCount);
+      }
+
+      // Delete all data directly linked to userId
+      const directDeletions = await Promise.all([
+        Profile.deleteMany({ userId: userObjectId }),
+        Settings.deleteMany({ userId: userObjectId }),
+        ApiKeys.deleteMany({ userId: userObjectId }),
+        SocialIntegration.deleteMany({ userId: userObjectId }),
+        GoogleIntegration.deleteMany({ userId: userObjectId }),
+        PhoneSettings.deleteMany({ userId: userObjectId }),
+        InboundAgentConfig.deleteMany({ userId: userObjectId }),
+        AIBehavior.deleteMany({ userId: userObjectId }),
+        Tool.deleteMany({ userId: userObjectId }),
+        Automation.deleteMany({ userId: userObjectId }),
+        KnowledgeBase.deleteMany({ userId: userObjectId }),
+      ]);
+
+      console.log('[Auth] Direct deletions completed:', {
+        profiles: directDeletions[0].deletedCount,
+        settings: directDeletions[1].deletedCount,
+        apiKeys: directDeletions[2].deletedCount,
+        socialIntegrations: directDeletions[3].deletedCount,
+        googleIntegrations: directDeletions[4].deletedCount,
+        phoneSettings: directDeletions[5].deletedCount,
+        inboundAgentConfigs: directDeletions[6].deletedCount,
+        aiBehaviors: directDeletions[7].deletedCount,
+        tools: directDeletions[8].deletedCount,
+        automations: directDeletions[9].deletedCount,
+        knowledgeBases: directDeletions[10].deletedCount,
+      });
+
+      // Delete data linked through organizationId (if user owns organizations)
+      if (organizationIds.length > 0) {
+        // Get all contact lists for these organizations
+        const contactLists = await ContactList.find({ organizationId: { $in: organizationIds } });
+        const contactListIds = contactLists.map(list => list._id);
+
+        // Get all campaigns for these contact lists
+        const campaigns = await Campaign.find({ listId: { $in: contactListIds } });
+        const campaignIds = campaigns.map(campaign => campaign._id);
+
+        // Delete organization-related data
+        const orgDeletions = await Promise.all([
+          // Delete conversations and their messages
+          (async () => {
+            const conversations = await Conversation.find({ organizationId: { $in: organizationIds } });
+            const conversationIds = conversations.map(conv => conv._id);
+            await Message.deleteMany({ conversationId: { $in: conversationIds } });
+            return Conversation.deleteMany({ organizationId: { $in: organizationIds } });
+          })(),
+          Customer.deleteMany({ organizationId: { $in: organizationIds } }),
+          ContactList.deleteMany({ organizationId: { $in: organizationIds } }),
+          ContactListMember.deleteMany({ listId: { $in: contactListIds } }),
+          Campaign.deleteMany({ listId: { $in: contactListIds } }),
+          CampaignRecipient.deleteMany({ campaignId: { $in: campaignIds } }),
+        ]);
+
+        console.log('[Auth] Organization-related deletions completed:', {
+          conversations: orgDeletions[0].deletedCount,
+          customers: orgDeletions[1].deletedCount,
+          contactLists: orgDeletions[2].deletedCount,
+          contactListMembers: orgDeletions[3].deletedCount,
+          campaigns: orgDeletions[4].deletedCount,
+          campaignRecipients: orgDeletions[5].deletedCount,
+        });
+
+        // Delete organizations
+        await Organization.deleteMany({ ownerId: userObjectId });
+        console.log('[Auth] Deleted organizations:', organizations.length);
+      }
+
+      // Delete messages where user is the operator
+      await Message.deleteMany({ operatorId: userObjectId });
+      console.log('[Auth] Deleted messages where user was operator');
+
+      // Delete conversations where user is assigned operator
+      await Conversation.deleteMany({ assignedOperatorId: userObjectId });
+      console.log('[Auth] Deleted conversations where user was assigned operator');
+
+      // Delete refresh token
+      await this.logout(userId);
+
+      // Finally, delete the user
+      await User.deleteOne({ _id: userObjectId });
+      console.log('[Auth] User account deleted successfully');
+
+      return { message: 'Account and all related data deleted successfully' };
+    } catch (error: any) {
+      console.error('[Auth] Error deleting account:', error);
+      throw new AppError(500, 'DELETE_ACCOUNT_ERROR', `Failed to delete account: ${error.message}`);
+    }
   }
 }
 
