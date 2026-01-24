@@ -5,11 +5,14 @@ import ContactList from '../models/ContactList';
 import Customer from '../models/Customer';
 import Conversation from '../models/Conversation';
 import Message from '../models/Message';
+import GoogleIntegration from '../models/GoogleIntegration';
+import SocialIntegration from '../models/SocialIntegration';
 import { AppError } from '../middleware/error.middleware';
 import { campaignQueue } from '../queues/campaign.queue';
 import { phoneSettingsService } from './phoneSettings.service';
 import { aiBehaviorService } from './aiBehavior.service';
-import { emailService } from './email.service';
+import { googleGmailService } from './googleGmail.service';
+import { GmailOAuthService } from './gmailOAuth.service';
 import axios from 'axios';
 import { trackUsage } from '../middleware/profileTracking.middleware';
 import { profileService } from './profile.service';
@@ -589,11 +592,14 @@ export class CampaignService {
   }
 
   async start(campaignId: string, userId: string, organizationId: string) {
+    // Refresh campaign from database to ensure we have latest status
     const campaign = await Campaign.findById(campaignId);
 
     if (!campaign) {
       throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
     }
+
+    console.log(`[Campaign ${campaignId}] Starting campaign. Current status: ${campaign.status}`);
 
     // CRITICAL: Verify ownership - campaign's list must belong to user's organization
     const list = await ContactList.findById(campaign.listId);
@@ -609,8 +615,28 @@ export class CampaignService {
     }
 
     // Can only start draft or scheduled campaigns
-    if (!['draft', 'scheduled'].includes(campaign.status)) {
-      throw new AppError(400, 'VALIDATION_ERROR', 'Campaign is not in a valid state to start');
+    // Also allow restarting completed or failed campaigns
+    if (!['draft', 'scheduled', 'completed', 'failed'].includes(campaign.status)) {
+      if (campaign.status === 'running') {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Campaign is already running');
+      }
+      if (campaign.status === 'paused') {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Campaign is paused. Please resume it instead of starting.');
+      }
+      throw new AppError(400, 'VALIDATION_ERROR', `Campaign is not in a valid state to start. Current status: ${campaign.status}`);
+    }
+
+    // Reset campaign if it was completed or failed (allow restart)
+    if (['completed', 'failed'].includes(campaign.status)) {
+      console.log(`[Campaign ${campaignId}] Resetting campaign from ${campaign.status} status for restart`);
+      campaign.sentCount = 0;
+      campaign.deliveredCount = 0;
+      campaign.failedCount = 0;
+      campaign.pendingCount = 0;
+      campaign.logs = [];
+      campaign.completedAt = undefined;
+      campaign.failedAt = undefined;
+      await campaign.save();
     }
 
     // Get contacts from the list
@@ -700,6 +726,50 @@ export class CampaignService {
     console.log(`[Campaign ${campaignId}] Escalation Condition: ${escalationCondition || '(not set)'}`);
     console.log(`[Campaign ${campaignId}] =====================================`);
 
+    // Return immediately and process in background
+    // This prevents timeout errors on the frontend
+    this.processCampaignContacts(campaignId, userId, organizationId, contacts, {
+      phoneSettings,
+      aiBehavior,
+      voiceId,
+      transferTo,
+      escalationCondition,
+      greetingMessage,
+      configuredLanguage
+    }).catch((error: any) => {
+      console.error(`[Campaign ${campaignId}] Background processing error:`, error);
+      // Update campaign status to failed if processing fails
+      Campaign.findById(campaignId).then((camp) => {
+        if (camp) {
+          camp.status = 'failed';
+          camp.save();
+        }
+      });
+    });
+
+    // Return success immediately
+    return {
+      campaign,
+      message: 'Campaign started successfully. Processing contacts in background.',
+      totalRecipients: contacts.length
+    };
+  }
+
+  /**
+   * Process campaign contacts in the background
+   */
+  private async processCampaignContacts(
+    campaignId: string,
+    userId: string,
+    organizationId: string,
+    contacts: any[],
+    config: any
+  ) {
+    const campaign = await Campaign.findById(campaignId);
+    if (!campaign) {
+      throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
+    }
+
     const COMM_API = process.env.COMM_API_URL || 'https://keplerov1-python-2.onrender.com';
     const results: any[] = [];
     let successCount = 0;
@@ -750,7 +820,7 @@ export class CampaignService {
               
               // Get voice agent prompt and language from AI Behavior settings
               let voiceAgentPrompt = campaign.dynamicInstruction || '';
-              let voiceLanguage = configuredLanguage; // Use language from inbound config
+              let voiceLanguage = config.configuredLanguage; // Use language from inbound config
               
               // If no dynamic instruction in campaign, fetch from AI Behavior
               if (!voiceAgentPrompt) {
@@ -785,26 +855,58 @@ export class CampaignService {
                 console.warn(`[Campaign ${campaignId}] Could not fetch knowledge bases:`, error.message);
               }
 
+              // Get owner email from Gmail integration
+              let ownerEmail: string | undefined;
+              try {
+                const googleIntegration = await GoogleIntegration.findOne({
+                  userId,
+                  organizationId,
+                  status: 'active',
+                  'services.gmail': true
+                });
+                
+                if (googleIntegration) {
+                  ownerEmail = googleIntegration.googleProfile?.email;
+                } else {
+                  const socialIntegration = await SocialIntegration.findOne({
+                    userId,
+                    organizationId,
+                    platform: 'gmail',
+                    status: 'connected'
+                  });
+                  
+                  if (socialIntegration) {
+                    ownerEmail = socialIntegration.getDecryptedApiKey();
+                  }
+                }
+              } catch (error: any) {
+                console.warn(`[Campaign ${campaignId}] Could not fetch owner email:`, error.message);
+              }
+
               // Prepare outbound call request body
               const callRequestBody: any = {
                 phone_number: normalizedPhone,
                 name: contact.name || 'Customer',
                 dynamic_instruction: voiceAgentPrompt,
                 language: voiceLanguage,
-                voice_id: voiceId,
-                sip_trunk_id: phoneSettings.livekitSipTrunkId,
+                voice_id: config.voiceId,
+                sip_trunk_id: config.phoneSettings.livekitSipTrunkId,
                 provider: provider,
                 api_key: apiKey,
                 collection_names: collectionNames, // Updated to support multiple collections
-                greeting_message: greetingMessage // Add greeting message from inbound config
+                greeting_message: config.greetingMessage, // Add greeting message from inbound config
+                organisation_id: organizationId.toString(),
+                contact_number: normalizedPhone,
+                email: contact.email || undefined, // Contact's email from campaign row
+                owner_email: ownerEmail // User's connected Gmail email
               };
 
               // Add optional fields if they exist
-              if (transferTo) {
-                callRequestBody.transfer_to = transferTo;
+              if (config.transferTo) {
+                callRequestBody.transfer_to = config.transferTo;
               }
-              if (escalationCondition) {
-                callRequestBody.escalation_condition = escalationCondition;
+              if (config.escalationCondition) {
+                callRequestBody.escalation_condition = config.escalationCondition;
               }
 
               // Get e-commerce credentials if available
@@ -922,78 +1024,67 @@ export class CampaignService {
             contactResult.errors.push('Email subject or body not configured');
           } else {
             try {
-              console.log(`\n========== CAMPAIGN EMAIL SEND ==========`);
-              console.log(`[Campaign ${campaignId}] Sending email to ${contact.email}...`);
-              console.log(`[Campaign ${campaignId}] Email Payload:`, {
-                to: contact.email,
-                subject: campaign.emailBody.subject,
-                html: campaign.emailBody.body?.substring(0, 100) + '...',
-                is_html: campaign.emailBody.is_html || false
-              });
-              
-              const emailResult = await emailService.sendEmail({
-                to: contact.email,
-                subject: campaign.emailBody.subject,
-                html: campaign.emailBody.is_html ? campaign.emailBody.body : undefined,
-                text: campaign.emailBody.is_html ? undefined : campaign.emailBody.body,
+              // Check for Gmail integration - try both GoogleIntegration and SocialIntegration
+              let googleIntegration = await GoogleIntegration.findOne({
+                userId,
+                organizationId,
+                status: 'active',
+                'services.gmail': true
               });
 
-              if (emailResult.success) {
+              let socialIntegration = await SocialIntegration.findOne({
+                userId,
+                organizationId,
+                platform: 'gmail',
+                status: 'connected'
+              });
+
+              if (!googleIntegration && !socialIntegration) {
+                throw new Error('Google Gmail integration not connected. Please connect Gmail in Settings → Socials or Settings → Integrations.');
+              }
+
+              // Use GoogleIntegration (Google Workspace OAuth) if available
+              if (googleIntegration) {
+                console.log(`[Campaign ${campaignId}] Using GoogleIntegration for Gmail`);
+                const result = await googleGmailService.sendEmail(
+                  userId.toString(),
+                  organizationId.toString(),
+                  {
+                    to: contact.email,
+                    subject: campaign.emailBody.subject,
+                    body: campaign.emailBody.body,
+                    isHtml: campaign.emailBody.is_html || false
+                  }
+                );
                 contactResult.email_status = 'success';
-                console.log(`[Campaign ${campaignId}] ✅ Email to ${contact.email} sent successfully`);
-                if (emailResult.messageId) {
-                  console.log(`[Campaign ${campaignId}] Email Message ID: ${emailResult.messageId}`);
+                console.log(`[Campaign ${campaignId}] Gmail sent to ${contact.email} successfully via GoogleIntegration`);
+              } 
+              // Otherwise use SocialIntegration (Gmail OAuth via Python API)
+              else if (socialIntegration) {
+                console.log(`[Campaign ${campaignId}] Using SocialIntegration for Gmail`);
+                const gmailOAuthService = new GmailOAuthService();
+                const userEmail = socialIntegration.getDecryptedApiKey(); // This is the user's email
+                
+                // Convert HTML to plain text if needed
+                let emailBody = campaign.emailBody.body;
+                if (campaign.emailBody.is_html) {
+                  // Simple HTML to text conversion (remove HTML tags)
+                  emailBody = emailBody.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
                 }
-              } else {
-                contactResult.email_status = 'failed';
-                const errorMsg = emailResult.error || 'Email sending failed';
-                console.error(`[Campaign ${campaignId}] ❌ Email to ${contact.email} failed: ${errorMsg}`);
-                contactResult.errors.push(`Email failed: ${errorMsg}`);
+                
+                const result = await gmailOAuthService.sendEmail(userEmail, {
+                  to: contact.email,
+                  subject: campaign.emailBody.subject,
+                  body: emailBody
+                });
+                
+                contactResult.email_status = 'success';
+                console.log(`[Campaign ${campaignId}] Gmail sent to ${contact.email} successfully via SocialIntegration`);
               }
-              console.log(`==========================================\n`);
             } catch (error: any) {
-              console.error(`\n========== CAMPAIGN EMAIL ERROR ==========`);
-              console.error(`[Campaign ${campaignId}] Email to ${contact.email} FAILED`);
-              console.error(`[Campaign ${campaignId}] Error Type:`, error.name || error.constructor?.name);
-              console.error(`[Campaign ${campaignId}] Error Message:`, error.message);
-              console.error(`[Campaign ${campaignId}] Error Code:`, error.code || error.errorCode);
-              
-              // Check if it's an AppError (has code property)
-              if (error.code && error.statusCode) {
-                console.error(`[Campaign ${campaignId}] AppError Code:`, error.code);
-                console.error(`[Campaign ${campaignId}] AppError Status:`, error.statusCode);
-                console.error(`[Campaign ${campaignId}] AppError Message:`, error.message);
-              }
-              
-              // Check for nodemailer-specific errors
-              if (error.responseCode || error.code) {
-                console.error(`[Campaign ${campaignId}] SMTP Response Code:`, error.responseCode);
-                console.error(`[Campaign ${campaignId}] SMTP Error Code:`, error.code);
-                console.error(`[Campaign ${campaignId}] SMTP Command:`, error.command);
-              }
-              
-              console.error(`[Campaign ${campaignId}] Error Details:`, error.details || error.response?.data);
-              console.error(`[Campaign ${campaignId}] Stack:`, error.stack);
-              console.error(`==========================================\n`);
+              console.error(`[Campaign ${campaignId}] Gmail send to ${contact.email} failed:`, error);
               contactResult.email_status = 'failed';
-              
-              // Extract meaningful error message
-              let errorMessage = 'Failed to send email. Please check the logs for more details.';
-              
-              // Handle AppError (from emailService) - AppError uses 'code' property
-              if (error.code === 'EMAIL_NOT_CONFIGURED') {
-                errorMessage = 'SMTP is not configured. Please configure SMTP settings in environment variables (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS).';
-              } else if (error.code === 'EMAIL_SEND_FAILED') {
-                errorMessage = error.message || 'Email sending failed. Please check SMTP configuration.';
-              } else if (error.message) {
-                errorMessage = error.message;
-              } else if (error.code === 'EAUTH' || error.code === 'ECONNECTION') {
-                errorMessage = `SMTP authentication failed. Please check SMTP_USER and SMTP_PASS credentials. Error: ${error.message || error.code}`;
-              } else if (error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED') {
-                errorMessage = `Cannot connect to SMTP server. Please check SMTP_HOST and SMTP_PORT. Error: ${error.message || error.code}`;
-              }
-              
-              contactResult.errors.push(`Email failed: ${errorMessage}`);
+              contactResult.errors.push(`Email failed: ${error.message || 'Gmail send failed'}`);
             }
           }
         }
