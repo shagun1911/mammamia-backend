@@ -35,6 +35,8 @@ export interface ISocialIntegration extends Document {
   metadata?: Record<string, any>;
   createdAt: Date;
   updatedAt: Date;
+  // Method to decrypt the API key
+  getDecryptedApiKey(): string;
 }
 
 const SocialIntegrationSchema = new Schema<ISocialIntegration>(
