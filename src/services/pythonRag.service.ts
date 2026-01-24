@@ -299,7 +299,7 @@ export class PythonRagService {
         // Final fallback if nothing worked
         if (!data.answer || data.answer.includes('encountered an error')) {
           console.log('[Python RAG] ⚠️  Could not generate fallback answer - no context or documents available');
-          data.answer = "I'm having trouble generating a response right now. Please try rephrasing your question or check your API keys in Settings → API Keys.";
+          data.answer = "I'm having trouble generating a response right now. Please try rephrasing your question or contact support if the issue persists.";
         }
       }
 

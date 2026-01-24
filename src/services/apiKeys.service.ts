@@ -1,10 +1,12 @@
 import mongoose from 'mongoose';
 import ApiKeys from '../models/ApiKeys';
 import { AppError } from '../middleware/error.middleware';
+import { config } from '../config/env';
 
 export class ApiKeysService {
   /**
-   * Get API keys for a user (create default if doesn't exist)
+   * Get API keys for a user - now returns platform keys from environment variables
+   * This method maintains the same interface but uses platform keys instead of user-provided keys
    */
   async getApiKeys(userId: string) {
     try {
@@ -13,66 +15,36 @@ export class ApiKeysService {
         throw new AppError(400, 'INVALID_USER_ID', 'Invalid user ID provided');
       }
 
-      // Convert string to ObjectId
-      let userObjectId: mongoose.Types.ObjectId;
-      try {
-        userObjectId = new mongoose.Types.ObjectId(userId);
-      } catch (error: any) {
-        console.error('[API Keys Service] Invalid ObjectId format:', userId);
-        throw new AppError(400, 'INVALID_USER_ID', `Invalid user ID format: ${userId}`);
-      }
-      
-      console.log('[API Keys Service] Looking for API keys for userId:', userId, '(ObjectId:', userObjectId.toString(), ')');
-      
-      // Try multiple query approaches to find API keys
-      let apiKeys = await ApiKeys.findOne({ userId: userObjectId });
-      
-      // If not found, try querying as string (in case of type mismatch)
-      if (!apiKeys) {
-        console.log('[API Keys Service] Not found with ObjectId query, trying string query...');
-        apiKeys = await ApiKeys.findOne({ userId: userId });
-      }
-      
-      // If still not found, try with both ObjectId and string in $or
-      if (!apiKeys) {
-        console.log('[API Keys Service] Not found with string query, trying $or query...');
-        apiKeys = await ApiKeys.findOne({
-          $or: [
-            { userId: userObjectId },
-            { userId: userId }
-          ]
-        });
-      }
-      
-      // Debug: Check if ANY API keys exist in the database
-      if (!apiKeys) {
-        const totalApiKeys = await ApiKeys.countDocuments();
-        console.log('[API Keys Service] Total API keys documents in database:', totalApiKeys);
-        
-        if (totalApiKeys > 0) {
-          // Get a sample to see the structure
-          const sample = await ApiKeys.findOne().lean();
-          console.log('[API Keys Service] Sample API keys document structure:', {
-            userId: sample?.userId,
-            userIdType: typeof sample?.userId,
-            hasApiKey: !!sample?.apiKey,
-            provider: sample?.llmProvider
-          });
+      // Get platform API keys from environment variables
+      const provider = config.platform.defaultProvider;
+      let apiKey: string;
+
+      if (provider === 'openai') {
+        apiKey = config.platform.openaiApiKey;
+        if (!apiKey || apiKey.trim() === '') {
+          console.error('[API Keys Service] Platform OpenAI API key not configured in environment variables');
+          throw new AppError(500, 'PLATFORM_API_KEY_NOT_CONFIGURED', 'Platform OpenAI API key is not configured. Please set PLATFORM_OPENAI_API_KEY or OPENAI_API_KEY environment variable.');
         }
-        
-        console.error('[API Keys Service] API keys document not found for userId:', userId);
-        throw new AppError(404, 'API_KEYS_NOT_CONFIGURED', 'API keys not configured. Please configure your API keys in Settings → API Keys.');
+      } else if (provider === 'gemini') {
+        apiKey = config.platform.geminiApiKey;
+        if (!apiKey || apiKey.trim() === '') {
+          console.error('[API Keys Service] Platform Gemini API key not configured in environment variables');
+          throw new AppError(500, 'PLATFORM_API_KEY_NOT_CONFIGURED', 'Platform Gemini API key is not configured. Please set PLATFORM_GEMINI_API_KEY or GEMINI_API_KEY environment variable.');
+        }
+      } else {
+        throw new AppError(500, 'INVALID_PROVIDER', `Invalid LLM provider: ${provider}`);
       }
 
-      // Check if apiKey is actually set (not empty/null)
-      if (!apiKeys.apiKey || apiKeys.apiKey.trim() === '') {
-        console.error('[API Keys Service] API keys document exists but apiKey is empty for userId:', userId);
-        throw new AppError(400, 'API_KEY_EMPTY', 'API key is not set. Please configure your API key in Settings → API Keys.');
-      }
-
-      console.log('[API Keys Service] ✅ API keys found for userId:', userId, 'provider:', apiKeys.llmProvider);
+      console.log('[API Keys Service] ✅ Using platform API key for userId:', userId, 'provider:', provider);
       
-      return apiKeys;
+      // Return in the same format as before for compatibility
+      return {
+        userId: new mongoose.Types.ObjectId(userId),
+        llmProvider: provider,
+        apiKey: apiKey,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      } as any;
     } catch (error: any) {
       // If it's already an AppError, re-throw it
       if (error instanceof AppError) {
@@ -84,32 +56,32 @@ export class ApiKeysService {
   }
 
   /**
-   * Update API keys
+   * Update API keys - No-op since we use platform keys from environment variables
+   * This method is kept for backward compatibility but doesn't actually update anything
    */
   async updateApiKeys(userId: string, data: { llmProvider?: string; apiKey?: string }) {
     try {
-      // Convert string to ObjectId
-      const userObjectId = new mongoose.Types.ObjectId(userId);
+      console.log('[API Keys Service] Update API keys called but ignored - using platform keys from environment variables');
       
-      let apiKeys = await ApiKeys.findOne({ userId: userObjectId });
-      
-      if (!apiKeys) {
-        apiKeys = await ApiKeys.create({
-          userId: userObjectId,
-          llmProvider: data.llmProvider || 'openai',
-          apiKey: data.apiKey || ''
-        });
+      // Return platform keys in the same format for compatibility
+      const provider = config.platform.defaultProvider;
+      let apiKey: string;
+
+      if (provider === 'openai') {
+        apiKey = config.platform.openaiApiKey;
+      } else if (provider === 'gemini') {
+        apiKey = config.platform.geminiApiKey;
       } else {
-        if (data.llmProvider !== undefined) {
-          apiKeys.llmProvider = data.llmProvider as 'openai' | 'gemini';
-        }
-        if (data.apiKey !== undefined) {
-          apiKeys.apiKey = data.apiKey;
-        }
-        await apiKeys.save();
+        apiKey = config.platform.openaiApiKey || '';
       }
-      
-      return apiKeys;
+
+      return {
+        userId: new mongoose.Types.ObjectId(userId),
+        llmProvider: provider,
+        apiKey: apiKey,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      } as any;
     } catch (error: any) {
       console.error('Error in updateApiKeys:', error);
       throw new AppError(500, 'API_KEYS_ERROR', `Failed to update API keys: ${error.message}`);
@@ -117,18 +89,12 @@ export class ApiKeysService {
   }
 
   /**
-   * Delete API keys
+   * Delete API keys - No-op since we use platform keys from environment variables
+   * This method is kept for backward compatibility but doesn't actually delete anything
    */
   async deleteApiKeys(userId: string) {
     try {
-      // Convert string to ObjectId
-      const userObjectId = new mongoose.Types.ObjectId(userId);
-      
-      const result = await ApiKeys.findOneAndDelete({ userId: userObjectId });
-      
-      if (!result) {
-        throw new AppError(404, 'API_KEYS_NOT_FOUND', 'API keys not found');
-      }
+      console.log('[API Keys Service] Delete API keys called but ignored - using platform keys from environment variables');
       
       return { message: 'API keys deleted successfully' };
     } catch (error: any) {

@@ -282,7 +282,7 @@ export class AutomationEngine {
           apiKeysConfigured = true;
         } catch (error: any) {
           console.warn('[Automation] Failed to fetch API keys:', error.message);
-          console.warn('[Automation] ⚠️  API keys not configured. Calls may fail. Please configure API keys in Settings → API Keys');
+          console.warn('[Automation] ⚠️  Platform API keys not configured. Calls may fail. Please configure platform API keys in environment variables.');
         }
         
         // Get voice agent prompt and language from AI Behavior settings
@@ -391,7 +391,7 @@ export class AutomationEngine {
           
           if (!apiKeysConfigured || !callRequestBody.api_key) {
             console.error(`[Automation] ❌ CRITICAL: API Key is missing! Call will likely fail.`);
-            console.error(`[Automation] Please configure your API keys at Settings → API Keys`);
+            console.error(`[Automation] Platform API keys not configured. Please configure platform API keys in environment variables.`);
           }
           
           const callResponse = await axios.post(callUrl, callRequestBody, {

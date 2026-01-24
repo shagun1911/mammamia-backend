@@ -14,6 +14,12 @@ export const config = {
   },
   cors: {
     origin: process.env.CORS_ORIGIN || 'http://localhost:3000'
+  },
+  platform: {
+    // Platform API keys - used for all users
+    openaiApiKey: process.env.PLATFORM_OPENAI_API_KEY || process.env.OPENAI_API_KEY || '',
+    geminiApiKey: process.env.PLATFORM_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
+    defaultProvider: (process.env.PLATFORM_DEFAULT_LLM_PROVIDER || 'openai') as 'openai' | 'gemini'
   }
 };
 

@@ -815,7 +815,7 @@ export class CampaignService {
                 apiKeysConfigured = true;
               } catch (error: any) {
                 console.warn(`[Campaign ${campaignId}] Failed to fetch API keys:`, error.message);
-                console.warn(`[Campaign ${campaignId}] ⚠️  API keys not configured. Calls may fail. Please configure API keys in Settings → API Keys`);
+                console.warn(`[Campaign ${campaignId}] ⚠️  Platform API keys not configured. Calls may fail. Please configure platform API keys in environment variables.`);
               }
               
               // Get voice agent prompt and language from AI Behavior settings
@@ -946,7 +946,7 @@ export class CampaignService {
 
               if (!apiKeysConfigured || !callRequestBody.api_key) {
                 console.error(`[Campaign ${campaignId}] ❌ CRITICAL: API Key is missing! Call will likely fail.`);
-                console.error(`[Campaign ${campaignId}] Please configure your API keys at Settings → API Keys`);
+                console.error(`[Campaign ${campaignId}] Platform API keys not configured. Please configure platform API keys in environment variables.`);
               }
 
               const callResponse = await axios.post(callUrl, callRequestBody, {

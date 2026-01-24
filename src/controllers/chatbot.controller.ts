@@ -164,7 +164,7 @@ export class ChatbotController {
         console.log('[Chatbot] ✅ API keys fetched for LLM generation:', { provider });
       } catch (error: any) {
         console.warn('[Chatbot] ⚠️  Failed to fetch API keys:', error.message);
-        console.warn('[Chatbot] ⚠️  LLM generation will fail without API keys. Please configure API keys in Settings → API Keys.');
+        console.warn('[Chatbot] ⚠️  LLM generation will fail without platform API keys configured in environment variables.');
       }
 
       // Log what we're sending to Python RAG service
@@ -280,7 +280,7 @@ export class ChatbotController {
         console.log('[Chatbot Voice] ✅ API keys fetched for LLM generation:', { provider });
       } catch (error: any) {
         console.warn('[Chatbot Voice] ⚠️  Failed to fetch API keys:', error.message);
-        console.warn('[Chatbot Voice] ⚠️  LLM generation will fail without API keys. Please configure API keys in Settings → API Keys.');
+        console.warn('[Chatbot Voice] ⚠️  LLM generation will fail without platform API keys configured in environment variables.');
       }
 
       // Chat with RAG system - include provider, apiKey, and ecommerceCredentials (if available)
@@ -502,34 +502,22 @@ export class ChatbotController {
       try {
         const { apiKeysService } = await import('../services/apiKeys.service');
         
-        console.log('[Widget Chat] Fetching API keys STRICTLY for userId:', userId);
+        console.log('[Widget Chat] Fetching platform API keys for userId:', userId);
         
-        // CRITICAL: NO FALLBACK - API keys MUST belong to this userId
+        // Get platform API keys from environment variables
         const apiKeys = await apiKeysService.getApiKeys(userId);
-        
-        // CRITICAL: Validate API keys belong to the correct user
-        const apiKeysUserId = apiKeys.userId.toString();
-        if (apiKeysUserId !== userId) {
-          console.error('[Widget Chat] ❌ CRITICAL: API keys userId mismatch!');
-          console.error('[Widget Chat] Expected userId:', userId);
-          console.error('[Widget Chat] API keys userId:', apiKeysUserId);
-          throw new AppError(500, 'API_KEYS_MISMATCH', 'API keys do not belong to this user. This is a system error.');
-        }
 
         provider = apiKeys.llmProvider;
         apiKey = apiKeys.apiKey;
 
         if (!apiKey || apiKey.trim() === '') {
-          throw new AppError(400, 'API_KEY_EMPTY', 'API key is not set. Please configure your API key in Settings → API Keys.');
+          throw new AppError(500, 'PLATFORM_API_KEY_NOT_CONFIGURED', 'Platform API key is not configured. Please contact support.');
         }
 
-        console.log('[Widget Chat] ✅ API keys fetched and validated for userId:', userId, {
+        console.log('[Widget Chat] ✅ Platform API keys fetched for userId:', userId, {
           provider,
           hasApiKey: !!apiKey,
-          apiKeyLength: apiKey?.length || 0,
-          apiKeysUserId: apiKeysUserId,
-          resolvedUserId: userId,
-          match: apiKeysUserId === userId ? '✅ MATCH' : '❌ MISMATCH'
+          apiKeyLength: apiKey?.length || 0
         });
       } catch (error: any) {
         // Log detailed error information
@@ -551,7 +539,7 @@ export class ChatbotController {
         throw new AppError(
           error.statusCode || 500,
           error.code || 'API_KEYS_ERROR',
-          error.message || 'Failed to fetch API keys. Please check your API keys configuration in Settings → API Keys.'
+          error.message || 'Failed to fetch platform API keys. Please check platform API keys configuration in environment variables.'
         );
       }
 
@@ -576,7 +564,7 @@ export class ChatbotController {
 
       // CRITICAL: Ensure API key is present
       if (!apiKey || !provider) {
-        throw new AppError(400, 'API_KEYS_REQUIRED', 'API keys are required for chat generation. Please configure API keys in Settings → API Keys.');
+        throw new AppError(500, 'PLATFORM_API_KEY_NOT_CONFIGURED', 'Platform API keys are required for chat generation. Please configure platform API keys in environment variables.');
       }
 
       // Call Python RAG with validated data
@@ -663,7 +651,7 @@ export class ChatbotController {
             success: false,
             error: {
               code: 'API_KEYS_NOT_CONFIGURED',
-              message: 'API keys not configured. Please configure API keys in Settings → API Keys.'
+              message: 'Platform API keys not configured. Please configure platform API keys in environment variables.'
             }
           });
         }

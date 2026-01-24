@@ -637,11 +637,6 @@ export class MetaWebhookController {
             const { apiKeysService } = await import('../services/apiKeys.service');
             const apiKeys = await apiKeysService.getApiKeys(userId);
             
-            // CRITICAL: Validate API keys belong to the correct user
-            if (apiKeys.userId && apiKeys.userId.toString() !== userId) {
-              throw new Error(`API keys userId mismatch: expected ${userId}, got ${apiKeys.userId}`);
-            }
-            
             provider = apiKeys.llmProvider;
             apiKey = apiKeys.apiKey;
             console.log('[WhatsApp Webhook] ✅ API keys fetched for LLM generation for userId:', userId, ':', { provider });
