@@ -770,12 +770,16 @@ export class AutomationEngine {
       }
     });
 
-    // Legacy actions
-    this.actions.set('send_email', {
-      execute: async (config, triggerData) => {
-        return { sent: true, email: triggerData.email };
-      }
-    });
+ // Legacy actions (FIXED - redirect to real email sender)
+this.actions.set('send_email', {
+  execute: async (config, triggerData, context) => {
+    const handler = this.actions.get('keplero_send_email');
+    if (!handler) {
+      throw new Error('keplero_send_email handler not found');
+    }
+    return handler.execute(config, triggerData, context);
+  }
+});
 
     this.actions.set('save_to_crm', {
       execute: async (config, triggerData, context) => {
@@ -964,166 +968,132 @@ export class AutomationEngine {
       }
     });
 
-    // Google Sheets - Append Row
-    this.actions.set('keplero_google_sheet_append_row', {
-      execute: async (config, triggerData, context) => {
-        const organizationId = context?.organizationId || triggerData?.organizationId;
-        let userId = context?.userId;
-        
-        // Resolve userId if missing
-        if (!userId && organizationId) {
-          userId = await this.resolveUserId(organizationId, context);
-        }
-        
-        if (!organizationId || !userId) {
-          throw new Error('Organization ID and User ID are required for Google Sheets actions');
-        }
+// Google Sheets - Append Row (FINAL FIXED)
+this.actions.set('keplero_google_sheet_append_row', {
+  execute: async (config, triggerData, context) => {
+    const organizationId = context?.organizationId || triggerData?.organizationId;
+    let userId = context?.userId;
 
-        // STRICT VALIDATION: Check config before attempting API call
-        const { spreadsheetId, range, sheetName, values } = config;
-        
-        // Debug log for troubleshooting
-        console.log('[Automation] Google Sheets config:', {
-          spreadsheetId: spreadsheetId || 'MISSING',
-          valuesLength: values?.length || 0,
-          hasSpreadsheetId: !!spreadsheetId,
-          hasValues: !!(values && Array.isArray(values) && values.length > 0),
-          range,
-          sheetName,
-          organizationId: organizationId?.toString(),
-          userId: userId?.toString()
-        });
+    // Resolve userId if missing
+    if (!userId && organizationId) {
+      userId = await this.resolveUserId(organizationId, context);
+    }
 
-        // Validate required fields
-        if (!spreadsheetId || typeof spreadsheetId !== 'string' || spreadsheetId.trim() === '') {
-          throw new Error('Google Sheet action not configured. Please select a spreadsheet and map fields.');
-        }
+    if (!organizationId || !userId) {
+      throw new Error('Organization ID and User ID are required for Google Sheets actions');
+    }
 
-        if (!values || !Array.isArray(values) || values.length === 0) {
-          throw new Error('Google Sheet action not configured. Please select a spreadsheet and map fields.');
-        }
+    const { spreadsheetId, values } = config;
 
-        // Check if Google Sheets is connected
-        const integration = await GoogleIntegration.findOne({
-          userId,
-          organizationId,
-          status: 'active',
-          'services.sheets': true
-        });
+    if (!spreadsheetId || !Array.isArray(values) || values.length === 0) {
+      throw new Error('Google Sheet action not configured properly');
+    }
 
-        if (!integration) {
-          throw new Error('Google Sheets integration not connected. Please connect Google Workspace in Settings.');
-        }
-
-        try {
-          const google = require('googleapis').google;
-          const oauth2Client = new google.auth.OAuth2(
-            process.env.GOOGLE_CLIENT_ID,
-            process.env.GOOGLE_CLIENT_SECRET,
-            process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5001/api/v1/integrations/google/callback'
-          );
-
-          oauth2Client.setCredentials({
-            access_token: integration.accessToken,
-            refresh_token: integration.refreshToken
-          });
-
-          // VERIFY API CLIENT METHOD: google.sheets("v4").spreadsheets.values.append
-          const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
-
-          // FORCE RANGE TO SHEET NAME ONLY - NO EXCLAMATION, NO COLUMN OR CELL RANGES
-          // Use sheetName from config or default to "Sheet1"
-          // For append operations, Google Sheets API accepts just the sheet name
-          const sheetNameOnly = sheetName || 'Sheet1';
-
-          // Resolve template variables in values (e.g., {{contact.name}})
-          // Fetch contact from database to get REAL values, not template strings
-          let contact: any = null;
-          const contactId = triggerData.contactId;
-          if (contactId) {
-            contact = await Customer.findById(contactId).lean();
-          }
-
-          // Resolve template variables to REAL ARRAY values
-          // Ensure resolvedValues is a proper 1D array: [value1, value2, value3, ...]
-          const resolvedValues: any[] = values.map((value: any) => {
-            if (typeof value !== 'string') return value;
-            
-            // Replace contact variables with actual contact data
-            if (contact) {
-              return value
-                .replace(/\{\{contact\.name\}\}/g, contact.name || '')
-                .replace(/\{\{contact\.email\}\}/g, contact.email || '')
-                .replace(/\{\{contact\.phone\}\}/g, contact.phone || '')
-                .replace(/\{\{contact\.createdAt\}\}/g, contact.createdAt ? new Date(contact.createdAt).toISOString() : '');
-            }
-            
-            // Fallback to triggerData if contact not found
-            return value
-              .replace(/\{\{contact\.name\}\}/g, triggerData.contactName || '')
-              .replace(/\{\{contact\.email\}\}/g, triggerData.contactEmail || '')
-              .replace(/\{\{contact\.phone\}\}/g, triggerData.contactPhone || '')
-              .replace(/\{\{contact\.createdAt\}\}/g, triggerData.contactCreatedAt || '');
-          });
-
-          // Ensure resolvedValues is an array (safety check)
-          if (!Array.isArray(resolvedValues)) {
-            throw new Error('resolvedValues must be an array');
-          }
-
-          // DEBUG LOG: Show exact payload being sent
-          console.log('[Automation] Sheets append payload:', {
-            spreadsheetId,
-            range: sheetNameOnly,
-            values: resolvedValues,
-            valuesType: Array.isArray(resolvedValues) ? 'array' : typeof resolvedValues,
-            valuesLength: resolvedValues.length,
-            wrappedValues: [resolvedValues] // Show the 2D array format
-          });
-
-          // EXACT API CALL: google.sheets("v4").spreadsheets.values.append
-          // values MUST be a 2D array: [[value1, value2, value3]]
-          const response = await sheets.spreadsheets.values.append({
-            spreadsheetId,
-            range: sheetNameOnly, // "Sheet1" - sheet name only
-            valueInputOption: 'USER_ENTERED',
-            insertDataOption: 'INSERT_ROWS',
-            requestBody: {
-              // CRITICAL: Wrap resolvedValues in array to create 2D array
-              // resolvedValues = [v1, v2, v3] (1D array)
-              // [resolvedValues] = [[v1, v2, v3]] (2D array) ✅ CORRECT
-              values: [resolvedValues]
-            }
-          });
-
-          console.log('[Automation] ✅ Google Sheets append successful:', {
-            updatedRange: response.data.updates?.updatedRange,
-            updatedRows: response.data.updates?.updatedRows
-          });
-
-          return {
-            success: true,
-            updatedRange: response.data.updates?.updatedRange,
-            updatedRows: response.data.updates?.updatedRows || 1,
-            appendedAt: new Date()
-          };
-        } catch (error: any) {
-          console.error('[Automation] Google Sheets append failed:', {
-            error: error.message,
-            spreadsheetId: spreadsheetId?.substring(0, 20),
-            valuesCount: values?.length
-          });
-          
-          // Return failure result instead of throwing - allows automation to continue
-          // WhatsApp template and other actions should still execute
-          return {
-            success: false,
-            error: `Google Sheets append failed: ${error.message}`,
-            appendedAt: new Date()
-          };
-        }
-      }
+    // Check integration
+    const integration = await GoogleIntegration.findOne({
+      userId,
+      organizationId,
+      status: 'active',
+      'services.sheets': true
     });
+
+    if (!integration) {
+      throw new Error('Google Sheets integration not connected');
+    }
+
+    try {
+      const { google } = require('googleapis');
+
+      const oauth2Client = new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        process.env.GOOGLE_REDIRECT_URI ||
+          'http://localhost:5001/api/v1/integrations/google/callback'
+      );
+
+      oauth2Client.setCredentials({
+        access_token: integration.accessToken,
+        refresh_token: integration.refreshToken
+      });
+
+      const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
+
+      // ✅ AUTO-DETECT SHEET NAME (CRITICAL FIX)
+      const sheetMeta = await sheets.spreadsheets.get({
+        spreadsheetId
+      });
+
+      const sheetName =
+        sheetMeta.data.sheets?.[0]?.properties?.title;
+
+      if (!sheetName) {
+        throw new Error('No sheet found in spreadsheet');
+      }
+
+      // ✅ CORRECT RANGE (THIS IS THE KEY)
+      const range = `${sheetName}!A1`;
+
+      // Resolve contact variables
+      let contact: any = null;
+      if (triggerData.contactId) {
+        contact = await Customer.findById(triggerData.contactId).lean();
+      }
+
+      const resolvedValues = values.map((value: any) => {
+        if (typeof value !== 'string') return value;
+
+        if (contact) {
+          return value
+            .replace(/\{\{contact\.name\}\}/g, contact.name || '')
+            .replace(/\{\{contact\.email\}\}/g, contact.email || '')
+            .replace(/\{\{contact\.phone\}\}/g, contact.phone || '')
+            .replace(
+              /\{\{contact\.createdAt\}\}/g,
+              contact.createdAt
+                ? new Date(contact.createdAt).toISOString()
+                : ''
+            );
+        }
+
+        return value;
+      });
+
+      console.log('[Automation] Google Sheets append:', {
+        spreadsheetId,
+        range,
+        values: resolvedValues
+      });
+
+      const response = await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range, // ✅ MUST BE SheetName!A1
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: {
+          values: [resolvedValues] // 2D array REQUIRED
+        }
+      });
+
+      console.log('[Automation] ✅ Google Sheets append success');
+
+      return {
+        success: true,
+        updatedRange: response.data.updates?.updatedRange,
+        updatedRows: response.data.updates?.updatedRows || 1,
+        appendedAt: new Date()
+      };
+    } catch (error: any) {
+      console.error('[Automation] Google Sheets append failed:', error.message);
+
+      return {
+        success: false,
+        error: `Google Sheets append failed: ${error.message}`,
+        appendedAt: new Date()
+      };
+    }
+  }
+});
+
 
     // Google Gmail - Send Email
     this.actions.set('keplero_google_gmail_send', {

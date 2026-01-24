@@ -13,6 +13,8 @@ import { logger } from '../utils/logger.util';
 import { analyticsService } from './analytics/analytics.service';
 import { usageTrackerService } from './usage/usageTracker.service';
 import mongoose from 'mongoose';
+import Plan from '../models/Plan';
+
 
 export class AdminService {
   /**
@@ -750,16 +752,11 @@ export class AdminService {
         });
       } else {
         // Update existing profile with new limits
-        // If upgrading, keep usage but update limits
-        // If downgrading, reset usage if it exceeds new limits
         const oldLimit = profile.chatConversationsLimit;
         const oldVoiceLimit = profile.voiceMinutesLimit;
-
         profile.profileType = profileType;
         profile.chatConversationsLimit = limits.chatConversations;
         profile.voiceMinutesLimit = limits.voiceMinutes;
-        
-        // If downgrading, cap usage to new limits
         if (limits.chatConversations < oldLimit) {
           profile.chatConversationsUsed = Math.min(
             profile.chatConversationsUsed,
@@ -772,56 +769,19 @@ export class AdminService {
             limits.voiceMinutes
           );
         }
-
-        // Reset billing cycle for immediate effect
         profile.billingCycleStart = now;
         profile.billingCycleEnd = billingCycleEnd;
         profile.isActive = true;
         await profile.save();
       }
 
-      // Update ALL organizations owned by this user (not just one)
-      // Also update the user's current organization
-      const organizationsToUpdate: mongoose.Types.ObjectId[] = [];
-      
-      // Add user's current organization
-      if (user.organizationId) {
-        organizationsToUpdate.push(user.organizationId);
-      }
-      
-      // Find all organizations where this user is the owner
-      const ownedOrganizations = await Organization.find({ ownerId: userId }).select('_id').lean();
-      ownedOrganizations.forEach((org: any) => {
-        if (!organizationsToUpdate.some(id => id.toString() === org._id.toString())) {
-          organizationsToUpdate.push(org._id);
-        }
-      });
+      // No organization plan update logic here
 
-      // Update all organizations with the new plan
-      if (organizationPlan && organizationsToUpdate.length > 0) {
-        await Organization.updateMany(
-          { _id: { $in: organizationsToUpdate } },
-          { $set: { plan: organizationPlan } }
-        );
-        logger.info(`✅ Updated ${organizationsToUpdate.length} organization(s) to plan ${organizationPlan}`);
-      } else if (!organizationPlan && organizationsToUpdate.length > 0) {
-        // If no organization plan provided, sync organization plan based on profile type
-        // Map profile type to organization plan
-        const profileToPlanMap: Record<ProfileType, 'free' | 'starter' | 'professional' | 'enterprise'> = {
-          mileva: 'starter',
-          nobel: 'professional',
-          aistein: 'enterprise'
-        };
-        const mappedPlan = profileToPlanMap[profileType] || 'free';
-        
-        await Organization.updateMany(
-          { _id: { $in: organizationsToUpdate } },
-          { $set: { plan: mappedPlan } }
-        );
-        logger.info(`✅ Synced ${organizationsToUpdate.length} organization(s) to plan ${mappedPlan} based on profile ${profileType}`);
-      }
-
-      logger.info(`✅ Upgraded user ${userId} to profile ${profileType}${organizationPlan ? ` and organization plan ${organizationPlan}` : ''}`);
+      logger.info(
+        `✅ Upgraded user ${userId} to profile ${profileType}${
+          organizationPlan ? ` (organization plan param ignored)` : ''
+        }`
+      );
 
       return {
         user: {
