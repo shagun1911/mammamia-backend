@@ -1,40 +1,44 @@
-import { Request, Response } from "express";
-import axios from "axios";
+import { Request, Response, NextFunction } from "express";
+import { ttsService } from "../services/tts.service";
 
 export const ttsController = {
-  async generateAudio(req: Request, res: Response) {
-    console.log("🔥 /tts/generate-audio HIT");
+  async generateAudio(req: Request, res: Response, _next: NextFunction) {
+    console.log("🔥 /api/v1/tts/generate-audio HIT");
 
     const { voiceId, text } = req.body;
 
+    // ✅ Input validation
     if (!voiceId || !text) {
-      return res.status(400).json({ error: "voiceId and text required" });
+      return res.status(400).json({
+        success: false,
+        error: "voiceId and text are required",
+      });
     }
 
     try {
-      const response = await axios.post(
-        `https://api.eu.residency.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-        { text, model_id: "eleven_multilingual_v2" },
-        {
-          headers: {
-            "xi-api-key": process.env.ELEVEN_API_KEY!,
-            "Content-Type": "application/json",
-            Accept: "audio/mpeg",
-          },
-          responseType: "arraybuffer",
-        }
+      // ✅ Call service (ElevenLabs logic is NOT here)
+      const audioBuffer = await ttsService.generateAudio(voiceId, text);
+
+      console.log(
+        "✅ TTS success. Audio size:",
+        audioBuffer.byteLength,
+        "bytes"
       );
 
-      console.log("✅ ElevenLabs API responded. Audio data size:", response.data.byteLength, "bytes");
-      console.log("Content-Type from ElevenLabs (if available):", response.headers['content-type']);
-
+      // ✅ Proper audio response
       res.setHeader("Content-Type", "audio/mpeg");
-      res.setHeader("Content-Length", response.data.byteLength); // Use byteLength for ArrayBuffer
-      return res.status(200).send(response.data);
-    } catch (err: any) {
-      console.error("ElevenLabs error:", err.response?.data ? new TextDecoder().decode(err.response.data) : err.message);
-      // IMPORTANT: return NON-200 so frontend doesn't try to play it
-      return res.status(500).send("TTS_FAILED");
+      res.setHeader("Content-Length", audioBuffer.byteLength);
+
+      return res.status(200).send(audioBuffer);
+    } catch (error: any) {
+      console.error("❌ TTS Controller Error:", error);
+
+      // ❗ Never return 200 on failure
+      return res.status(error.statusCode || 500).json({
+        success: false,
+        error: error.code || "TTS_FAILED",
+        message: error.message || "Failed to generate audio",
+      });
     }
   },
 };
