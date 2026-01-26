@@ -88,9 +88,8 @@ const OrganizationSchema = new Schema<IOrganization>(
 // ==============================
 // Indexes
 // ==============================
-OrganizationSchema.index({ ownerId: 1 });
-OrganizationSchema.index({ plan: 1 });
-OrganizationSchema.index({ planId: 1 });
+// Using field-level indexing
+
 
 // ==============================
 // Pre-save Hook
@@ -99,12 +98,19 @@ OrganizationSchema.index({ planId: 1 });
 OrganizationSchema.pre('save', async function (next) {
   if (this.isNew && !this.planId) {
     try {
-      const defaultPlan = await Plan.findOne({ slug: 'mileva-pack' }).select('_id slug').lean();
+      const defaultPlan = await Plan.findOne({ isDefault: true }).select('_id slug').lean();
 
       if (defaultPlan) {
-        this.plan = 'mileva-pack';
+        this.plan = defaultPlan.slug;
         this.planId = defaultPlan._id as mongoose.Types.ObjectId;
-        console.log(`✅ Auto-assigned mileva-pack plan to organization: ${this.name}`);
+        console.log(`✅ Auto-assigned ${defaultPlan.slug} plan to organization: ${this.name}`);
+      } else {
+        // Fallback if no default plan found in DB
+        const freePlan = await Plan.findOne({ slug: 'free' }).select('_id slug').lean();
+        if (freePlan) {
+          this.plan = 'free';
+          this.planId = freePlan._id as mongoose.Types.ObjectId;
+        }
       }
     } catch (error) {
       console.warn('⚠️ Could not auto-assign default plan:', error);

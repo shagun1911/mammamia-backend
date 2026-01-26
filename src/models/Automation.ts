@@ -59,8 +59,6 @@ const AutomationSchema = new Schema<IAutomation>({
 }, { timestamps: true });
 
 AutomationSchema.index({ isActive: 1 });
-AutomationSchema.index({ userId: 1 });
-AutomationSchema.index({ organizationId: 1 });
 AutomationSchema.index({ 'nodes.service': 1 });
 
 export default mongoose.model<IAutomation>('Automation', AutomationSchema);

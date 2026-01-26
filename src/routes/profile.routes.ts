@@ -31,7 +31,7 @@ router.get('/billing', async (req: Request, res: Response, next: NextFunction) =
     const Plan = require('../models/Plan').default;
 
     const user = await User.findById(userId).lean();
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -42,20 +42,37 @@ router.get('/billing', async (req: Request, res: Response, next: NextFunction) =
     // Get user's profile (for usage tracking)
     const profile = await Profile.findOne({ userId }).lean();
 
+    // Get REAL-TIME usage data from database using centralized service
+    const organizationId = user.organizationId || user._id;
+    let usage = {
+      callMinutes: profile?.voiceMinutesUsed || 0,
+      chatMessages: profile?.chatConversationsUsed || 0,
+      conversations: 0,
+      automations: profile?.automationsUsed || 0,
+      campaignSends: 0
+    };
+
+    try {
+      const realTimeUsage = await usageTrackerService.getOrganizationUsage(organizationId.toString());
+      if (realTimeUsage) {
+        usage = {
+          callMinutes: realTimeUsage.callMinutes,
+          chatMessages: realTimeUsage.chatMessages,
+          conversations: realTimeUsage.conversations,
+          automations: realTimeUsage.automations,
+          campaignSends: realTimeUsage.campaignSends
+        };
+        logger.info(`📊 REAL-TIME Usage for ${user.email}: CALLS=${usage.callMinutes}, CHATS=${usage.chatMessages}`);
+      }
+    } catch (usageError: any) {
+      logger.warn(`⚠️ Could not calculate real-time usage for ${user.email}, using stored profile data:`, usageError.message);
+    }
+
     // Get plan details if user has one
     let planDetails = null;
     if (user.selectedProfile) {
       planDetails = await Plan.findOne({ slug: user.selectedProfile }).lean();
     }
-
-    // Get usage data from profile
-    const usage = {
-      callMinutes: profile?.voiceMinutesUsed || 0,
-      chatMessages: profile?.chatConversationsUsed || 0,
-      conversations: 0, // Can be calculated if needed
-      automations: profile?.automationsUsed || 0,
-      campaignSends: 0
-    };
 
     logger.info(`✅ Billing data fetched for user: ${user.email}`);
 

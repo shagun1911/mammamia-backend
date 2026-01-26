@@ -87,16 +87,17 @@ export class UsageTrackerService {
    */
   async calculateChatMessages(organizationId: string): Promise<number> {
     try {
+      // Find all conversation IDs for this organization that are NOT phone conversations
+      const nonPhoneConversations = await Conversation.find({
+        organizationId: new mongoose.Types.ObjectId(organizationId),
+        channel: { $ne: 'phone' }
+      }).distinct('_id');
+
       const count = await Message.countDocuments({
-        organizationId,
-        // Exclude phone channel messages from chat count
-        $or: [
-          { channel: { $exists: false } },
-          { channel: { $ne: 'phone' } }
-        ]
+        conversationId: { $in: nonPhoneConversations }
       });
 
-      logger.info(`[Usage Tracker] Org ${organizationId}: ${count} chat messages`);
+      logger.info(`[Usage Tracker] Org ${organizationId}: ${count} chat messages from ${nonPhoneConversations.length} non-phone conversations`);
       return count;
 
     } catch (error: any) {
@@ -171,7 +172,7 @@ export class UsageTrackerService {
   async calculateCampaignSends(organizationId: string): Promise<number> {
     try {
       const campaigns = await Campaign.find({ organizationId }).lean();
-      
+
       let totalSends = 0;
       for (const campaign of campaigns) {
         // Count from contactIds array length or totalContacts field
@@ -247,9 +248,9 @@ export class UsageTrackerService {
         }
       };
 
-      const exceeded = limits.callMinutes.exceeded || 
-                       limits.chatMessages.exceeded || 
-                       limits.automations.exceeded;
+      const exceeded = limits.callMinutes.exceeded ||
+        limits.chatMessages.exceeded ||
+        limits.automations.exceeded;
 
       return { exceeded, limits };
 
