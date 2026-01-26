@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import Conversation from '../models/Conversation';
 import Message from '../models/Message';
 import Profile from '../models/Profile';
@@ -6,12 +7,15 @@ import redisClient, { isRedisAvailable } from '../config/redis';
 import { AppError } from '../middleware/error.middleware';
 import { Parser } from 'json2csv';
 import { analyticsService as centralizedAnalyticsService } from './analytics/analytics.service';
+import { callMetricsService } from './analytics/callMetrics.service';
+import { chatMetricsService } from './analytics/chatMetrics.service';
+import { logger } from '../utils/logger.util';
 
 export class AnalyticsService {
   // Dashboard Metrics
-  async getDashboardMetrics(organizationId: string, dateFrom?: string, dateTo?: string) {
-    const cacheKey = `dashboard_metrics:${organizationId}:${dateFrom}:${dateTo}`;
-    
+  async getDashboardMetrics(organizationId: string, dateFrom?: string, dateTo?: string, channel?: string) {
+    const cacheKey = `dashboard_metrics:${organizationId}:${dateFrom}:${dateTo}:${channel}`;
+
     // Try to get from cache (only if Redis is available)
     if (isRedisAvailable()) {
       try {
@@ -24,11 +28,22 @@ export class AnalyticsService {
       }
     }
 
-    const dateQuery: any = { organizationId };
+    const orgId = new mongoose.Types.ObjectId(organizationId);
+    const dateQuery: any = { organizationId: orgId };
     if (dateFrom || dateTo) {
       dateQuery.createdAt = {};
       if (dateFrom) dateQuery.createdAt.$gte = new Date(dateFrom);
       if (dateTo) dateQuery.createdAt.$lte = new Date(dateTo);
+    }
+
+    // Apply channel filter
+    if (channel && channel !== 'all') {
+      if (channel === 'instagram' || channel === 'facebook') {
+        dateQuery.channel = 'social';
+        dateQuery['metadata.platform'] = channel;
+      } else {
+        dateQuery.channel = channel;
+      }
     }
 
     // Total conversations
@@ -184,9 +199,25 @@ export class AnalyticsService {
       dateTo: dateTo ? new Date(dateTo) : undefined
     } : undefined;
 
-    const orgMetrics = await centralizedAnalyticsService.getOrganizationMetrics(organizationId, dateRange);
-    const totalCallMinutes = orgMetrics.callMinutes;
-    const chatConversations = orgMetrics.totalConversations;
+    // Filter centralized metrics by channel if requested
+    let totalCallMinutes = 0;
+    let chatConversationsCount = 0;
+
+    if (channel && channel !== 'all') {
+      if (channel === 'phone') {
+        const callMetrics = await callMetricsService.getOrganizationCallMetrics(organizationId, dateRange);
+        totalCallMinutes = callMetrics.totalCallMinutes;
+        chatConversationsCount = 0;
+      } else {
+        const chatMetrics = await chatMetricsService.getOrganizationChatMetrics(organizationId, dateRange, channel);
+        chatConversationsCount = chatMetrics.totalConversations;
+        totalCallMinutes = 0;
+      }
+    } else {
+      const orgMetrics = await centralizedAnalyticsService.getOrganizationMetrics(organizationId, dateRange);
+      totalCallMinutes = orgMetrics.callMinutes;
+      chatConversationsCount = orgMetrics.totalConversations;
+    }
 
     const metrics = {
       totalConversations,
@@ -198,21 +229,19 @@ export class AnalyticsService {
       aiManaged: aiManagedCount,
       humanManaged: humanManagedCount,
       avgResponseTime: Math.round(avgResponseTime),
-      customerSatisfactionScore: null, // Placeholder for future implementation
+      customerSatisfactionScore: null,
       messagesToday: messagesTodayCount,
       conversationsByChannel: channelBreakdown,
       conversationsByStatus: statusBreakdown,
-      totalCallMinutes: totalCallMinutes, // Use actual conversation data only, no Profile fallback
-      totalChatConversations: chatConversations // Use actual conversation data only
+      totalCallMinutes: totalCallMinutes,
+      totalChatConversations: chatConversationsCount
     };
 
     // Cache for 5 minutes (only if Redis is available)
     if (isRedisAvailable()) {
       try {
         await redisClient.setEx(cacheKey, 300, JSON.stringify(metrics));
-      } catch (error) {
-        // Continue without cache if Redis fails
-      }
+      } catch (error) { }
     }
 
     return metrics;
@@ -223,11 +252,26 @@ export class AnalyticsService {
     organizationId: string,
     groupBy: 'hour' | 'day' | 'week' | 'month' = 'day',
     dateFrom?: string,
-    dateTo?: string
+    dateTo?: string,
+    channel?: string
   ) {
-    const dateQuery: any = { organizationId, createdAt: {} };
-    if (dateFrom) dateQuery.createdAt.$gte = new Date(dateFrom);
-    if (dateTo) dateQuery.createdAt.$lte = new Date(dateTo);
+    const orgId = new mongoose.Types.ObjectId(organizationId);
+    const dateQuery: any = { organizationId: orgId };
+    if (dateFrom || dateTo) {
+      dateQuery.createdAt = {};
+      if (dateFrom) dateQuery.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) dateQuery.createdAt.$lte = new Date(dateTo);
+    }
+
+    // Apply channel filter
+    if (channel && channel !== 'all') {
+      if (channel === 'instagram' || channel === 'facebook') {
+        dateQuery.channel = 'social';
+        dateQuery['metadata.platform'] = channel;
+      } else {
+        dateQuery.channel = channel;
+      }
+    }
 
     // Format string for date grouping
     const dateFormat: Record<string, string> = {
@@ -249,12 +293,33 @@ export class AnalyticsService {
       { $sort: { _id: 1 } }
     ]);
 
+    // Get conversation IDs for this organization in date range to filter messages
+    const organizationConversations = await Conversation.find(dateQuery).select('_id').lean();
+    const conversationIds = organizationConversations.map(c => c._id);
+
     // Messages sent over time
-    const messagesSent = await Message.aggregate([
-      { $match: { timestamp: dateQuery.createdAt } },
+    const messagesSent = conversationIds.length > 0 ? await Message.aggregate([
+      { $match: { conversationId: { $in: conversationIds } } },
       {
         $group: {
           _id: { $dateToString: { format: dateFormat[groupBy], date: '$timestamp' } },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]) : [];
+
+    // Chat conversations over time (excluding phone)
+    const chatConversations = await Conversation.aggregate([
+      {
+        $match: {
+          ...dateQuery,
+          channel: { $ne: 'phone' }
+        }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: dateFormat[groupBy], date: '$createdAt' } },
           count: { $sum: 1 }
         }
       },
@@ -352,37 +417,56 @@ export class AnalyticsService {
       { $sort: { _id: 1 } }
     ]);
 
-    const callMinutesFormatted = callMinutesTrend.map((item: any) => ({
-      period: item._id,
-      minutes: item.minutes || 0
-    }));
+    // Generate ALL periods in requested range to ensure continuous graphs
+    const allPeriods: string[] = [];
+    const fromDate = new Date(dateFrom || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
+    const toDate = new Date(dateTo || Date.now());
 
-    // Fill in missing periods with 0 to match newConversations periods
-    const allPeriods = new Set(newConversations.map((item: any) => item._id));
-    callMinutesFormatted.forEach((item: any) => allPeriods.add(item.period));
-    const callMinutesComplete = Array.from(allPeriods).sort().map((period: any) => {
-      const existing = callMinutesFormatted.find((item: any) => item.period === period);
-      return existing || { period, minutes: 0 };
-    });
+    // Normalize to noon to avoid DST issues
+    const current = new Date(fromDate);
+    current.setHours(12, 0, 0, 0);
+    const end = new Date(toDate);
+    end.setHours(12, 0, 0, 0);
+
+    while (current <= end) {
+      allPeriods.push(current.toISOString().split('T')[0]);
+      current.setDate(current.getDate() + 1);
+    }
+
+    if (allPeriods.length === 0) {
+      // Emergency fallback
+      const now = new Date();
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(now.getDate() - i);
+        allPeriods.push(d.toISOString().split('T')[0]);
+      }
+    }
+
+    const formatTrend = (data: any[], key: string, aggregateKey: string = 'count') => {
+      return allPeriods.map(period => {
+        const entry = data.find(d => d._id === period);
+        if (!entry) return { period, [key]: 0 };
+
+        let value = 0;
+        if (entry[aggregateKey] !== undefined) value = entry[aggregateKey];
+        else if (entry.count !== undefined) value = entry.count;
+        else if (entry.value !== undefined) value = entry.value;
+
+        return {
+          period,
+          [key]: value
+        };
+      });
+    };
 
     return {
-      newConversations: newConversations.map((item: any) => ({
-        period: item._id,
-        count: item.count
-      })),
-      messagesSent: messagesSent.map((item: any) => ({
-        period: item._id,
-        count: item.count
-      })),
-      responseTimes: responseTimes.map((item: any) => ({
-        period: item._id,
-        avgResponseTime: Math.round(item.avgResponseTime)
-      })),
-      resolutionRates: resolutionRates.map((item: any) => ({
-        period: item._id,
-        resolutionRate: Math.round(item.resolutionRate * 10) / 10
-      })),
-      callMinutes: callMinutesComplete
+      newConversations: formatTrend(newConversations, 'count'),
+      messagesSent: formatTrend(messagesSent, 'count'),
+      chatConversations: formatTrend(chatConversations, 'count'),
+      responseTimes: formatTrend(responseTimes, 'avgResponseTime', 'avgResponseTime'),
+      resolutionRates: formatTrend(resolutionRates, 'resolutionRate', 'resolutionRate'),
+      callMinutes: formatTrend(callMinutesTrend, 'minutes', 'minutes')
     };
   }
 
@@ -557,7 +641,7 @@ export class AnalyticsService {
   // Export Data
   async exportData(organizationId: string, format: 'csv' | 'json', filters: any = {}) {
     const query: any = { organizationId };
-    
+
     if (filters.dateFrom || filters.dateTo) {
       query.createdAt = {};
       if (filters.dateFrom) query.createdAt.$gte = new Date(filters.dateFrom);

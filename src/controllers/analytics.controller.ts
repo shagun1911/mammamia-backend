@@ -24,11 +24,12 @@ export class AnalyticsController {
       if (!organizationId) {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
       }
-      const { dateFrom, dateTo } = req.query;
+      const { dateFrom, dateTo, channel } = req.query;
       const metrics = await this.analyticsService.getDashboardMetrics(
         organizationId.toString(),
         dateFrom as string,
-        dateTo as string
+        dateTo as string,
+        channel as string
       );
       res.json(successResponse(metrics));
     } catch (error) {
@@ -44,12 +45,13 @@ export class AnalyticsController {
       if (!organizationId) {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
       }
-      const { groupBy = 'day', dateFrom, dateTo } = req.query;
+      const { groupBy = 'day', dateFrom, dateTo, channel } = req.query;
       const trends = await this.analyticsService.getConversationTrends(
         organizationId.toString(),
         groupBy as 'hour' | 'day' | 'week' | 'month',
         dateFrom as string,
-        dateTo as string
+        dateTo as string,
+        channel as string
       );
       res.json(successResponse(trends));
     } catch (error) {
@@ -189,13 +191,24 @@ export class AnalyticsController {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
       }
       const { dateFrom, dateTo, limit = 10 } = req.query;
-      
+
       // Get conversations in date range
       const dateQuery: any = { organizationId };
       if (dateFrom || dateTo) {
         dateQuery.createdAt = {};
         if (dateFrom) dateQuery.createdAt.$gte = new Date(dateFrom as string);
         if (dateTo) dateQuery.createdAt.$lte = new Date(dateTo as string);
+      }
+
+      // Apply channel filter
+      const { channel } = req.query;
+      if (channel && channel !== 'all') {
+        if (channel === 'instagram' || channel === 'facebook') {
+          dateQuery.channel = 'social';
+          dateQuery['metadata.platform'] = channel;
+        } else {
+          dateQuery.channel = channel;
+        }
       }
 
       const conversations = await Conversation.find(dateQuery).select('_id').lean();

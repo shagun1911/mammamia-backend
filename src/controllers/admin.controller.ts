@@ -166,12 +166,12 @@ export class AdminController {
       const organizationId = req.query.organizationId as string;
       const dateFrom = req.query.dateFrom ? new Date(req.query.dateFrom as string) : undefined;
       const dateTo = req.query.dateTo ? new Date(req.query.dateTo as string) : undefined;
-      
+
       const usage = await this.adminService.getOrganizationUsage(organizationId, {
         from: dateFrom,
         to: dateTo
       });
-      
+
       res.json(successResponse(usage));
     } catch (error) {
       next(error);
@@ -216,11 +216,11 @@ export class AdminController {
       const { userId } = req.params;
       const { profileType, organizationPlan } = req.body;
 
-      if (!profileType || !['mileva', 'nobel', 'aistein'].includes(profileType)) {
+      if (!profileType || !['free', 'mileva', 'nobel', 'aistein'].includes(profileType)) {
         return res.status(400).json({
           success: false,
           error: 'INVALID_PROFILE_TYPE',
-          message: 'Invalid profile type. Must be one of: mileva, nobel, aistein'
+          message: 'Invalid profile type. Must be one of: free, mileva, nobel, aistein'
         });
       }
 

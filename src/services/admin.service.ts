@@ -744,8 +744,10 @@ export class AdminService {
           profileType,
           chatConversationsLimit: limits.chatConversations,
           voiceMinutesLimit: limits.voiceMinutes,
+          automationsLimit: (limits as any).automations || 5,
           chatConversationsUsed: 0,
           voiceMinutesUsed: 0,
+          automationsUsed: 0,
           billingCycleStart: now,
           billingCycleEnd,
           isActive: true
@@ -757,6 +759,8 @@ export class AdminService {
         profile.profileType = profileType;
         profile.chatConversationsLimit = limits.chatConversations;
         profile.voiceMinutesLimit = limits.voiceMinutes;
+        profile.automationsLimit = (limits as any).automations || 5;
+
         if (limits.chatConversations < oldLimit) {
           profile.chatConversationsUsed = Math.min(
             profile.chatConversationsUsed,
@@ -775,11 +779,25 @@ export class AdminService {
         await profile.save();
       }
 
-      // No organization plan update logic here
+      // Update organization plan if user is an owner or has organizationId
+      if (user.organizationId) {
+        const organization = await Organization.findById(user.organizationId);
+        if (organization) {
+          // Sync organization plan with profileType
+          organization.plan = profileType;
+
+          // Also set planId if matching Plan found
+          const matchingPlan = await Plan.findOne({ slug: profileType }).lean();
+          if (matchingPlan) {
+            organization.planId = matchingPlan._id as mongoose.Types.ObjectId;
+          }
+          await organization.save();
+          logger.info(`✅ Updated organization ${organization._id} plan to ${profileType}`);
+        }
+      }
 
       logger.info(
-        `✅ Upgraded user ${userId} to profile ${profileType}${organizationPlan ? ` (organization plan param ignored)` : ''
-        }`
+        `✅ Upgraded user ${userId} to profile ${profileType}`
       );
 
       return {
@@ -792,8 +810,10 @@ export class AdminService {
           profileType: profile.profileType,
           chatConversationsLimit: profile.chatConversationsLimit,
           voiceMinutesLimit: profile.voiceMinutesLimit,
+          automationsLimit: profile.automationsLimit,
           chatConversationsUsed: profile.chatConversationsUsed,
           voiceMinutesUsed: profile.voiceMinutesUsed,
+          automationsUsed: profile.automationsUsed,
           billingCycleStart: profile.billingCycleStart,
           billingCycleEnd: profile.billingCycleEnd
         }

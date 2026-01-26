@@ -19,13 +19,24 @@ export class ChatMetricsService {
    */
   async getOrganizationChatMetrics(
     organizationId: string,
-    dateRange?: DateRange
+    dateRange?: DateRange,
+    channel?: string
   ): Promise<ChatMetrics> {
     try {
       const query: any = {
-        organizationId: new mongoose.Types.ObjectId(organizationId),
-        channel: { $ne: 'phone' } // Exclude phone conversations
+        organizationId: new mongoose.Types.ObjectId(organizationId)
       };
+
+      if (channel && channel !== 'all') {
+        if (channel === 'instagram' || channel === 'facebook') {
+          query.channel = 'social';
+          query['metadata.platform'] = channel;
+        } else {
+          query.channel = channel;
+        }
+      } else {
+        query.channel = { $ne: 'phone' }; // Default: exclude phone
+      }
 
       // Add date filter if provided
       if (dateRange?.dateFrom || dateRange?.dateTo) {
@@ -139,8 +150,8 @@ export class ChatMetricsService {
       ]);
 
       const totalConversations = completedConversations.length;
-      const averageMessagesPerConversation = totalConversations > 0 
-        ? Math.round((totalChats / totalConversations) * 100) / 100 
+      const averageMessagesPerConversation = totalConversations > 0
+        ? Math.round((totalChats / totalConversations) * 100) / 100
         : 0;
 
       return {
@@ -166,7 +177,7 @@ export class ChatMetricsService {
     try {
       const User = mongoose.model('User');
       const user = await User.findById(userId).select('organizationId').lean() as any;
-      
+
       if (!user || !user.organizationId) {
         return {
           totalConversations: 0,
@@ -303,8 +314,8 @@ export class ChatMetricsService {
       ]);
 
       const totalConversations = completedConversations.length;
-      const averageMessagesPerConversation = totalConversations > 0 
-        ? Math.round((totalChats / totalConversations) * 100) / 100 
+      const averageMessagesPerConversation = totalConversations > 0
+        ? Math.round((totalChats / totalConversations) * 100) / 100
         : 0;
 
       return {

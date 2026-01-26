@@ -39,6 +39,13 @@ export class PlanService {
    */
   async findPlanById(planId: string) {
     try {
+      if (!mongoose.Types.ObjectId.isValid(planId)) {
+        // If not a valid ID, try finding by slug as a fallback
+        const plan = await Plan.findOne({ slug: planId }).lean();
+        if (!plan) throw new Error('Plan not found');
+        return plan;
+      }
+
       const plan = await Plan.findById(planId).lean();
       if (!plan) {
         throw new Error('Plan not found');
@@ -90,7 +97,7 @@ export class PlanService {
     try {
       // Check if any organizations are using this plan
       const orgsCount = await Organization.countDocuments({ planId: new mongoose.Types.ObjectId(planId) });
-      
+
       if (orgsCount > 0) {
         throw new Error(`Cannot delete plan: ${orgsCount} organization(s) are using it`);
       }
@@ -109,19 +116,23 @@ export class PlanService {
    */
   async assignPlanToOrganization(organizationIdOrUserId: string, planIdOrSlug: string) {
     try {
-      // Try to find by ID first, then by slug
-      let plan = await Plan.findById(planIdOrSlug);
+      // Try to find by ID if it's a valid ObjectId, otherwise find by slug
+      let plan;
+      if (mongoose.Types.ObjectId.isValid(planIdOrSlug)) {
+        plan = await Plan.findById(planIdOrSlug);
+      }
+
       if (!plan) {
         plan = await Plan.findOne({ slug: planIdOrSlug });
       }
-      
+
       if (!plan) {
         throw new Error('Plan not found');
       }
 
       // Find the specific user (NOT organization)
       const user = await User.findById(organizationIdOrUserId);
-      
+
       if (!user) {
         throw new Error('User not found');
       }
@@ -140,15 +151,17 @@ export class PlanService {
 
       // Update or create profile for THIS USER ONLY
       let profile = await Profile.findOne({ userId: user._id });
-      
+
       if (!profile) {
         profile = await Profile.create({
           userId: user._id,
           profileType: plan.slug as any,
           chatConversationsLimit: plan.features.chatConversations,
           voiceMinutesLimit: plan.features.callMinutes,
+          automationsLimit: plan.features.automations,
           chatConversationsUsed: 0,
           voiceMinutesUsed: 0,
+          automationsUsed: 0,
           billingCycleStart: now,
           billingCycleEnd,
           isActive: true
@@ -158,13 +171,14 @@ export class PlanService {
         profile.profileType = plan.slug as any;
         profile.chatConversationsLimit = plan.features.chatConversations;
         profile.voiceMinutesLimit = plan.features.callMinutes;
+        profile.automationsLimit = plan.features.automations;
         profile.billingCycleStart = now;
         profile.billingCycleEnd = billingCycleEnd;
         profile.isActive = true;
         await profile.save();
         logger.info(`✅ Updated profile for ${user.email}`);
       }
-      
+
       return {
         message: 'Plan assigned successfully to individual user',
         user: {
@@ -199,7 +213,7 @@ export class PlanService {
   async getDefaultPlan() {
     try {
       let plan = await Plan.findOne({ isDefault: true }).lean();
-      
+
       if (!plan) {
         // If no default, return the cheapest active plan
         plan = await Plan.findOne({ isActive: true }).sort({ price: 1 }).lean();
@@ -217,11 +231,33 @@ export class PlanService {
    */
   async initializeDefaultPlans() {
     try {
+      const freePlanExists = await Plan.findOne({ slug: 'free' });
+      if (!freePlanExists) {
+        logger.info('Free plan missing, creating it...');
+        await Plan.create({
+          name: 'Free Plan',
+          slug: 'free',
+          description: 'Basic plan for new users',
+          price: 0,
+          currency: 'EUR',
+          features: {
+            callMinutes: 100,
+            chatConversations: 100,
+            automations: 5,
+            users: 1,
+            customFeatures: ['100 Chat Messages', '100 Call Minutes', '5 Automations']
+          },
+          isActive: true,
+          isDefault: true,
+          displayOrder: 0
+        });
+      }
+
       const count = await Plan.countDocuments();
-      
-      if (count === 0) {
-        logger.info('No plans found, creating default plans...');
-        
+
+      if (count <= 1) {
+        logger.info('Only free or no plans found, creating remaining default plans...');
+
         const defaultPlans = [
           {
             name: 'Aistein Pro Pack',
@@ -254,7 +290,7 @@ export class PlanService {
               customFeatures: ['Voice and Chat AI Agents', '1 month duration']
             },
             isActive: true,
-            isDefault: true,
+            isDefault: false,
             displayOrder: 2
           },
           {
@@ -294,7 +330,7 @@ export class PlanService {
         ];
 
         await Plan.insertMany(defaultPlans);
-        logger.info('Default plans created successfully');
+        logger.info('Remaining default plans created successfully');
       }
     } catch (error: any) {
       logger.error('Failed to initialize default plans', { error: error.message });
