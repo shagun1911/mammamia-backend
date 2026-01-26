@@ -25,11 +25,24 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
     }
     collectionNames = [kb.collectionName];
   } else {
-    // Fetch Settings using userId ONLY
-    const settings = await Settings.findOne({ userId });
+    // CRITICAL: Convert userId string to ObjectId for proper query matching
+    // Settings schema expects userId as ObjectId, not string
+    let userIdObjectId: mongoose.Types.ObjectId;
+    try {
+      if (!mongoose.Types.ObjectId.isValid(userId)) {
+        throw new Error(`Invalid userId format: ${userId}`);
+      }
+      userIdObjectId = new mongoose.Types.ObjectId(userId);
+    } catch (error: any) {
+      console.error(`[Social Webhook] ❌ Invalid userId format: ${userId}`, error.message);
+      throw new Error(`Invalid userId format: ${userId}. Cannot query Settings.`);
+    }
+    
+    // Fetch Settings using userId as ObjectId
+    const settings = await Settings.findOne({ userId: userIdObjectId });
     
     if (!settings) {
-      console.error(`[Social Webhook] ❌ No Settings found for userId: ${userId}`);
+      console.error(`[Social Webhook] ❌ No Settings found for userId: ${userId} (ObjectId: ${userIdObjectId})`);
       throw new Error('No knowledge base configured. Please configure a knowledge base in Settings → Knowledge Base.');
     }
     
