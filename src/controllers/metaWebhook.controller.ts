@@ -980,7 +980,67 @@ export class MetaWebhookController {
         console.log('[Messenger Webhook] ✅ Resolved Collection Names from Settings:', collectionNames);
       } catch (error: any) {
         console.error('[Messenger Webhook] ❌ Failed to resolve KB from Settings:', error.message);
-        return; // NO REPLY if KB not found
+        // TEMPORARY DEMO FALLBACK: Send Hindi message about LangChain
+        console.log('[Messenger Webhook] 🎭 Using demo fallback message (Hindi - LangChain)');
+        const fallbackMessage = 'LangChain एक शक्तिशाली framework है जो AI applications बनाने के लिए उपयोग किया जाता है। यह developers को LLMs (Large Language Models) के साथ काम करने में मदद करता है, RAG (Retrieval Augmented Generation) pipelines बनाता है, और complex AI workflows को manage करता है। LangChain Python और JavaScript दोनों में उपलब्ध है और यह AI-powered applications को बनाना आसान बनाता है।';
+        
+        try {
+          // Send fallback message using Messenger Send API
+          const { MetaOAuthService } = await import('../services/metaOAuth.service');
+          const metaAppId = process.env.META_APP_ID || '';
+          const metaAppSecret = process.env.META_APP_SECRET || '';
+          const backendUrl = process.env.BACKEND_URL || '';
+          
+          const metaOAuth = new MetaOAuthService({
+            appId: metaAppId,
+            appSecret: metaAppSecret,
+            redirectUri: `${backendUrl}/api/v1/social-integrations/facebook/oauth/callback`
+          });
+
+          const messageId = await metaOAuth.sendMessengerMessage(
+            pageId,
+            pageAccessToken,
+            senderPsid,
+            fallbackMessage
+          );
+
+          console.log(`[Messenger Webhook] ✅ Fallback message sent. Message ID: ${messageId || 'N/A'}`);
+
+          // Save fallback message to database
+          await Message.create({
+            conversationId: conversation._id,
+            organizationId: conversation.organizationId,
+            customerId: customer._id,
+            sender: 'ai',
+            text: fallbackMessage,
+            type: 'message',
+            timestamp: new Date(),
+            metadata: {
+              externalId: messageId,
+              platform: 'facebook',
+              generatedBy: 'demo-fallback',
+              isFallback: true
+            }
+          });
+
+          // Update conversation
+          conversation.updatedAt = new Date();
+          conversation.unread = false;
+          await conversation.save();
+
+          // Emit socket event
+          emitToOrganization(conversation.organizationId.toString(), 'new-message', {
+            conversationId: conversation._id?.toString() || '',
+            message: {
+              text: fallbackMessage,
+              sender: 'ai',
+              timestamp: new Date()
+            }
+          });
+        } catch (fallbackError: any) {
+          console.error('[Messenger Webhook] ❌ Failed to send fallback message:', fallbackError.message);
+        }
+        return; // Exit after sending fallback
       }
 
       // 2. SYSTEM PROMPT: Fetch from AIBehavior using userId ONLY
