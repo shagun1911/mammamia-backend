@@ -207,13 +207,17 @@ export class GoogleSheetsService {
       const drive = google.drive({ version: 'v3', auth: oauth2Client });
 
       const response = await drive.files.list({
-        q: "mimeType='application/vnd.google-apps.spreadsheet'",
-        fields: 'files(id, name, createdTime, modifiedTime, webViewLink)',
+        q: "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+        fields: 'files(id, name)',
         orderBy: 'modifiedTime desc',
         pageSize: 50
       });
 
-      return response.data.files || [];
+      // Return only { id, name } as requested
+      return (response.data.files || []).map((file: any) => ({
+        id: file.id,
+        name: file.name
+      }));
     } catch (error: any) {
       console.error('List spreadsheets error:', error);
       throw new AppError(500, 'INTEGRATION_ERROR', error.message || 'Failed to list spreadsheets');
