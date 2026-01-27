@@ -49,18 +49,24 @@ export class GoogleCalendarService {
    */
   async createEvent(
     userId: string,
-    organizationId: string,
+    organizationId: string | undefined,
     event: CalendarEvent,
     calendarId: string = 'primary'
   ): Promise<{ eventId: string; htmlLink: string; hangoutLink?: string }> {
     try {
-      // Get integration
-      const integration = await GoogleIntegration.findOne({
+      // Get integration - prioritize user-level lookup
+      const query: any = {
         userId,
-        organizationId,
         status: 'active',
         'services.calendar': true
-      });
+      };
+
+      // Only include organizationId if provided, though userId should be enough for "user-level"
+      if (organizationId) {
+        query.organizationId = organizationId;
+      }
+
+      const integration = await GoogleIntegration.findOne(query);
 
       if (!integration) {
         throw new AppError(404, 'NOT_FOUND', 'Google Calendar integration not found');

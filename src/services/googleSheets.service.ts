@@ -219,6 +219,52 @@ export class GoogleSheetsService {
       throw new AppError(500, 'INTEGRATION_ERROR', error.message || 'Failed to list spreadsheets');
     }
   }
+
+  /**
+   * Append a row to a Google Sheet
+   */
+  async appendRow(
+    userId: string,
+    spreadsheetId: string,
+    range: string, // Changed from sheetName to range
+    values: any[]
+  ): Promise<any> {
+    try {
+      // Get integration - use userId to find the user-level integration
+      const integration = await GoogleIntegration.findOne({
+        userId,
+        status: 'active',
+        'services.sheets': true
+      });
+
+      if (!integration) {
+        throw new AppError(404, 'NOT_FOUND', 'Google Sheets integration not found for this user');
+      }
+
+      const oauth2Client = this.getOAuth2Client(integration.accessToken, integration.refreshToken);
+      const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
+
+      const response = await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: range,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: {
+          values: [values]
+        }
+      });
+
+      return {
+        success: true,
+        spreadsheetId,
+        updatedRange: response.data.updates?.updatedRange,
+        updatedRows: response.data.updates?.updatedRows,
+        appendedAt: new Date()
+      };
+    } catch (error: any) {
+      console.error('Google Sheets append row error:', error);
+      throw new AppError(500, 'INTEGRATION_ERROR', error.message || 'Failed to append row to Google Sheets');
+    }
+  }
 }
 
 export const googleSheetsService = new GoogleSheetsService();

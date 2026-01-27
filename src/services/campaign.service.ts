@@ -11,7 +11,6 @@ import { AppError } from '../middleware/error.middleware';
 import { campaignQueue } from '../queues/campaign.queue';
 import { phoneSettingsService } from './phoneSettings.service';
 import { aiBehaviorService } from './aiBehavior.service';
-import { googleGmailService } from './googleGmail.service';
 import { GmailOAuthService } from './gmailOAuth.service';
 import axios from 'axios';
 import { trackUsage } from '../middleware/profileTracking.middleware';
@@ -53,15 +52,15 @@ const VOICE_ID_MAP: Record<string, string> = {
 
 const normalizePhoneNumber = (phone: string): string => {
   if (!phone) return phone;
-  
+
   // Remove any whitespace
   phone = phone.trim();
-  
+
   // If already has +, return as is
   if (phone.startsWith('+')) {
     return phone;
   }
-  
+
   // Add + prefix
   return '+' + phone;
 };
@@ -100,7 +99,7 @@ export class CampaignService {
     if (updates.deliveredCount !== undefined) campaign.deliveredCount = (campaign.deliveredCount || 0) + updates.deliveredCount;
     if (updates.failedCount !== undefined) campaign.failedCount = (campaign.failedCount || 0) + updates.failedCount;
     if (updates.pendingCount !== undefined) campaign.pendingCount = updates.pendingCount;
-    
+
     await campaign.save();
 
     // Calculate progress percentage
@@ -134,7 +133,7 @@ export class CampaignService {
     const opened = recipients.filter(r => r.openedAt).length;
     const clicked = recipients.filter(r => r.clickedAt).length;
     const replied = recipients.filter(r => r.repliedAt).length;
-    
+
     return {
       total,
       sent,
@@ -152,7 +151,7 @@ export class CampaignService {
     // First get all lists for this organization
     const lists = await ContactList.find({ organizationId }).select('_id');
     const listIds = lists.map(l => l._id);
-    
+
     const query: any = { listId: { $in: listIds } };
 
     if (filters.status) {
@@ -207,10 +206,10 @@ export class CampaignService {
     if (!list) {
       throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
     }
-    
+
     const listOrgId = list.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (listOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
@@ -270,8 +269,8 @@ export class CampaignService {
 
       // Schedule campaign if scheduledAt is provided
       if (campaignData.scheduledAt) {
-        const scheduledDate = typeof campaignData.scheduledAt === 'string' 
-          ? new Date(campaignData.scheduledAt) 
+        const scheduledDate = typeof campaignData.scheduledAt === 'string'
+          ? new Date(campaignData.scheduledAt)
           : campaignData.scheduledAt;
         await this.scheduleCampaign((campaign._id as any).toString(), scheduledDate);
       }
@@ -279,16 +278,16 @@ export class CampaignService {
       return campaign;
     } catch (error: any) {
       console.error('Error in campaign.create:', error);
-      
+
       if (error instanceof AppError) {
         throw error;
       }
-      
+
       if (error.name === 'ValidationError') {
         const messages = Object.values(error.errors).map((err: any) => err.message).join(', ');
         throw new AppError(400, 'VALIDATION_ERROR', messages);
       }
-      
+
       throw new AppError(500, 'INTERNAL_ERROR', error.message || 'Failed to create campaign');
     }
   }
@@ -305,10 +304,10 @@ export class CampaignService {
     if (!list) {
       throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
     }
-    
+
     const listOrgId = list.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (listOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
@@ -336,10 +335,10 @@ export class CampaignService {
     if (!list) {
       throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
     }
-    
+
     const listOrgId = list.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (listOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
@@ -367,10 +366,10 @@ export class CampaignService {
     if (!list) {
       throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
     }
-    
+
     const listOrgId = list.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (listOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
@@ -384,7 +383,7 @@ export class CampaignService {
     await campaign.save();
 
     await this.addCampaignLog(campaign, 'warning', 'Campaign paused by user');
-    
+
     // Get organizationId from listId
     const listForEmit = await ContactList.findById(campaign.listId);
     const listOrgIdForEmit = listForEmit?.organizationId?.toString() || '';
@@ -415,10 +414,10 @@ export class CampaignService {
     if (!list) {
       throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
     }
-    
+
     const listOrgId = list.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (listOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
@@ -431,7 +430,7 @@ export class CampaignService {
     await campaign.save();
 
     await this.addCampaignLog(campaign, 'info', 'Campaign resumed by user');
-    
+
     // Get organizationId from listId
     const listForEmit = await ContactList.findById(campaign.listId);
     const listOrgIdForEmit = listForEmit?.organizationId?.toString() || '';
@@ -466,10 +465,10 @@ export class CampaignService {
     if (!list) {
       throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
     }
-    
+
     const listOrgId = list.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (listOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
@@ -498,7 +497,7 @@ export class CampaignService {
 
     // Process failed recipients
     const contacts = failedRecipients.map(r => r.contactId).filter(Boolean);
-    
+
     // Get organizationId from listId (use parameter, not local variable)
     // organizationId is already available as parameter
 
@@ -555,10 +554,10 @@ export class CampaignService {
     if (!list) {
       throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
     }
-    
+
     const listOrgId = list.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (listOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
@@ -606,10 +605,10 @@ export class CampaignService {
     if (!list) {
       throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
     }
-    
+
     const listOrgId = list.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (listOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }
@@ -663,7 +662,7 @@ export class CampaignService {
 
     // Add initial log
     await this.addCampaignLog(campaign, 'info', `Campaign started for ${contacts.length} contacts`);
-    
+
     // Use organizationId parameter directly
     emitToOrganization(organizationId.toString(), 'campaign:status', {
       campaignId: campaign._id.toString(),
@@ -682,7 +681,7 @@ export class CampaignService {
     // Map selectedVoice name to ElevenLabs voice ID
     // Use customVoiceId if provided, otherwise use the mapped voice ID
     const voiceId = phoneSettings.customVoiceId || VOICE_ID_MAP[phoneSettings.selectedVoice] || VOICE_ID_MAP['adam'];
-    
+
     // Get transfer_to from phone settings and escalation_condition from AI behavior
     const transferTo = phoneSettings.humanOperatorPhone || '';
     const escalationCondition = aiBehavior.voiceAgent?.humanOperator?.escalationRules?.join('; ') || '';
@@ -690,7 +689,7 @@ export class CampaignService {
     // Get inbound agent config to fetch greeting_message and language
     let greetingMessage = 'Hello! How can I help you today?'; // Default greeting
     let configuredLanguage = campaign.language || aiBehavior.voiceAgent?.language || 'en';
-    
+
     try {
       const { inboundAgentConfigService } = await import('./inboundAgentConfig.service');
       // Try to get config for the first inbound phone number
@@ -802,7 +801,7 @@ export class CampaignService {
           } else {
             try {
               console.log(`[Campaign ${campaignId}] Initiating call to ${contact.phone}...`);
-              
+
               // Get API keys for LLM
               let provider = 'openai';
               let apiKey = '';
@@ -817,11 +816,11 @@ export class CampaignService {
                 console.warn(`[Campaign ${campaignId}] Failed to fetch API keys:`, error.message);
                 console.warn(`[Campaign ${campaignId}] ⚠️  Platform API keys not configured. Calls may fail. Please configure platform API keys in environment variables.`);
               }
-              
+
               // Get voice agent prompt and language from AI Behavior settings
               let voiceAgentPrompt = campaign.dynamicInstruction || '';
               let voiceLanguage = config.configuredLanguage; // Use language from inbound config
-              
+
               // If no dynamic instruction in campaign, fetch from AI Behavior
               if (!voiceAgentPrompt) {
                 try {
@@ -832,10 +831,10 @@ export class CampaignService {
                   console.warn(`[Campaign ${campaignId}] Failed to fetch voice agent prompt:`, error.message);
                 }
               }
-              
+
               // Normalize phone number to E.164 format
               const normalizedPhone = normalizePhoneNumber(contact.phone);
-              
+
               // Get default knowledge bases from settings
               let collectionNames: string[] = [];
               try {
@@ -844,7 +843,7 @@ export class CampaignService {
                   // Prefer multiple knowledge bases (new format)
                   if (settings.defaultKnowledgeBaseNames && settings.defaultKnowledgeBaseNames.length > 0) {
                     collectionNames = settings.defaultKnowledgeBaseNames;
-                  } 
+                  }
                   // Fallback to single knowledge base (legacy format)
                   else if (settings.defaultKnowledgeBaseName) {
                     collectionNames = [settings.defaultKnowledgeBaseName];
@@ -864,7 +863,7 @@ export class CampaignService {
                   status: 'active',
                   'services.gmail': true
                 });
-                
+
                 if (googleIntegration) {
                   ownerEmail = googleIntegration.googleProfile?.email;
                 } else {
@@ -874,7 +873,7 @@ export class CampaignService {
                     platform: 'gmail',
                     status: 'connected'
                   });
-                  
+
                   if (socialIntegration) {
                     ownerEmail = socialIntegration.getDecryptedApiKey();
                   }
@@ -934,7 +933,7 @@ export class CampaignService {
               }
 
               const callUrl = `${COMM_API}/calls/outbound`;
-              
+
               // Log request details for debugging
               console.log(`\n========== CAMPAIGN ${campaignId} - OUTBOUND CALL ==========`);
               console.log(`📞 [Campaign] URL: ${callUrl}`);
@@ -1024,63 +1023,37 @@ export class CampaignService {
             contactResult.errors.push('Email subject or body not configured');
           } else {
             try {
-              // Check for Gmail integration - try both GoogleIntegration and SocialIntegration
-              let googleIntegration = await GoogleIntegration.findOne({
-                userId,
-                organizationId,
-                status: 'active',
-                'services.gmail': true
-              });
-
-              let socialIntegration = await SocialIntegration.findOne({
+              // Check for Gmail integration via SocialIntegration
+              const socialIntegration = await SocialIntegration.findOne({
                 userId,
                 organizationId,
                 platform: 'gmail',
                 status: 'connected'
               });
 
-              if (!googleIntegration && !socialIntegration) {
-                throw new Error('Google Gmail integration not connected. Please connect Gmail in Settings → Socials or Settings → Integrations.');
+              if (!socialIntegration) {
+                throw new Error('Gmail integration not connected. Please connect Gmail in Settings → Socials.');
               }
 
-              // Use GoogleIntegration (Google Workspace OAuth) if available
-              if (googleIntegration) {
-                console.log(`[Campaign ${campaignId}] Using GoogleIntegration for Gmail`);
-                const result = await googleGmailService.sendEmail(
-                  userId.toString(),
-                  organizationId.toString(),
-                  {
-                    to: contact.email,
-                    subject: campaign.emailBody.subject,
-                    body: campaign.emailBody.body,
-                    isHtml: campaign.emailBody.is_html || false
-                  }
-                );
-                contactResult.email_status = 'success';
-                console.log(`[Campaign ${campaignId}] Gmail sent to ${contact.email} successfully via GoogleIntegration`);
-              } 
-              // Otherwise use SocialIntegration (Gmail OAuth via Python API)
-              else if (socialIntegration) {
-                console.log(`[Campaign ${campaignId}] Using SocialIntegration for Gmail`);
-                const gmailOAuthService = new GmailOAuthService();
-                const userEmail = socialIntegration.getDecryptedApiKey(); // This is the user's email
-                
-                // Convert HTML to plain text if needed
-                let emailBody = campaign.emailBody.body;
-                if (campaign.emailBody.is_html) {
-                  // Simple HTML to text conversion (remove HTML tags)
-                  emailBody = emailBody.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
-                }
-                
-                const result = await gmailOAuthService.sendEmail(userEmail, {
-                  to: contact.email,
-                  subject: campaign.emailBody.subject,
-                  body: emailBody
-                });
-                
-                contactResult.email_status = 'success';
-                console.log(`[Campaign ${campaignId}] Gmail sent to ${contact.email} successfully via SocialIntegration`);
+              console.log(`[Campaign ${campaignId}] Using Gmail Social Integration`);
+              const gmailOAuthService = new GmailOAuthService();
+              const userEmail = socialIntegration.getDecryptedApiKey(); // This is the user's email
+
+              // Convert HTML to plain text if needed
+              let emailBody = campaign.emailBody.body;
+              if (campaign.emailBody.is_html) {
+                // Simple HTML to text conversion (remove HTML tags)
+                emailBody = emailBody.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
               }
+
+              await gmailOAuthService.sendEmail(userEmail, {
+                to: contact.email,
+                subject: campaign.emailBody.subject,
+                body: emailBody
+              });
+
+              contactResult.email_status = 'success';
+              console.log(`[Campaign ${campaignId}] Gmail sent to ${contact.email} successfully`);
             } catch (error: any) {
               console.error(`[Campaign ${campaignId}] Gmail send to ${contact.email} failed:`, error);
               contactResult.email_status = 'failed';
@@ -1103,7 +1076,7 @@ export class CampaignService {
             try {
               // Normalize phone number to E.164 format
               const normalizedPhone = normalizePhoneNumber(contact.phone);
-              
+
               console.log(`[Campaign ${campaignId}] Sending SMS to ${normalizedPhone}...`);
               const smsResponse = await axios.post(`${COMM_API}/sms/send`, {
                 body: campaign.smsBody.message,
@@ -1123,10 +1096,10 @@ export class CampaignService {
         }
 
         // Determine overall status for this contact
-        const anySuccess = contactResult.call_status === 'success' || 
-                          contactResult.email_status === 'success' || 
-                          contactResult.sms_status === 'success';
-        
+        const anySuccess = contactResult.call_status === 'success' ||
+          contactResult.email_status === 'success' ||
+          contactResult.sms_status === 'success';
+
         if (anySuccess) {
           successCount++;
         } else {
@@ -1161,7 +1134,7 @@ export class CampaignService {
         }
 
         console.log(`[Campaign ${campaignId}] Completed processing contact ${contact.name}. Success: ${anySuccess ? 'Yes' : 'No'}`);
-        
+
         // Check if campaign was paused (refresh from DB)
         const updatedCampaign = await Campaign.findById(campaignId);
         if (updatedCampaign?.status === 'paused') {
@@ -1178,7 +1151,7 @@ export class CampaignService {
       // Get organizationId from listId
       const finalList = await ContactList.findById(campaign.listId);
       const finalOrganizationId = finalList?.organizationId?.toString() || userId;
-      
+
       if (campaign.status === 'paused') {
         await this.addCampaignLog(campaign, 'info', `Campaign paused. Processed ${successCount + failCount} of ${contacts.length} contacts`);
       } else {
@@ -1188,10 +1161,10 @@ export class CampaignService {
           campaign.failedAt = new Date();
         }
         await campaign.save();
-        
-        await this.addCampaignLog(campaign, campaign.status === 'failed' ? 'error' : 'success', 
+
+        await this.addCampaignLog(campaign, campaign.status === 'failed' ? 'error' : 'success',
           `Campaign ${campaign.status}. Success: ${successCount}, Failed: ${failCount}`);
-        
+
         // Emit final status
         emitToOrganization(finalOrganizationId, 'campaign:status', {
           campaignId: campaign._id.toString(),
@@ -1217,7 +1190,7 @@ export class CampaignService {
       };
     } catch (error: any) {
       console.error(`[Campaign ${campaignId}] Campaign failed with error:`, error.message);
-      
+
       // Update campaign status to failed
       campaign.status = 'failed';
       await campaign.save();
@@ -1235,7 +1208,7 @@ export class CampaignService {
   ) {
     try {
       console.log(`[Transcript] Raw transcript structure:`, JSON.stringify(transcript, null, 2));
-      
+
       // CRITICAL: Always set organizationId for data isolation
       // Create conversation
       const conversation = await Conversation.create({
@@ -1293,7 +1266,7 @@ export class CampaignService {
       for (let i = 0; i < transcriptArray.length; i++) {
         const entry = transcriptArray[i];
         console.log(`[Transcript] Entry ${i}:`, JSON.stringify(entry, null, 2));
-        
+
         let sender: 'customer' | 'ai' = 'customer';
         let text = '';
 
@@ -1346,7 +1319,7 @@ export class CampaignService {
           conversationIdType: typeof savedMessages[0].conversationId,
           sender: savedMessages[0].sender,
         });
-        
+
         // Verify messages can be queried back
         const verifyCount = await Message.countDocuments({ conversationId: conversation._id });
         console.log(`[Transcript] Verification: Found ${verifyCount} messages with conversationId query`);
@@ -1374,10 +1347,10 @@ export class CampaignService {
     if (!list) {
       throw new AppError(404, 'NOT_FOUND', 'Contact list not found');
     }
-    
+
     const listOrgId = list.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (listOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this campaign');
     }

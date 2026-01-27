@@ -12,8 +12,9 @@ import { trackUsage } from '../middleware/profileTracking.middleware';
 import { profileService } from './profile.service';
 import { googleCalendarService } from './googleCalendar.service';
 import { googleSheetsService } from './googleSheets.service';
-import { googleGmailService } from './googleGmail.service';
+import gmailOAuthService from './gmailOAuth.service';
 import GoogleIntegration from '../models/GoogleIntegration';
+import SocialIntegration from '../models/SocialIntegration';
 
 const COMM_API = process.env.COMM_API_URL || 'https://keplerov1-python-2.onrender.com';
 
@@ -51,15 +52,15 @@ const VOICE_ID_MAP: Record<string, string> = {
  */
 const normalizePhoneNumber = (phone: string): string => {
   if (!phone) return phone;
-  
+
   // Remove any whitespace
   phone = phone.trim();
-  
+
   // If already has +, return as is
   if (phone.startsWith('+')) {
     return phone;
   }
-  
+
   // Add + prefix
   return '+' + phone;
 };
@@ -81,13 +82,13 @@ export class AutomationEngine {
     this.triggers = new Map();
     this.actions = new Map();
     this.whatsappService = new WhatsAppService();
-    
+
     this.registerHandlers();
   }
 
   private registerHandlers() {
     // ============ AISTEIN-IT TRIGGERS ============
-    
+
     // Contact Created Trigger
     this.triggers.set('keplero_contact_created', {
       validate: async (config, data) => {
@@ -107,8 +108,8 @@ export class AutomationEngine {
     this.triggers.set('keplero_contact_moved', {
       validate: async (config, data) => {
         // Check if contact was moved to the specified list
-        return data.event === 'contact_moved' && 
-               (!config.listId || data.listId === config.listId);
+        return data.event === 'contact_moved' &&
+          (!config.listId || data.listId === config.listId);
       }
     });
 
@@ -117,8 +118,8 @@ export class AutomationEngine {
       validate: async (config, data) => {
         // This trigger fires when mass sending is initiated
         // Either from CSV import or list selection
-        return data.event === 'mass_sending' && 
-               (data.source === 'csv' || data.source === 'list');
+        return data.event === 'mass_sending' &&
+          (data.source === 'csv' || data.source === 'list');
       }
     });
 
@@ -154,7 +155,7 @@ export class AutomationEngine {
     this.actions.set('keplero_api_call', {
       execute: async (config, triggerData) => {
         const { url, method = 'GET', headers = {}, body, params = {} } = config;
-        
+
         try {
           const response = await axios({
             method,
@@ -226,12 +227,12 @@ export class AutomationEngine {
             await ContactListMember.create({
               contactId: contact._id,
               listId
-            }).catch(() => {});
+            }).catch(() => { });
           }
         }
 
-        return { 
-          success: true, 
+        return {
+          success: true,
           contactId: contact._id,
           message: 'Contact created successfully'
         };
@@ -242,7 +243,7 @@ export class AutomationEngine {
     this.actions.set('keplero_outbound_call', {
       execute: async (config, triggerData, context) => {
         const contactId = triggerData.contactId || config.contactId;
-        
+
         if (!contactId) {
           throw new Error('Contact ID is required for outbound call');
         }
@@ -261,7 +262,7 @@ export class AutomationEngine {
           // Find the first configured phone settings
           phoneSettings = await PhoneSettings.findOne({ isConfigured: true });
         }
-        
+
         if (!phoneSettings || !phoneSettings.isConfigured) {
           throw new Error('Phone settings not configured. Please configure phone settings in the Settings page.');
         }
@@ -269,7 +270,7 @@ export class AutomationEngine {
         // Map selectedVoice name to ElevenLabs voice ID
         // Use customVoiceId if provided, otherwise use the mapped voice ID
         const voiceId = phoneSettings.customVoiceId || VOICE_ID_MAP[phoneSettings.selectedVoice] || VOICE_ID_MAP['adam'];
-        
+
         // Get API keys for LLM
         let provider = 'openai';
         let apiKey = '';
@@ -284,11 +285,11 @@ export class AutomationEngine {
           console.warn('[Automation] Failed to fetch API keys:', error.message);
           console.warn('[Automation] ⚠️  Platform API keys not configured. Calls may fail. Please configure platform API keys in environment variables.');
         }
-        
+
         // Get voice agent prompt and language from AI Behavior settings
         let voiceAgentPrompt = config.dynamicInstruction || '';
         let voiceLanguage = config.language || 'en';
-        
+
         // If no dynamic instruction in config, fetch from AI Behavior
         if (!voiceAgentPrompt && context?.userId) {
           try {
@@ -302,10 +303,10 @@ export class AutomationEngine {
             voiceAgentPrompt = 'Have a friendly conversation';
           }
         }
-        
+
         // Normalize phone number to E.164 format
         const normalizedPhone = normalizePhoneNumber(contact.phone);
-        
+
         // Get default knowledge bases from settings
         let collectionNames: string[] = [];
         if (context?.userId) {
@@ -316,7 +317,7 @@ export class AutomationEngine {
               // Prefer multiple knowledge bases (new format)
               if (settings.defaultKnowledgeBaseNames && settings.defaultKnowledgeBaseNames.length > 0) {
                 collectionNames = settings.defaultKnowledgeBaseNames;
-              } 
+              }
               // Fallback to single knowledge base (legacy format)
               else if (settings.defaultKnowledgeBaseName) {
                 collectionNames = [settings.defaultKnowledgeBaseName];
@@ -327,7 +328,7 @@ export class AutomationEngine {
             console.warn(`[Automation] Could not fetch knowledge bases:`, error.message);
           }
         }
-        
+
         // Prepare call request
         const callRequestBody: any = {
           phone_number: normalizedPhone,
@@ -341,7 +342,7 @@ export class AutomationEngine {
           collection_names: collectionNames, // Updated to support multiple collections
           greeting_message: phoneSettings.greetingMessage || 'Hello! How can I help you today?' // Greeting message from settings
         };
-        
+
         console.log('📝 [Automation] Using greeting message:', callRequestBody.greeting_message);
 
         // Add optional fields
@@ -361,7 +362,7 @@ export class AutomationEngine {
             console.warn('[Automation] Could not fetch e-commerce credentials:', error.message);
           }
         }
-        
+
         // Get escalation conditions from AIBehavior if not set
         if (!config.escalationCondition && context?.userId) {
           try {
@@ -388,12 +389,12 @@ export class AutomationEngine {
             api_key: callRequestBody.api_key ? `${callRequestBody.api_key.substring(0, 10)}...***` : '❌ NOT_SET'
           }, null, 2));
           console.log(`=====================================================\n`);
-          
+
           if (!apiKeysConfigured || !callRequestBody.api_key) {
             console.error(`[Automation] ❌ CRITICAL: API Key is missing! Call will likely fail.`);
             console.error(`[Automation] Platform API keys not configured. Please configure platform API keys in environment variables.`);
           }
-          
+
           const callResponse = await axios.post(callUrl, callRequestBody, {
             timeout: 360000,
           });
@@ -444,7 +445,7 @@ export class AutomationEngine {
             status: error.response?.status,
             code: error.code
           });
-          
+
           return {
             success: false,
             error: error.response?.data?.message || error.message || 'Call failed',
@@ -507,7 +508,7 @@ export class AutomationEngine {
           }
           // Replace {{now}} with current date/time
           resolvedTo = resolvedTo.replace(/\{\{now\}\}/g, new Date().toISOString());
-          
+
           if (resolvedTo.trim()) {
             recipientEmail = resolvedTo.trim();
           }
@@ -565,16 +566,16 @@ export class AutomationEngine {
         // Python API expects: to, subject, body, and X-User-Email header (if Gmail integration)
         try {
           console.log(`[Automation] Sending email to ${recipientEmail}...`);
-          
+
           const requestHeaders: any = {
             'Content-Type': 'application/json'
           };
-          
+
           // Add user email header if available (required for Gmail API)
           if (userEmail) {
             requestHeaders['X-User-Email'] = userEmail;
           }
-          
+
           const emailResponse = await axios.post(`${COMM_API}/email/send`, {
             to: recipientEmail,
             subject: emailSubject,
@@ -587,7 +588,7 @@ export class AutomationEngine {
           });
 
           const success = emailResponse.data.status === 'success' || emailResponse.data.success === true;
-          
+
           // FAIL HARD: If email sending failed, throw error immediately
           if (!success) {
             const errorMessage = emailResponse.data.message || emailResponse.data.error || 'Email sending failed';
@@ -619,7 +620,7 @@ export class AutomationEngine {
               hasUserEmailHeader: !!userEmail
             }
           });
-          
+
           // Provide more helpful error message
           let errorMessage = 'Email sending failed';
           if (errorDetails) {
@@ -638,7 +639,7 @@ export class AutomationEngine {
           } else {
             errorMessage = `Email sending failed: ${error.message}`;
           }
-          
+
           throw new Error(errorMessage);
         }
       }
@@ -702,14 +703,14 @@ export class AutomationEngine {
         // Default to "hello_world" if not specified (for testing)
         const resolvedTemplateName = templateName || templateId || 'hello_world';
         const resolvedLanguageCode = languageCode || 'en_US';
-        
+
         if (!resolvedTemplateName || resolvedTemplateName.trim() === '') {
           throw new Error('templateName is required.');
         }
 
         // Construct Graph API URL exactly as specified
         const graphApiUrl = `https://graph.facebook.com/v18.0/${resolvedPhoneNumberId}/messages`;
-        
+
         // Build payload exactly as specified (do NOT include components unless required)
         const payload: any = {
           messaging_product: 'whatsapp',
@@ -720,12 +721,12 @@ export class AutomationEngine {
             language: { code: resolvedLanguageCode }
           }
         };
-        
+
         // Only include components if explicitly provided and not empty
         if (components && Array.isArray(components) && components.length > 0) {
           payload.template.components = components;
         }
-        
+
         console.log('[Automation] WhatsApp Template - Final URL and payload:', {
           url: graphApiUrl,
           phoneNumberId: resolvedPhoneNumberId,
@@ -770,16 +771,16 @@ export class AutomationEngine {
       }
     });
 
- // Legacy actions (FIXED - redirect to real email sender)
-this.actions.set('send_email', {
-  execute: async (config, triggerData, context) => {
-    const handler = this.actions.get('keplero_send_email');
-    if (!handler) {
-      throw new Error('keplero_send_email handler not found');
-    }
-    return handler.execute(config, triggerData, context);
-  }
-});
+    // Legacy actions (FIXED - redirect to real email sender)
+    this.actions.set('send_email', {
+      execute: async (config, triggerData, context) => {
+        const handler = this.actions.get('keplero_send_email');
+        if (!handler) {
+          throw new Error('keplero_send_email handler not found');
+        }
+        return handler.execute(config, triggerData, context);
+      }
+    });
 
     this.actions.set('save_to_crm', {
       execute: async (config, triggerData, context) => {
@@ -787,14 +788,14 @@ this.actions.set('send_email', {
         // For now, we consider the contact already saved in our database as the "CRM"
         const contactId = triggerData.contactId;
         const contact = await Customer.findById(contactId);
-        
+
         if (!contact) {
           throw new Error('Contact not found');
         }
 
         console.log(`[Automation] Contact ${contact.name} (${contactId}) saved to CRM`);
-        
-        return { 
+
+        return {
           saved: true,
           contactId: contact._id,
           contactName: contact.name,
@@ -840,24 +841,24 @@ this.actions.set('send_email', {
         await ContactListMember.create({
           contactId: triggerData.contactId,
           listId: config.listId
-        }).catch(() => {});
+        }).catch(() => { });
         return { added: true, listId: config.listId };
       }
     });
 
     // ============ GOOGLE WORKSPACE ACTIONS (ADDITIVE ONLY) ============
-    
+
     // Google Calendar - Check Availability
     this.actions.set('keplero_google_calendar_check_availability', {
       execute: async (config, triggerData, context) => {
         const organizationId = context?.organizationId || triggerData?.organizationId;
         let userId = context?.userId;
-        
+
         // Resolve userId if missing
         if (!userId && organizationId) {
           userId = await this.resolveUserId(organizationId, context);
         }
-        
+
         if (!organizationId || !userId) {
           throw new Error('Organization ID and User ID are required for Google Calendar actions');
         }
@@ -905,12 +906,12 @@ this.actions.set('send_email', {
       execute: async (config, triggerData, context) => {
         const organizationId = context?.organizationId || triggerData?.organizationId;
         let userId = context?.userId;
-        
+
         // Resolve userId if missing
         if (!userId && organizationId) {
           userId = await this.resolveUserId(organizationId, context);
         }
-        
+
         if (!organizationId || !userId) {
           throw new Error('Organization ID and User ID are required for Google Calendar actions');
         }
@@ -928,7 +929,7 @@ this.actions.set('send_email', {
         }
 
         const { summary, description, startDateTime, endDateTime, timeZone, attendees, location } = config;
-        
+
         if (!summary || !startDateTime || !endDateTime) {
           throw new Error('summary, startDateTime, and endDateTime are required for calendar event');
         }
@@ -968,158 +969,158 @@ this.actions.set('send_email', {
       }
     });
 
-// Google Sheets - Append Row (FINAL FIXED)
-this.actions.set('keplero_google_sheet_append_row', {
-  execute: async (config, triggerData, context) => {
-    const organizationId = context?.organizationId || triggerData?.organizationId;
-    let userId = context?.userId;
-
-    // Resolve userId if missing
-    if (!userId && organizationId) {
-      userId = await this.resolveUserId(organizationId, context);
-    }
-
-    if (!organizationId || !userId) {
-      throw new Error('Organization ID and User ID are required for Google Sheets actions');
-    }
-
-    const { spreadsheetId, values } = config;
-
-    if (!spreadsheetId || !Array.isArray(values) || values.length === 0) {
-      throw new Error('Google Sheet action not configured properly');
-    }
-
-    // Check integration
-    const integration = await GoogleIntegration.findOne({
-      userId,
-      organizationId,
-      status: 'active',
-      'services.sheets': true
-    });
-
-    if (!integration) {
-      throw new Error('Google Sheets integration not connected');
-    }
-
-    try {
-      const { google } = require('googleapis');
-
-      const oauth2Client = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID,
-        process.env.GOOGLE_CLIENT_SECRET,
-        process.env.GOOGLE_REDIRECT_URI ||
-          'http://localhost:5001/api/v1/integrations/google/callback'
-      );
-
-      oauth2Client.setCredentials({
-        access_token: integration.accessToken,
-        refresh_token: integration.refreshToken
-      });
-
-      const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
-
-      // ✅ AUTO-DETECT SHEET NAME (CRITICAL FIX)
-      const sheetMeta = await sheets.spreadsheets.get({
-        spreadsheetId
-      });
-
-      const sheetName =
-        sheetMeta.data.sheets?.[0]?.properties?.title;
-
-      if (!sheetName) {
-        throw new Error('No sheet found in spreadsheet');
-      }
-
-      // ✅ CORRECT RANGE (THIS IS THE KEY)
-      const range = `${sheetName}!A1`;
-
-      // Resolve contact variables
-      let contact: any = null;
-      if (triggerData.contactId) {
-        contact = await Customer.findById(triggerData.contactId).lean();
-      }
-
-      const resolvedValues = values.map((value: any) => {
-        if (typeof value !== 'string') return value;
-
-        if (contact) {
-          return value
-            .replace(/\{\{contact\.name\}\}/g, contact.name || '')
-            .replace(/\{\{contact\.email\}\}/g, contact.email || '')
-            .replace(/\{\{contact\.phone\}\}/g, contact.phone || '')
-            .replace(
-              /\{\{contact\.createdAt\}\}/g,
-              contact.createdAt
-                ? new Date(contact.createdAt).toISOString()
-                : ''
-            );
-        }
-
-        return value;
-      });
-
-      console.log('[Automation] Google Sheets append:', {
-        spreadsheetId,
-        range,
-        values: resolvedValues
-      });
-
-      const response = await sheets.spreadsheets.values.append({
-        spreadsheetId,
-        range, // ✅ MUST BE SheetName!A1
-        valueInputOption: 'USER_ENTERED',
-        insertDataOption: 'INSERT_ROWS',
-        requestBody: {
-          values: [resolvedValues] // 2D array REQUIRED
-        }
-      });
-
-      console.log('[Automation] ✅ Google Sheets append success');
-
-      return {
-        success: true,
-        updatedRange: response.data.updates?.updatedRange,
-        updatedRows: response.data.updates?.updatedRows || 1,
-        appendedAt: new Date()
-      };
-    } catch (error: any) {
-      console.error('[Automation] Google Sheets append failed:', error.message);
-
-      return {
-        success: false,
-        error: `Google Sheets append failed: ${error.message}`,
-        appendedAt: new Date()
-      };
-    }
-  }
-});
-
-
-    // Google Gmail - Send Email
-    this.actions.set('keplero_google_gmail_send', {
+    // Google Sheets - Append Row (FINAL FIXED)
+    this.actions.set('keplero_google_sheet_append_row', {
       execute: async (config, triggerData, context) => {
         const organizationId = context?.organizationId || triggerData?.organizationId;
         let userId = context?.userId;
-        
+
         // Resolve userId if missing
         if (!userId && organizationId) {
           userId = await this.resolveUserId(organizationId, context);
         }
-        
+
         if (!organizationId || !userId) {
-          throw new Error('Organization ID and User ID are required for Gmail actions');
+          throw new Error('Organization ID and User ID are required for Google Sheets actions');
         }
 
-        // Check if Gmail is connected
+        const { spreadsheetId, values } = config;
+
+        if (!spreadsheetId || !Array.isArray(values) || values.length === 0) {
+          throw new Error('Google Sheet action not configured properly');
+        }
+
+        // Check integration
         const integration = await GoogleIntegration.findOne({
           userId,
           organizationId,
           status: 'active',
-          'services.gmail': true
+          'services.sheets': true
         });
 
         if (!integration) {
-          throw new Error('Google Gmail integration not connected. Please connect Google Workspace in Settings.');
+          throw new Error('Google Sheets integration not connected');
+        }
+
+        try {
+          const { google } = require('googleapis');
+
+          const oauth2Client = new google.auth.OAuth2(
+            process.env.GOOGLE_CLIENT_ID,
+            process.env.GOOGLE_CLIENT_SECRET,
+            process.env.GOOGLE_REDIRECT_URI ||
+            'http://localhost:5001/api/v1/integrations/google/callback'
+          );
+
+          oauth2Client.setCredentials({
+            access_token: integration.accessToken,
+            refresh_token: integration.refreshToken
+          });
+
+          const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
+
+          // ✅ AUTO-DETECT SHEET NAME (CRITICAL FIX)
+          const sheetMeta = await sheets.spreadsheets.get({
+            spreadsheetId
+          });
+
+          const sheetName =
+            sheetMeta.data.sheets?.[0]?.properties?.title;
+
+          if (!sheetName) {
+            throw new Error('No sheet found in spreadsheet');
+          }
+
+          // ✅ CORRECT RANGE (THIS IS THE KEY)
+          const range = `${sheetName}!A1`;
+
+          // Resolve contact variables
+          let contact: any = null;
+          if (triggerData.contactId) {
+            contact = await Customer.findById(triggerData.contactId).lean();
+          }
+
+          const resolvedValues = values.map((value: any) => {
+            if (typeof value !== 'string') return value;
+
+            if (contact) {
+              return value
+                .replace(/\{\{contact\.name\}\}/g, contact.name || '')
+                .replace(/\{\{contact\.email\}\}/g, contact.email || '')
+                .replace(/\{\{contact\.phone\}\}/g, contact.phone || '')
+                .replace(
+                  /\{\{contact\.createdAt\}\}/g,
+                  contact.createdAt
+                    ? new Date(contact.createdAt).toISOString()
+                    : ''
+                );
+            }
+
+            return value;
+          });
+
+          console.log('[Automation] Google Sheets append:', {
+            spreadsheetId,
+            range,
+            values: resolvedValues
+          });
+
+          const response = await sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range, // ✅ MUST BE SheetName!A1
+            valueInputOption: 'USER_ENTERED',
+            insertDataOption: 'INSERT_ROWS',
+            requestBody: {
+              values: [resolvedValues] // 2D array REQUIRED
+            }
+          });
+
+          console.log('[Automation] ✅ Google Sheets append success');
+
+          return {
+            success: true,
+            updatedRange: response.data.updates?.updatedRange,
+            updatedRows: response.data.updates?.updatedRows || 1,
+            appendedAt: new Date()
+          };
+        } catch (error: any) {
+          console.error('[Automation] Google Sheets append failed:', error.message);
+
+          return {
+            success: false,
+            error: `Google Sheets append failed: ${error.message}`,
+            appendedAt: new Date()
+          };
+        }
+      }
+    });
+
+
+    // Google Gmail - Send Email (FIXED - Using Social Integration)
+    this.actions.set('keplero_google_gmail_send', {
+      execute: async (config, triggerData, context) => {
+        const organizationId = context?.organizationId || triggerData?.organizationId;
+        let userId = context?.userId;
+
+        // Resolve userId if missing
+        if (!userId && organizationId) {
+          userId = await this.resolveUserId(organizationId, context);
+        }
+
+        if (!organizationId || !userId) {
+          throw new Error('Organization ID and User ID are required for Gmail actions');
+        }
+
+        // ✅ CHECK SOCIAL INTEGRATION (CRITICAL FIX)
+        const integration = await SocialIntegration.findOne({
+          userId,
+          organizationId,
+          platform: 'gmail',
+          status: 'connected'
+        });
+
+        if (!integration) {
+          throw new Error('Gmail not connected. Please connect Gmail in Social Integrations (Settings > Socials).');
         }
 
         const contactId = triggerData.contactId || config.contactId;
@@ -1144,28 +1145,30 @@ this.actions.set('keplero_google_sheet_append_row', {
         }
 
         try {
-          const result = await googleGmailService.sendEmail(
-            userId.toString(),
-            organizationId.toString(),
-            {
-              to: recipientEmail,
-              subject,
-              body,
-              isHtml: isHtml || false,
-              cc,
-              bcc,
-              replyTo
-            }
-          );
+          // Resolve dynamic variables in body and subject
+          const contact = contactId ? await Customer.findById(contactId).lean() : null;
+          const resolvedSubject = await this.resolveDynamicVariables(subject, triggerData, contact);
+          const resolvedBody = await this.resolveDynamicVariables(body, triggerData, contact);
 
-          console.log(`[Automation] Gmail sent to ${recipientEmail} successfully`);
+          console.log(`[Automation] Sending Gmail (via Social Integration) to ${recipientEmail}`);
+
+          const userEmail = integration.getDecryptedApiKey();
+
+          const result = await gmailOAuthService.sendEmail(userEmail, {
+            to: recipientEmail,
+            subject: resolvedSubject,
+            body: resolvedBody,
+            cc,
+            bcc
+          });
+
+          console.log(`[Automation] ✅ Gmail sent to ${recipientEmail} successfully`);
 
           return {
             success: true,
-            messageId: result.messageId,
-            threadId: result.threadId,
+            messageId: result.messageId || 'sent',
             to: recipientEmail,
-            subject,
+            subject: resolvedSubject,
             sentAt: new Date()
           };
         } catch (error: any) {
@@ -1212,12 +1215,12 @@ this.actions.set('keplero_google_sheet_append_row', {
    */
   private convertConfigToPlainObject(config: any): Record<string, any> {
     if (!config) return {};
-    
+
     // If it's already a plain object, return as is
     if (config.constructor === Object) {
       return config;
     }
-    
+
     // If it's a Mongoose Map, convert to plain object
     if (config instanceof Map) {
       const plainObj: Record<string, any> = {};
@@ -1226,12 +1229,12 @@ this.actions.set('keplero_google_sheet_append_row', {
       });
       return plainObj;
     }
-    
+
     // Try to convert using Object.fromEntries if available
     if (typeof config.toObject === 'function') {
       return config.toObject();
     }
-    
+
     // Fallback: return as is
     return config;
   }
@@ -1247,7 +1250,7 @@ this.actions.set('keplero_google_sheet_append_row', {
 
     // Resolve organizationId and userId
     const organizationId = context?.organizationId || triggerData?.organizationId || automation.organizationId;
-    
+
     // Resolve userId if missing (needed for Google integrations)
     let userId = context?.userId;
     if (!userId && organizationId) {
@@ -1288,7 +1291,7 @@ this.actions.set('keplero_google_sheet_append_row', {
 
       // CRITICAL: Convert trigger config from Map to plain object
       const triggerConfig = this.convertConfigToPlainObject(triggerNode.config);
-      
+
       // Validate trigger
       const triggerHandler = this.triggers.get(triggerNode.service);
       if (!triggerHandler) {
@@ -1309,7 +1312,7 @@ this.actions.set('keplero_google_sheet_append_row', {
       for (const node of sortedNodes) {
         // CRITICAL: Convert node.config from Map to plain object BEFORE using it
         const nodeConfig = this.convertConfigToPlainObject(node.config);
-        
+
         // Log config for debugging (especially for Google Sheets)
         if (node.service === 'keplero_google_sheet_append_row') {
           console.log(`[Automation Engine] 📋 Node config for ${node.service} (${node.id}):`, {
@@ -1323,7 +1326,7 @@ this.actions.set('keplero_google_sheet_append_row', {
             isPlainObject: nodeConfig.constructor === Object
           });
         }
-        
+
         if (node.type === 'delay') {
           await this.delay(nodeConfig.delay, nodeConfig.delayUnit);
         } else if (node.type === 'action') {
@@ -1336,12 +1339,12 @@ this.actions.set('keplero_google_sheet_append_row', {
           try {
             // CRITICAL: Pass converted plain object config, not Mongoose Map
             const actionResult = await actionHandler.execute(nodeConfig, triggerData, enrichedContext);
-            
+
             // Check if action returned success=false
             if (actionResult && actionResult.success === false) {
               const errorMessage = actionResult.error || 'Action returned success=false';
               console.error(`[Automation Engine] ❌ Action ${node.service} failed:`, errorMessage);
-              
+
               // Google Sheets failures should NOT stop automation - continue to next action
               if (node.service === 'keplero_google_sheet_append_row') {
                 console.warn(`[Automation Engine] ⚠️  Google Sheets failed, but continuing automation...`);
@@ -1356,11 +1359,11 @@ this.actions.set('keplero_google_sheet_append_row', {
                 // Continue to next action instead of throwing
                 continue;
               }
-              
+
               // For other actions, throw to stop execution
               throw new Error(errorMessage);
             }
-            
+
             console.log(`[Automation Engine] ✅ Action ${node.service} completed:`, {
               success: actionResult?.success !== false,
               result: actionResult
@@ -1372,7 +1375,7 @@ this.actions.set('keplero_google_sheet_append_row', {
             });
           } catch (actionError: any) {
             console.error(`[Automation Engine] ❌ Action ${node.service} failed:`, actionError.message);
-            
+
             // Google Sheets failures should NOT stop automation - continue to next action
             if (node.service === 'keplero_google_sheet_append_row') {
               console.warn(`[Automation Engine] ⚠️  Google Sheets failed, but continuing automation...`);
@@ -1387,7 +1390,7 @@ this.actions.set('keplero_google_sheet_append_row', {
               // Continue to next action instead of throwing
               continue;
             }
-            
+
             // Mark this node as failed
             actionResults.push({
               nodeId: node.id,
@@ -1405,16 +1408,16 @@ this.actions.set('keplero_google_sheet_append_row', {
 
       // Check if any action failed
       const hasFailures = actionResults.some((r: any) => r.result?.success === false);
-      
+
       if (hasFailures) {
         // Mark execution as failed if any action failed
         execution.status = 'failed';
         execution.errorMessage = 'One or more actions failed';
         execution.actionData = actionResults;
         await execution.save();
-        
+
         console.error(`[Automation Engine] ❌ Automation execution failed: One or more actions failed`);
-        
+
         return {
           success: false,
           executionId: execution._id,
@@ -1446,9 +1449,9 @@ this.actions.set('keplero_google_sheet_append_row', {
       execution.status = 'failed';
       execution.errorMessage = error.message;
       await execution.save();
-      
+
       console.error(`[Automation Engine] ❌ Automation execution failed:`, error.message);
-      
+
       throw error;
     }
   }
@@ -1457,30 +1460,30 @@ this.actions.set('keplero_google_sheet_append_row', {
   async triggerByEvent(event: string, eventData: any, context?: any) {
     // Build query to find active automations
     const query: any = { isActive: true };
-    
+
     // Filter by organizationId if provided in context or eventData
     const organizationId = context?.organizationId || eventData?.organizationId;
     if (organizationId) {
       query.organizationId = organizationId;
     }
-    
+
     console.log(`[Automation Engine] Triggering event: ${event}`, {
       organizationId,
       hasContext: !!context,
       eventDataKeys: Object.keys(eventData || {})
     });
-    
+
     // CRITICAL: Always fetch fresh from database (no cache)
     // Use lean() to get plain JavaScript objects, not Mongoose documents
     const automations = await Automation.find(query).lean();
-    
+
     console.log(`[Automation Engine] Found ${automations.length} active automation(s) for organization ${organizationId}`);
 
     const results = [];
 
     for (const automation of automations) {
       const triggerNode = automation.nodes.find(n => n.type === 'trigger');
-      
+
       if (!triggerNode) continue;
 
       // CRITICAL: Convert trigger config from Map to plain object
@@ -1492,11 +1495,11 @@ this.actions.set('keplero_google_sheet_append_row', {
 
       try {
         const isValid = await triggerHandler.validate(triggerConfig, eventData);
-        
+
         if (isValid) {
           const automationId = (automation._id as any).toString();
           console.log(`[Automation Engine] ✅ Trigger matched for automation: ${automation.name} (${automationId})`);
-          
+
           // Execute automation asynchronously
           this.executeAutomation(automationId, eventData, context)
             .then(result => {
@@ -1509,7 +1512,7 @@ this.actions.set('keplero_google_sheet_append_row', {
             .catch(err => {
               console.error(`[Automation Engine] ❌ Error executing automation ${automationId}:`, err.message);
             });
-          
+
           results.push({
             automationId: automation._id,
             name: automation.name,
@@ -1567,6 +1570,52 @@ this.actions.set('keplero_google_sheet_append_row', {
         }
       };
     }
+  }
+
+  /**
+   * Resolve dynamic variables in text using trigger data
+   */
+  private async resolveDynamicVariables(text: string, triggerData: any, contact?: any): Promise<string> {
+    if (!text || typeof text !== 'string') return text;
+
+    let resolvedText = text;
+
+    // Resolve contact variables if contactId is present
+    let contactToUse = contact;
+    const contactId = triggerData?.contactId || triggerData?.customer?._id || triggerData?.id;
+
+    if (!contactToUse && contactId && text.includes('{{contact.')) {
+      try {
+        contactToUse = await Customer.findById(contactId);
+      } catch (err) {
+        console.error('[Automation Engine] Error resolving contact variables:', err);
+      }
+    }
+
+    if (contactToUse) {
+      resolvedText = resolvedText
+        .replace(/\{\{contact\.email\}\}/g, contactToUse.email || '')
+        .replace(/\{\{contact\.name\}\}/g, contactToUse.name || '')
+        .replace(/\{\{contact\.phone\}\}/g, contactToUse.phone || '')
+        .replace(/\{\{contact\.createdAt\}\}/g, contactToUse.createdAt ? new Date(contactToUse.createdAt).toISOString() : '');
+    }
+
+    // Resolve general triggerData variables
+    if (triggerData) {
+      // Basic flat property resolution
+      Object.keys(triggerData).forEach(key => {
+        const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'g');
+        if (resolvedText.includes(`{{${key}}}`)) {
+          const val = triggerData[key];
+          resolvedText = resolvedText.replace(regex, typeof val === 'object' ? JSON.stringify(val) : String(val));
+        }
+      });
+    }
+
+    // Resolve common variables
+    resolvedText = resolvedText.replace(/\{\{now\}\}/g, new Date().toISOString());
+
+    return resolvedText;
   }
 }
 

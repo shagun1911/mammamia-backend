@@ -4,12 +4,12 @@ export interface IGoogleIntegration extends Document {
   userId: mongoose.Types.ObjectId;
   organizationId: mongoose.Types.ObjectId;
   provider: 'google';
-  
+
   // OAuth tokens
   accessToken: string;
   refreshToken: string;
   tokenExpiry?: Date;
-  
+
   // Enabled services
   services: {
     sheets: boolean;
@@ -17,14 +17,14 @@ export interface IGoogleIntegration extends Document {
     calendar: boolean;
     gmail: boolean;
   };
-  
+
   // User profile info from Google
   googleProfile: {
     email: string;
     name?: string;
     picture?: string;
   };
-  
+
   // Service-specific settings
   settings: {
     sheets?: {
@@ -37,7 +37,7 @@ export interface IGoogleIntegration extends Document {
       defaultCalendarId?: string;
     };
   };
-  
+
   status: 'active' | 'expired' | 'revoked';
   lastSyncedAt?: Date;
   createdAt: Date;
