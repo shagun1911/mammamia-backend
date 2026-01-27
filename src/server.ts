@@ -35,6 +35,8 @@ import metaRoutes from './routes/meta.routes';
 import dialog360WebhookRoutes from './routes/webhook.routes';
 import profileRoutes from './routes/profile.routes';
 import inboundAgentConfigRoutes from './routes/inboundAgentConfig.routes';
+import outboundAgentConfigRoutes from './routes/outboundAgentConfig.routes';
+import inboundNumbersRoutes from './routes/inboundNumbers.routes'; // Uses new InboundNumber model
 import whatsappRoutes from './routes/whatsapp.routes';
 
 import instagramWebhookRoutes from './routes/instagramWebhook.routes';
@@ -149,6 +151,8 @@ app.use('/api/v1/social-integrations', socialIntegrationRoutes);
 app.use('/api/v1/webhooks/360dialog', dialog360WebhookRoutes);
 app.use('/api/v1/profile', profileRoutes);
 app.use('/api/v1/inbound-agent-config', inboundAgentConfigRoutes);
+app.use('/api/v1/outbound-agent-config', outboundAgentConfigRoutes);
+app.use('/api/v1/inbound-numbers', inboundNumbersRoutes);
 app.use('/api/v1/whatsapp', whatsappRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/plans', planRoutes);

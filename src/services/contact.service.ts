@@ -86,7 +86,7 @@ export class ContactService {
     // CRITICAL: Verify ownership - contact must belong to user's organization
     const contactOrgId = (contact as any).organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (contactOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this contact');
     }
@@ -148,9 +148,9 @@ export class ContactService {
 
     // Validate lists exist before creating contact (to prevent partial saves)
     if (lists && lists.length > 0) {
-      const existingLists = await ContactList.find({ 
+      const existingLists = await ContactList.find({
         _id: { $in: lists },
-        organizationId 
+        organizationId
       });
       if (existingLists.length !== lists.length) {
         throw new AppError(400, 'VALIDATION_ERROR', 'One or more contact lists not found');
@@ -208,7 +208,7 @@ export class ContactService {
     // CRITICAL: Verify ownership - contact must belong to user's organization
     const contactOrgId = contact.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (contactOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this contact');
     }
@@ -216,11 +216,11 @@ export class ContactService {
     // Check for duplicate email/phone in the same organization (excluding current contact)
     const orgId = contact.organizationId || updateData.organizationId || organizationId;
     if (updateData.email || updateData.phone) {
-      const duplicateQuery: any = { 
+      const duplicateQuery: any = {
         organizationId: orgId,
         _id: { $ne: contactId }
       };
-      
+
       if (updateData.email) {
         duplicateQuery.email = updateData.email.toLowerCase().trim();
       } else if (updateData.phone) {
@@ -244,7 +244,7 @@ export class ContactService {
     if (lists) {
       // Remove from all current lists
       await ContactListMember.deleteMany({ contactId });
-      
+
       // Add to new lists
       if (lists.length > 0) {
         await this.addToLists(contactId, lists);
@@ -264,7 +264,7 @@ export class ContactService {
     // CRITICAL: Verify ownership - contact must belong to user's organization
     const contactOrgId = contact.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (contactOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this contact');
     }
@@ -345,23 +345,24 @@ export class ContactService {
     return { added: contactIds.length };
   }
 
-  async importFromCSV(listId: string, csvContent: string, defaultCountryCode: string) {
+  async importFromCSV(listId: string, csvContent: string, defaultCountryCode: string, userId: string, organizationId: string) {
     console.log('[CSV Import Service] Starting import for list:', listId);
     console.log('[CSV Import Service] CSV content length:', csvContent.length);
-    
+
     return new Promise((resolve, reject) => {
       const results: any[] = [];
       const errors: any[] = [];
       const duplicates: string[] = [];
 
-      // Get organization ID from the list first (before processing rows)
+      // Use organization ID from the list first (before processing rows)
       ContactList.findById(listId).then(list => {
         if (!list) {
           reject(new AppError(404, 'NOT_FOUND', 'List not found'));
           return;
         }
 
-        const organizationId = list.organizationId;
+        // organizationId passed from controller is preferred, but we can verify it matches list
+        const orgId = organizationId || list.organizationId;
 
         Papa.parse(csvContent, {
           header: true,
@@ -428,19 +429,19 @@ export class ContactService {
 
                 if (duplicateConditions.length > 0) {
                   duplicateQuery.$or = duplicateConditions;
-                  
+
                   const existing = await Customer.findOne(duplicateQuery);
 
                   if (existing) {
                     duplicates.push(email || phone || name);
-                    
+
                     // Add to list even if duplicate
                     await ContactListMember.findOneAndUpdate(
                       { contactId: existing._id, listId },
                       { contactId: existing._id, listId },
                       { upsert: true, new: true }
-                    ).catch(() => {});
-                    
+                    ).catch(() => { });
+
                     continue;
                   }
                 }
@@ -478,8 +479,21 @@ export class ContactService {
               duplicates: duplicates.length,
               errors: errors.slice(0, 10) // Return max 10 errors
             };
-            
+
             console.log('[CSV Import Service] Import complete:', summary);
+
+            // ✅ TRIGGER BATCH AUTOMATION (Part 2)
+            if (results.length > 0) {
+              automationEngine.triggerByEvent('batch_call', {
+                event: 'batch_call',
+                source: 'csv',
+                listId,
+                contactIds: results.map(c => (c._id as any).toString()),
+                userId,
+                organizationId: orgId
+              }).catch(err => console.error('[CSV Import Service] Automation trigger error:', err));
+            }
+
             resolve(summary);
           },
           error: (error: any) => {

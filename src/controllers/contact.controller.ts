@@ -122,7 +122,7 @@ export class ContactController {
       console.log('[CSV Import Controller] Request received');
       console.log('[CSV Import Controller] Params:', req.params);
       console.log('[CSV Import Controller] File:', req.file ? `${req.file.originalname} (${req.file.size} bytes)` : 'NO FILE');
-      
+
       if (!req.file) {
         throw new AppError(400, 'VALIDATION_ERROR', 'No file uploaded');
       }
@@ -136,11 +136,18 @@ export class ContactController {
       const csvContent = req.file.buffer.toString('utf-8');
       console.log('[CSV Import Controller] CSV Content length:', csvContent.length);
       console.log('[CSV Import Controller] First 200 chars:', csvContent.substring(0, 200));
-      
+
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+
       const result = await this.contactService.importFromCSV(
         listId,
         csvContent,
-        defaultCountryCode
+        defaultCountryCode,
+        req.user?._id?.toString() || '',
+        organizationId.toString()
       );
 
       console.log('[CSV Import Controller] Import result:', result);

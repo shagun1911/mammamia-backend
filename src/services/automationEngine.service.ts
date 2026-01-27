@@ -113,13 +113,30 @@ export class AutomationEngine {
       }
     });
 
-    // Mass Sending (Campaign) Trigger
+    // Batch Call / Mass Sending Trigger
+    this.triggers.set('batch_call', {
+      validate: async (config, data) => {
+        // payload: { event: 'batch_call', source: 'csv'|'list', contactIds: [], listId?: string }
+        if (data.event !== 'batch_call') return false;
+
+        // Filter by source if configured (optional)
+        if (config.source && data.source !== config.source) return false;
+
+        // Filter by listId if configured (mandatory if source is 'list' in config)
+        if (config.source === 'list' && config.listId && data.listId !== config.listId) return false;
+
+        return true;
+      }
+    });
+
+    // Legacy mass sending trigger (redirect to batch_call logic)
     this.triggers.set('keplero_mass_sending', {
       validate: async (config, data) => {
-        // This trigger fires when mass sending is initiated
-        // Either from CSV import or list selection
-        return data.event === 'mass_sending' &&
-          (data.source === 'csv' || data.source === 'list');
+        // Support old event names but same filtering logic
+        if (data.event !== 'batch_call' && data.event !== 'mass_sending') return false;
+        if (config.source && data.source !== config.source) return false;
+        if (config.source === 'list' && config.listId && data.listId !== config.listId) return false;
+        return true;
       }
     });
 
@@ -267,9 +284,66 @@ export class AutomationEngine {
           throw new Error('Phone settings not configured. Please configure phone settings in the Settings page.');
         }
 
-        // Map selectedVoice name to ElevenLabs voice ID
-        // Use customVoiceId if provided, otherwise use the mapped voice ID
-        const voiceId = phoneSettings.customVoiceId || VOICE_ID_MAP[phoneSettings.selectedVoice] || VOICE_ID_MAP['adam'];
+        // 🔑 CRITICAL: Determine which outbound number to use
+        // Priority: config.outboundNumber > phoneSettings.twilioPhoneNumber > first available outbound config
+        let outboundNumber = config.outboundNumber || phoneSettings.twilioPhoneNumber;
+        
+        // If no outbound number specified, get the first available from OutboundAgentConfig
+        if (!outboundNumber && context?.userId) {
+          try {
+            const { outboundAgentConfigService } = await import('./outboundAgentConfig.service');
+            const allConfigs = await outboundAgentConfigService.getAll(String(context.userId));
+            if (allConfigs && allConfigs.length > 0) {
+              outboundNumber = allConfigs[0].outboundNumber;
+              console.log(`[Automation] No outbound number specified, using first available: ${outboundNumber}`);
+            }
+          } catch (error: any) {
+            console.warn(`[Automation] Could not fetch outbound configs:`, error.message);
+          }
+        }
+
+        if (!outboundNumber) {
+          throw new Error('No outbound phone number configured. Please configure an outbound number in Phone Settings.');
+        }
+
+        // 🔑 CRITICAL: Fetch per-number config from OutboundAgentConfig (NOT global phoneSettings)
+        let voiceId = VOICE_ID_MAP['adam']; // Default fallback
+        let transferTo = '';
+        let greetingMessage = 'Hello! How can I help you today?';
+        let escalationRules: string[] = [];
+
+        if (context?.userId) {
+          try {
+            const { outboundAgentConfigService } = await import('./outboundAgentConfig.service');
+            const outboundConfig = await outboundAgentConfigService.getByOutboundNumber(String(context.userId), outboundNumber);
+            
+            if (outboundConfig) {
+              // Use per-number config (THIS IS THE FIX)
+              voiceId = outboundConfig.customVoiceId || VOICE_ID_MAP[outboundConfig.selectedVoice] || VOICE_ID_MAP['adam'];
+              transferTo = outboundConfig.humanOperatorPhone || '';
+              greetingMessage = outboundConfig.greetingMessage || 'Hello! How can I help you today?';
+              escalationRules = outboundConfig.escalationRules || [];
+              console.log(`[Automation] ✅ Using per-number config for ${outboundNumber}: voice=${voiceId}, language=${outboundConfig.language || 'en'}`);
+            } else {
+              // Fallback to global phoneSettings if no per-number config exists
+              console.warn(`[Automation] ⚠️ No per-number config found for ${outboundNumber}, falling back to global settings`);
+              voiceId = phoneSettings.customVoiceId || VOICE_ID_MAP[phoneSettings.selectedVoice] || VOICE_ID_MAP['adam'];
+              transferTo = phoneSettings.humanOperatorPhone || '';
+              greetingMessage = phoneSettings.greetingMessage || 'Hello! How can I help you today?';
+            }
+          } catch (error: any) {
+            console.error(`[Automation] ❌ Failed to fetch outbound config for ${outboundNumber}:`, error.message);
+            // Fallback to global settings
+            voiceId = phoneSettings.customVoiceId || VOICE_ID_MAP[phoneSettings.selectedVoice] || VOICE_ID_MAP['adam'];
+            transferTo = phoneSettings.humanOperatorPhone || '';
+            greetingMessage = phoneSettings.greetingMessage || 'Hello! How can I help you today?';
+          }
+        } else {
+          // No userId, use global settings
+          voiceId = phoneSettings.customVoiceId || VOICE_ID_MAP[phoneSettings.selectedVoice] || VOICE_ID_MAP['adam'];
+          transferTo = phoneSettings.humanOperatorPhone || '';
+          greetingMessage = phoneSettings.greetingMessage || 'Hello! How can I help you today?';
+        }
 
         // Get API keys for LLM
         let provider = 'openai';
@@ -296,7 +370,22 @@ export class AutomationEngine {
             const { aiBehaviorService } = await import('./aiBehavior.service');
             const aiBehavior = await aiBehaviorService.get(context.userId);
             voiceAgentPrompt = aiBehavior.voiceAgent.systemPrompt || 'You are a helpful AI voice assistant.';
-            voiceLanguage = aiBehavior.voiceAgent.language || 'en';
+            // Use language from per-number config if available, otherwise from AI Behavior
+            if (context?.userId) {
+              try {
+                const { outboundAgentConfigService } = await import('./outboundAgentConfig.service');
+                const outboundConfig = await outboundAgentConfigService.getByOutboundNumber(String(context.userId), outboundNumber);
+                if (outboundConfig?.language) {
+                  voiceLanguage = outboundConfig.language;
+                } else {
+                  voiceLanguage = aiBehavior.voiceAgent.language || 'en';
+                }
+              } catch (error: any) {
+                voiceLanguage = aiBehavior.voiceAgent.language || 'en';
+              }
+            } else {
+              voiceLanguage = aiBehavior.voiceAgent.language || 'en';
+            }
             console.log('[Automation] Using voice agent prompt from AI Behavior settings');
           } catch (error: any) {
             console.warn('[Automation] Failed to fetch voice agent prompt:', error.message);
@@ -340,14 +429,15 @@ export class AutomationEngine {
           provider: provider,
           api_key: apiKey,
           collection_names: collectionNames, // Updated to support multiple collections
-          greeting_message: phoneSettings.greetingMessage || 'Hello! How can I help you today?' // Greeting message from settings
+          greeting_message: greetingMessage // Use per-number greeting message
         };
 
         console.log('📝 [Automation] Using greeting message:', callRequestBody.greeting_message);
+        console.log('📝 [Automation] Using outbound number:', outboundNumber);
 
         // Add optional fields
-        if (config.transferTo || phoneSettings.humanOperatorPhone) {
-          callRequestBody.transfer_to = config.transferTo || phoneSettings.humanOperatorPhone;
+        if (transferTo) {
+          callRequestBody.transfer_to = transferTo;
         }
 
         // Get e-commerce credentials if available
@@ -363,14 +453,16 @@ export class AutomationEngine {
           }
         }
 
-        // Get escalation conditions from AIBehavior if not set
-        if (!config.escalationCondition && context?.userId) {
+        // Get escalation conditions from per-number config or AIBehavior
+        if (escalationRules.length > 0) {
+          callRequestBody.escalation_condition = escalationRules.join('. ');
+        } else if (!config.escalationCondition && context?.userId) {
           try {
             const { aiBehaviorService } = await import('./aiBehavior.service');
             const aiBehavior = await aiBehaviorService.get(context.userId);
-            const escalationRules = aiBehavior.voiceAgent.humanOperator?.escalationRules || [];
-            if (escalationRules.length > 0) {
-              callRequestBody.escalation_condition = escalationRules.join('. ');
+            const aiEscalationRules = aiBehavior.voiceAgent.humanOperator?.escalationRules || [];
+            if (aiEscalationRules.length > 0) {
+              callRequestBody.escalation_condition = aiEscalationRules.join('. ');
             }
           } catch (error: any) {
             console.warn('[Automation] Could not fetch escalation conditions:', error.message);
@@ -472,15 +564,36 @@ export class AutomationEngine {
           throw new Error('Contact not found or phone number missing');
         }
 
-        // TODO: Implement actual SMS sending via Twilio or similar service
-        // For now, return success placeholder
-        return {
-          success: true,
-          contactId: contact._id,
-          phone: contact.phone,
-          message,
-          sentAt: new Date()
-        };
+        try {
+          // Normalize phone number to E.164 format
+          const normalizedPhone = normalizePhoneNumber(contact.phone);
+
+          console.log(`[Automation Engine] Sending SMS to ${normalizedPhone}...`);
+          const smsResponse = await axios.post(`${COMM_API}/sms/send`, {
+            body: message,
+            number: normalizedPhone,
+          }, {
+            timeout: 30000, // 30 seconds timeout
+          });
+
+          console.log(`[Automation Engine] SMS to ${contact.phone} completed with status: ${smsResponse.data.status}`);
+
+          return {
+            success: smsResponse.data.status === 'success',
+            contactId: contact._id,
+            phone: contact.phone,
+            message,
+            sentAt: new Date()
+          };
+        } catch (error: any) {
+          console.error(`[Automation Engine] SMS to ${contact.phone} failed:`, error.response?.data?.detail || error.message);
+          return {
+            success: false,
+            error: error.response?.data?.detail || error.message,
+            contactId: contact._id,
+            phone: contact.phone
+          };
+        }
       }
     });
 
@@ -530,57 +643,49 @@ export class AutomationEngine {
           throw new Error('Email action not configured correctly. Recipient email is required.');
         }
 
-        // Validate subject and body
-        const emailSubject = subject || 'Notification';
-        const emailBody = body || template || '';
+        // Validate and resolve subject and body
+        const rawSubject = subject || 'Notification';
+        const rawBody = body || template || '';
 
-        if (!emailSubject.trim()) {
+        if (!rawSubject.trim()) {
           throw new Error('Email action not configured correctly. Subject is required.');
         }
 
-        if (!emailBody.trim()) {
+        if (!rawBody.trim()) {
           throw new Error('Email action not configured correctly. Body is required.');
         }
 
-        // Get user email for API authentication (if available)
-        let userEmail: string | undefined;
-        if (context?.userId) {
-          const User = (await import('../models/User')).default;
-          const user = await User.findById(context.userId).select('email').lean();
-          userEmail = user?.email;
-        }
+        // ✅ RESOLVE DYNAMIC VARIABLES (CRITICAL FIX)
+        const contact = contactId ? await Customer.findById(contactId).lean() : null;
+        const emailSubject = await this.resolveDynamicVariables(rawSubject, triggerData, contact);
+        const emailBody = await this.resolveDynamicVariables(rawBody, triggerData, contact);
 
         // Debug logging
-        console.log('[Automation] Email action payload:', {
+        console.log('[Automation] Aistein Email (SMTP) action payload:', {
           to: recipientEmail,
           subject: emailSubject,
           bodyLength: emailBody.length,
           isHtml: is_html || false,
           contactId: contactId?.toString(),
           organizationId: context?.organizationId?.toString(),
-          userId: context?.userId?.toString(),
-          hasUserEmail: !!userEmail
+          userId: context?.userId?.toString()
         });
 
-        // Use external API for email sending
-        // Python API expects: to, subject, body, and X-User-Email header (if Gmail integration)
+        // Use external API for email sending (FORCED SMTP / INTERNAL PATH)
+        // By NOT sending X-User-Email header, we ensure the Python API uses platform SMTP
         try {
-          console.log(`[Automation] Sending email to ${recipientEmail}...`);
+          console.log(`[Automation] Sending Aistein Email (SMTP) to ${recipientEmail}...`);
 
           const requestHeaders: any = {
             'Content-Type': 'application/json'
           };
 
-          // Add user email header if available (required for Gmail API)
-          if (userEmail) {
-            requestHeaders['X-User-Email'] = userEmail;
-          }
-
           const emailResponse = await axios.post(`${COMM_API}/email/send`, {
             to: recipientEmail,
             subject: emailSubject,
             body: emailBody,
-            // Note: Python API may handle HTML based on content or is_html flag
+            // Explicitly specify platform sender type to bypass any Gmail logic in Python API
+            sender_type: 'platform',
             ...(is_html ? { is_html: true } : {})
           }, {
             headers: requestHeaders,
@@ -591,56 +696,23 @@ export class AutomationEngine {
 
           // FAIL HARD: If email sending failed, throw error immediately
           if (!success) {
-            const errorMessage = emailResponse.data.message || emailResponse.data.error || 'Email sending failed';
-            console.error(`[Automation] Email to ${recipientEmail} failed:`, errorMessage);
-            throw new Error(`Email sending failed: ${errorMessage}`);
+            const errorMessage = emailResponse.data.message || emailResponse.data.error || 'SMTP Email sending failed';
+            console.error(`[Automation] SMTP Email to ${recipientEmail} failed:`, errorMessage);
+            throw new Error(`Aistein Email sending failed: ${errorMessage}`);
           }
 
-          console.log(`[Automation] Email to ${recipientEmail} sent successfully`);
+          console.log(`[Automation] Aistein Email (SMTP) to ${recipientEmail} sent successfully`);
 
           return {
             success: true,
-            contactId: contactId?.toString(),
-            email: recipientEmail,
+            to: recipientEmail,
             subject: emailSubject,
-            messageId: emailResponse.data.messageId,
-            sentAt: new Date()
+            sentAt: new Date(),
+            path: 'aistein_smtp'
           };
         } catch (error: any) {
-          // Log detailed error information
-          const errorDetails = error.response?.data;
-          console.error(`[Automation] Email to ${recipientEmail} failed:`, {
-            error: errorDetails || error.message,
-            statusCode: error.response?.status,
-            recipientEmail,
-            requestPayload: {
-              to: recipientEmail,
-              subject: emailSubject,
-              bodyLength: emailBody.length,
-              hasUserEmailHeader: !!userEmail
-            }
-          });
-
-          // Provide more helpful error message
-          let errorMessage = 'Email sending failed';
-          if (errorDetails) {
-            if (Array.isArray(errorDetails)) {
-              // Pydantic validation errors
-              const missingFields = errorDetails
-                .filter((e: any) => e.type === 'missing')
-                .map((e: any) => e.loc?.join('.') || 'unknown')
-                .join(', ');
-              errorMessage = `Email sending failed: Missing required fields: ${missingFields}`;
-            } else if (errorDetails.detail) {
-              errorMessage = `Email sending failed: ${errorDetails.detail}`;
-            } else if (errorDetails.message) {
-              errorMessage = `Email sending failed: ${errorDetails.message}`;
-            }
-          } else {
-            errorMessage = `Email sending failed: ${error.message}`;
-          }
-
-          throw new Error(errorMessage);
+          console.error(`[Automation] SMTP Email to ${recipientEmail} failed:`, error.message);
+          throw error;
         }
       }
     });
@@ -846,7 +918,7 @@ export class AutomationEngine {
       }
     });
 
-    // ============ GOOGLE WORKSPACE ACTIONS (ADDITIVE ONLY) ============
+    // ============ GOOGLE WORKSPACE ACTIONS ============
 
     // Google Calendar - Check Availability
     this.actions.set('keplero_google_calendar_check_availability', {
@@ -854,16 +926,14 @@ export class AutomationEngine {
         const organizationId = context?.organizationId || triggerData?.organizationId;
         let userId = context?.userId;
 
-        // Resolve userId if missing
         if (!userId && organizationId) {
           userId = await this.resolveUserId(organizationId, context);
         }
 
         if (!organizationId || !userId) {
-          throw new Error('Organization ID and User ID are required for Google Calendar actions');
+          throw new Error('Organization ID and User ID are required for Calendar actions');
         }
 
-        // Check if Google Calendar is connected
         const integration = await GoogleIntegration.findOne({
           userId,
           organizationId,
@@ -872,31 +942,26 @@ export class AutomationEngine {
         });
 
         if (!integration) {
-          throw new Error('Google Calendar integration not connected. Please connect Google Workspace in Settings.');
+          throw new Error('Google Calendar integration not connected');
         }
 
-        const { timeMin, timeMax, calendarIds } = config;
-        if (!timeMin || !timeMax) {
-          throw new Error('timeMin and timeMax are required for availability check');
-        }
+        const { timeMin, timeMax } = config;
 
         try {
           const availability = await googleCalendarService.checkAvailability(
             userId.toString(),
             organizationId.toString(),
-            new Date(timeMin),
-            new Date(timeMax),
-            calendarIds || ['primary']
+            new Date(timeMin || Date.now()),
+            new Date(timeMax || (Date.now() + 24 * 60 * 60 * 1000))
           );
 
           return {
             success: true,
-            availability,
-            checkedAt: new Date()
+            availability
           };
         } catch (error: any) {
-          console.error('[Automation] Google Calendar availability check failed:', error);
-          throw new Error(`Google Calendar availability check failed: ${error.message}`);
+          console.error('[Automation] Google Calendar availability check failed:', error.message);
+          throw new Error(`Calendar check failed: ${error.message}`);
         }
       }
     });
@@ -907,16 +972,14 @@ export class AutomationEngine {
         const organizationId = context?.organizationId || triggerData?.organizationId;
         let userId = context?.userId;
 
-        // Resolve userId if missing
         if (!userId && organizationId) {
           userId = await this.resolveUserId(organizationId, context);
         }
 
         if (!organizationId || !userId) {
-          throw new Error('Organization ID and User ID are required for Google Calendar actions');
+          throw new Error('Organization ID and User ID are required for Calendar actions');
         }
 
-        // Check if Google Calendar is connected
         const integration = await GoogleIntegration.findOne({
           userId,
           organizationId,
@@ -925,46 +988,35 @@ export class AutomationEngine {
         });
 
         if (!integration) {
-          throw new Error('Google Calendar integration not connected. Please connect Google Workspace in Settings.');
+          throw new Error('Google Calendar integration not connected');
         }
 
-        const { summary, description, startDateTime, endDateTime, timeZone, attendees, location } = config;
-
-        if (!summary || !startDateTime || !endDateTime) {
-          throw new Error('summary, startDateTime, and endDateTime are required for calendar event');
-        }
+        const { summary, description, startTime, endTime, attendees } = config;
 
         try {
           const event = await googleCalendarService.createEvent(
             userId.toString(),
             organizationId.toString(),
             {
-              summary,
-              description,
+              summary: await this.resolveDynamicVariables(summary, triggerData),
+              description: await this.resolveDynamicVariables(description, triggerData),
               start: {
-                dateTime: startDateTime,
-                timeZone: timeZone || 'UTC'
+                dateTime: startTime || new Date().toISOString()
               },
               end: {
-                dateTime: endDateTime,
-                timeZone: timeZone || 'UTC'
+                dateTime: endTime || new Date(Date.now() + 60 * 60 * 1000).toISOString()
               },
-              attendees: attendees || [],
-              location
-            },
-            config.calendarId || 'primary'
+              attendees: attendees || []
+            }
           );
 
           return {
             success: true,
-            eventId: event.eventId,
-            htmlLink: event.htmlLink,
-            hangoutLink: event.hangoutLink,
-            createdAt: new Date()
+            event
           };
         } catch (error: any) {
-          console.error('[Automation] Google Calendar event creation failed:', error);
-          throw new Error(`Google Calendar event creation failed: ${error.message}`);
+          console.error('[Automation] Google Calendar event creation failed:', error.message);
+          throw new Error(`Calendar event creation failed: ${error.message}`);
         }
       }
     });
@@ -1009,7 +1061,7 @@ export class AutomationEngine {
             process.env.GOOGLE_CLIENT_ID,
             process.env.GOOGLE_CLIENT_SECRET,
             process.env.GOOGLE_REDIRECT_URI ||
-            'http://localhost:5001/api/v1/integrations/google/callback'
+              'http://localhost:5001/api/v1/integrations/google/callback'
           );
 
           oauth2Client.setCredentials({
@@ -1150,10 +1202,11 @@ export class AutomationEngine {
           const resolvedSubject = await this.resolveDynamicVariables(subject, triggerData, contact);
           const resolvedBody = await this.resolveDynamicVariables(body, triggerData, contact);
 
-          console.log(`[Automation] Sending Gmail (via Social Integration) to ${recipientEmail}`);
+          console.log(`[Automation] Gmail – Send Email: Using Gmail OAuth for ${recipientEmail} (Account: ${integration.getDecryptedApiKey()})`);
 
           const userEmail = integration.getDecryptedApiKey();
 
+          // FORCED GMAIL PATH - uses gmailOAuthService directly, no SMTP fallback
           const result = await gmailOAuthService.sendEmail(userEmail, {
             to: recipientEmail,
             subject: resolvedSubject,
@@ -1162,21 +1215,47 @@ export class AutomationEngine {
             bcc
           });
 
-          console.log(`[Automation] ✅ Gmail sent to ${recipientEmail} successfully`);
+          console.log(`[Automation] ✅ Gmail – Send Email: Successfully sent to ${recipientEmail} via OAuth`);
 
           return {
             success: true,
             messageId: result.messageId || 'sent',
             to: recipientEmail,
             subject: resolvedSubject,
-            sentAt: new Date()
+            sentAt: new Date(),
+            path: 'gmail_oauth'
           };
         } catch (error: any) {
-          console.error(`[Automation] Gmail send to ${recipientEmail} failed:`, error);
-          throw new Error(`Gmail send failed: ${error.message}`);
+          console.error(`[Automation] Gmail – Send Email failed for ${recipientEmail}:`, error);
+          throw new Error(`Gmail OAuth send failed: ${error.message}`);
         }
       }
     });
+  }
+
+  /**
+   * Extract sheet name from range for Google Sheets append operations
+   * Google Sheets append API REQUIRES A1 notation (e.g., "Sheet1!A1")
+   * This function extracts the sheet name from any range format
+   */
+  private extractSheetNameFromRange(range: string): string {
+    if (!range || typeof range !== 'string') {
+      return 'Sheet1'; // Default sheet name
+    }
+
+    // If range is already just a sheet name (no !), return as-is
+    if (!range.includes('!')) {
+      return range.trim();
+    }
+
+    // Extract sheet name from formats like "Sheet1!A1", "Sheet1!A:D", "Sheet1!A:A"
+    const match = range.match(/^(.+?)!/);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+
+    // Fallback: return default if extraction fails
+    return 'Sheet1';
   }
 
   /**
@@ -1307,140 +1386,140 @@ export class AutomationEngine {
       }
 
       const actionResults: any[] = [];
+      const contactIds = Array.isArray(triggerData.contactIds) ? triggerData.contactIds : [triggerData.contactId].filter(Boolean);
 
-      // Execute delay nodes and action nodes in sequence
-      for (const node of sortedNodes) {
-        // CRITICAL: Convert node.config from Map to plain object BEFORE using it
-        const nodeConfig = this.convertConfigToPlainObject(node.config);
+      if (contactIds.length === 0) {
+        throw new Error('No contacts found for automation execution');
+      }
 
-        // Log config for debugging (especially for Google Sheets)
-        if (node.service === 'keplero_google_sheet_append_row') {
-          console.log(`[Automation Engine] 📋 Node config for ${node.service} (${node.id}):`, {
-            spreadsheetId: nodeConfig.spreadsheetId || 'MISSING',
-            sheetName: nodeConfig.sheetName,
-            valuesLength: nodeConfig.values?.length || 0,
-            values: nodeConfig.values,
-            configKeys: Object.keys(nodeConfig),
-            configType: typeof nodeConfig,
-            isMap: nodeConfig instanceof Map,
-            isPlainObject: nodeConfig.constructor === Object
-          });
-        }
+      console.log(`[Automation Engine] 🚀 Running workflow for ${contactIds.length} contact(s)`);
 
-        if (node.type === 'delay') {
-          await this.delay(nodeConfig.delay, nodeConfig.delayUnit);
-        } else if (node.type === 'action') {
-          const actionHandler = this.actions.get(node.service);
-          if (!actionHandler) {
-            throw new Error(`Action handler not found: ${node.service}`);
-          }
+      // Execute and resolve for each contact
+      // We do this sequentially to follow the user's "Errors isolated per contact" and "Automation = once" flow
+      for (const contactId of contactIds) {
+        const contactResults = [];
+        console.log(`[Automation Engine] 👤 Processing contact: ${contactId}`);
 
-          console.log(`[Automation Engine] Executing action: ${node.service} (nodeId: ${node.id})`);
-          try {
-            // CRITICAL: Pass converted plain object config, not Mongoose Map
-            const actionResult = await actionHandler.execute(nodeConfig, triggerData, enrichedContext);
+        // Fetch contact for this iteration
+        const contact = await Customer.findById(contactId).lean();
 
-            // Check if action returned success=false
-            if (actionResult && actionResult.success === false) {
-              const errorMessage = actionResult.error || 'Action returned success=false';
-              console.error(`[Automation Engine] ❌ Action ${node.service} failed:`, errorMessage);
+        // Create a copy of triggerData with specific contactId for this iteration
+        const currentTriggerData = { ...triggerData, contactId, contactIds: undefined };
 
-              // Google Sheets failures should NOT stop automation - continue to next action
-              if (node.service === 'keplero_google_sheet_append_row') {
-                console.warn(`[Automation Engine] ⚠️  Google Sheets failed, but continuing automation...`);
-                actionResults.push({
-                  nodeId: node.id,
-                  service: node.service,
-                  result: {
-                    success: false,
-                    error: errorMessage
-                  }
-                });
-                // Continue to next action instead of throwing
+        try {
+          // Execute delay nodes and action nodes in sequence for this contact
+          for (const node of sortedNodes) {
+            const nodeConfig = this.convertConfigToPlainObject(node.config);
+
+            if (node.type === 'delay') {
+              console.log(`[Automation Engine] ⏱️  Delaying ${nodeConfig.delay} ${nodeConfig.delayUnit} for contact ${contactId}`);
+              await this.delay(nodeConfig.delay, nodeConfig.delayUnit);
+            } else if (node.type === 'action') {
+              const actionHandler = this.actions.get(node.service);
+              if (!actionHandler) {
+                console.error(`[Automation Engine] ❌ Action handler not found: ${node.service}`);
                 continue;
               }
 
-              // For other actions, throw to stop execution
-              throw new Error(errorMessage);
-            }
+              console.log(`[Automation Engine] ⚡ Executing action: ${node.service} for contact ${contactId}`);
+              let actionSucceeded = true;
+              try {
+                const actionResult = await actionHandler.execute(nodeConfig, currentTriggerData, { ...enrichedContext, contact });
 
-            console.log(`[Automation Engine] ✅ Action ${node.service} completed:`, {
-              success: actionResult?.success !== false,
-              result: actionResult
-            });
-            actionResults.push({
-              nodeId: node.id,
-              service: node.service,
-              result: actionResult || { success: true }
-            });
-          } catch (actionError: any) {
-            console.error(`[Automation Engine] ❌ Action ${node.service} failed:`, actionError.message);
+                if (actionResult && actionResult.success === false) {
+                  const errorMessage = actionResult.error || 'Action failed';
+                  console.error(`[Automation Engine] ❌ Action ${node.service} failed for contact ${contactId}:`, errorMessage);
+                  actionSucceeded = false;
 
-            // Google Sheets failures should NOT stop automation - continue to next action
-            if (node.service === 'keplero_google_sheet_append_row') {
-              console.warn(`[Automation Engine] ⚠️  Google Sheets failed, but continuing automation...`);
-              actionResults.push({
-                nodeId: node.id,
-                service: node.service,
-                result: {
-                  success: false,
-                  error: actionError.message
+                  contactResults.push({
+                    nodeId: node.id,
+                    service: node.service,
+                    result: { success: false, error: errorMessage }
+                  });
+
+                  // Google Sheets failures should NOT stop workflow, but mark as failed
+                  if (node.service !== 'keplero_google_sheet_append_row') {
+                    throw new Error(errorMessage);
+                  }
+                } else {
+                  contactResults.push({
+                    nodeId: node.id,
+                    service: node.service,
+                    result: actionResult || { success: true }
+                  });
                 }
-              });
-              // Continue to next action instead of throwing
-              continue;
-            }
+              } catch (actionError: any) {
+                console.error(`[Automation Engine] ❌ Exception in action ${node.service} for contact ${contactId}:`, actionError.message);
+                actionSucceeded = false;
+                contactResults.push({
+                  nodeId: node.id,
+                  service: node.service,
+                  result: { success: false, error: actionError.message }
+                });
 
-            // Mark this node as failed
-            actionResults.push({
-              nodeId: node.id,
-              service: node.service,
-              result: {
-                success: false,
-                error: actionError.message
+                if (node.service !== 'keplero_google_sheet_append_row') {
+                  throw actionError; // Stop node sequence for THIS contact
+                }
               }
-            });
-            // THROW to stop execution - automation must be marked as FAILED
-            throw new Error(`Action ${node.service} (${node.id}) failed: ${actionError.message}`);
+              
+              // Track if any action failed for this contact
+              if (!actionSucceeded && node.service === 'keplero_google_sheet_append_row') {
+                // Mark that Google Sheets failed (but don't stop workflow)
+                contactResults.push({ _hasFailedAction: true });
+              }
+            }
           }
+
+          // Check if any action failed (including Google Sheets)
+          const hasFailedActions = contactResults.some((r: any) => 
+            r.result && r.result.success === false
+          );
+          
+          // Mark contact status based on whether any action failed
+          const contactStatus = hasFailedActions ? 'failed' : 'success';
+          actionResults.push({ 
+            contactId, 
+            status: contactStatus, 
+            nodes: contactResults,
+            ...(hasFailedActions ? { 
+              error: contactResults.find((r: any) => r.result?.success === false)?.result?.error || 'One or more actions failed'
+            } : {})
+          });
+        } catch (contactError: any) {
+          console.error(`[Automation Engine] ❌ Workflow stopped for contact ${contactId}:`, contactError.message);
+          actionResults.push({ contactId, status: 'failed', error: contactError.message, nodes: contactResults });
+          // We continue to the NEXT contact even if one fails
         }
       }
 
-      // Check if any action failed
-      const hasFailures = actionResults.some((r: any) => r.result?.success === false);
-
-      if (hasFailures) {
-        // Mark execution as failed if any action failed
-        execution.status = 'failed';
-        execution.errorMessage = 'One or more actions failed';
-        execution.actionData = actionResults;
-        await execution.save();
-
-        console.error(`[Automation Engine] ❌ Automation execution failed: One or more actions failed`);
-
-        return {
-          success: false,
-          executionId: execution._id,
-          results: actionResults,
-          error: 'One or more actions failed'
-        };
-      }
-
-      // Update execution as success only if all actions succeeded
-      execution.status = 'success';
+      // Check if ALL contacts succeeded (not just ANY)
+      const allSucceeded = actionResults.every(r => r.status === 'success');
+      const anySuccess = actionResults.some(r => r.status === 'success');
+      
+      // Execution status: failed if ANY action failed, success only if ALL succeeded
+      execution.status = allSucceeded ? 'success' : 'failed';
       execution.actionData = actionResults;
+      if (!allSucceeded) {
+        const failedContacts = actionResults.filter(r => r.status === 'failed');
+        const failedActions = actionResults
+          .flatMap(r => r.nodes || [])
+          .filter((n: any) => n.result?.success === false);
+        execution.errorMessage = failedContacts.length > 0 
+          ? `${failedContacts.length} contact(s) failed: ${failedContacts.map(c => c.error || 'Unknown error').join('; ')}`
+          : failedActions.length > 0
+          ? `${failedActions.length} action(s) failed: ${failedActions.map((a: any) => a.result?.error || 'Unknown error').join('; ')}`
+          : 'One or more actions failed';
+      }
       await execution.save();
 
-      // Update automation stats (fetch fresh document for update)
+      // Update automation stats
       await Automation.findByIdAndUpdate(automationId, {
-        $inc: { executionCount: 1 },
+        $inc: { executionCount: contactIds.length },
         lastExecutedAt: new Date()
       });
 
-      console.log(`[Automation Engine] ✅ Automation executed successfully - all actions completed`);
-
       return {
-        success: true,
+        success: anySuccess,
         executionId: execution._id,
         results: actionResults
       };
@@ -1500,18 +1579,28 @@ export class AutomationEngine {
           const automationId = (automation._id as any).toString();
           console.log(`[Automation Engine] ✅ Trigger matched for automation: ${automation.name} (${automationId})`);
 
-          // Execute automation asynchronously
-          this.executeAutomation(automationId, eventData, context)
-            .then(result => {
-              if (result && result.success) {
-                console.log(`[Automation Engine] ✅ Automation ${automation.name} executed successfully`);
-              } else {
-                console.error(`[Automation Engine] ❌ Automation ${automation.name} execution failed:`, result?.error || 'Unknown error');
-              }
-            })
-            .catch(err => {
-              console.error(`[Automation Engine] ❌ Error executing automation ${automationId}:`, err.message);
-            });
+          // Handle batch_call by passing the entire eventData to executeAutomation
+          // which now handles the loop internally for cleaner tracking (Automation = once)
+          if (event === 'batch_call' && Array.isArray(eventData.contactIds)) {
+            console.log(`[Automation Engine] 📦 Triggering batch execution for ${eventData.contactIds.length} contacts`);
+            this.executeAutomation(automationId, eventData, context)
+              .catch(err => {
+                console.error(`[Automation Engine] ❌ Error in batch execution for automation ${automationId}:`, err.message);
+              });
+          } else {
+            // Standard single execution
+            this.executeAutomation(automationId, eventData, context)
+              .then(result => {
+                if (result && result.success) {
+                  console.log(`[Automation Engine] ✅ Automation ${automation.name} executed successfully`);
+                } else {
+                  console.error(`[Automation Engine] ❌ Automation ${automation.name} execution failed:`, (result as any)?.error || 'Unknown error');
+                }
+              })
+              .catch(err => {
+                console.error(`[Automation Engine] ❌ Error executing automation ${automationId}:`, err.message);
+              });
+          }
 
           results.push({
             automationId: automation._id,

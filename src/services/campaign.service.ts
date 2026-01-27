@@ -678,45 +678,76 @@ export class CampaignService {
     const phoneSettings = await phoneSettingsService.get(userId);
     const aiBehavior = await aiBehaviorService.get(userId);
 
-    // Map selectedVoice name to ElevenLabs voice ID
-    // Use customVoiceId if provided, otherwise use the mapped voice ID
-    const voiceId = phoneSettings.customVoiceId || VOICE_ID_MAP[phoneSettings.selectedVoice] || VOICE_ID_MAP['adam'];
-
-    // Get transfer_to from phone settings and escalation_condition from AI behavior
-    const transferTo = phoneSettings.humanOperatorPhone || '';
-    const escalationCondition = aiBehavior.voiceAgent?.humanOperator?.escalationRules?.join('; ') || '';
-
-    // Get inbound agent config to fetch greeting_message and language
-    let greetingMessage = 'Hello! How can I help you today?'; // Default greeting
-    let configuredLanguage = campaign.language || aiBehavior.voiceAgent?.language || 'en';
-
-    try {
-      const { inboundAgentConfigService } = await import('./inboundAgentConfig.service');
-      // Try to get config for the first inbound phone number
-      if (phoneSettings.inboundPhoneNumbers && phoneSettings.inboundPhoneNumbers.length > 0) {
-        const firstInboundNumber = phoneSettings.inboundPhoneNumbers[0];
-        const inboundConfig = await inboundAgentConfigService.getByPhoneNumber(userId, firstInboundNumber);
-        if (inboundConfig) {
-          greetingMessage = inboundConfig.greeting_message || greetingMessage;
-          // Use language from inbound config if available
-          if (inboundConfig.language) {
-            configuredLanguage = inboundConfig.language;
-          }
-          console.log(`[Campaign ${campaignId}] Using greeting message from inbound config: "${greetingMessage}"`);
-          console.log(`[Campaign ${campaignId}] Using language from inbound config: "${configuredLanguage}"`);
-        } else {
-          console.log(`[Campaign ${campaignId}] No inbound config found, using default greeting message`);
+    // 🔑 CRITICAL: Determine which outbound number to use for this campaign
+    // Priority: phoneSettings.twilioPhoneNumber > first available outbound config
+    let outboundNumber = phoneSettings.twilioPhoneNumber;
+    
+    // If no outbound number specified, get the first available from OutboundAgentConfig
+    if (!outboundNumber) {
+      try {
+        const { outboundAgentConfigService } = await import('./outboundAgentConfig.service');
+        const allConfigs = await outboundAgentConfigService.getAll(userId);
+        if (allConfigs && allConfigs.length > 0) {
+          outboundNumber = allConfigs[0].outboundNumber;
+          console.log(`[Campaign ${campaignId}] No outbound number specified, using first available: ${outboundNumber}`);
         }
-      } else {
-        console.log(`[Campaign ${campaignId}] No inbound phone numbers configured, using default greeting message`);
+      } catch (error: any) {
+        console.warn(`[Campaign ${campaignId}] Could not fetch outbound configs:`, error.message);
       }
-    } catch (error: any) {
-      console.warn(`[Campaign ${campaignId}] Failed to fetch inbound agent config:`, error.message);
-      console.warn(`[Campaign ${campaignId}] Using default greeting message`);
     }
 
+    if (!outboundNumber) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'No outbound phone number configured. Please configure an outbound number in Phone Settings.');
+    }
+
+    // 🔑 CRITICAL: Fetch per-number config from OutboundAgentConfig (NOT global phoneSettings)
+    let outboundConfig = null;
+    let voiceId = VOICE_ID_MAP['adam']; // Default fallback
+    let transferTo = '';
+    let greetingMessage = 'Hello! How can I help you today?';
+    let configuredLanguage = campaign.language || aiBehavior.voiceAgent?.language || 'en';
+    let escalationRules: string[] = [];
+
+    try {
+      const { outboundAgentConfigService } = await import('./outboundAgentConfig.service');
+      outboundConfig = await outboundAgentConfigService.getByOutboundNumber(userId, outboundNumber);
+      
+      if (outboundConfig) {
+        // Use per-number config (THIS IS THE FIX)
+        voiceId = outboundConfig.customVoiceId || VOICE_ID_MAP[outboundConfig.selectedVoice] || VOICE_ID_MAP['adam'];
+        transferTo = outboundConfig.humanOperatorPhone || '';
+        greetingMessage = outboundConfig.greetingMessage || 'Hello! How can I help you today?';
+        configuredLanguage = outboundConfig.language || campaign.language || aiBehavior.voiceAgent?.language || 'en';
+        escalationRules = outboundConfig.escalationRules || [];
+        console.log(`[Campaign ${campaignId}] ✅ Using per-number config for ${outboundNumber}: voice=${voiceId}, language=${configuredLanguage}`);
+      } else {
+        // Fallback to global phoneSettings if no per-number config exists
+        console.warn(`[Campaign ${campaignId}] ⚠️ No per-number config found for ${outboundNumber}, falling back to global settings`);
+        voiceId = phoneSettings.customVoiceId || VOICE_ID_MAP[phoneSettings.selectedVoice] || VOICE_ID_MAP['adam'];
+        transferTo = phoneSettings.humanOperatorPhone || '';
+        greetingMessage = phoneSettings.greetingMessage || 'Hello! How can I help you today?';
+        configuredLanguage = campaign.language || aiBehavior.voiceAgent?.language || 'en';
+      }
+    } catch (error: any) {
+      console.error(`[Campaign ${campaignId}] ❌ Failed to fetch outbound config for ${outboundNumber}:`, error.message);
+      // Fallback to global settings
+      voiceId = phoneSettings.customVoiceId || VOICE_ID_MAP[phoneSettings.selectedVoice] || VOICE_ID_MAP['adam'];
+      transferTo = phoneSettings.humanOperatorPhone || '';
+      greetingMessage = phoneSettings.greetingMessage || 'Hello! How can I help you today?';
+      configuredLanguage = campaign.language || aiBehavior.voiceAgent?.language || 'en';
+    }
+
+    // Get escalation_condition from per-number config or AI behavior
+    const escalationCondition = escalationRules.length > 0 
+      ? escalationRules.join('; ') 
+      : (aiBehavior.voiceAgent?.humanOperator?.escalationRules?.join('; ') || '');
+
+    // Note: greetingMessage and configuredLanguage are now set from outbound config above
+    // Inbound config is only used for inbound calls, not outbound campaigns
+
     console.log(`[Campaign ${campaignId}] ===== CAMPAIGN CONFIGURATION =====`);
-    console.log(`[Campaign ${campaignId}] Voice: ${phoneSettings.selectedVoice} (${voiceId})`);
+    console.log(`[Campaign ${campaignId}] Outbound Number: ${outboundNumber}`);
+    console.log(`[Campaign ${campaignId}] Voice: ${outboundConfig?.selectedVoice || phoneSettings.selectedVoice} (${voiceId})`);
     console.log(`[Campaign ${campaignId}] SIP Trunk ID: ${phoneSettings.livekitSipTrunkId}`);
     console.log(`[Campaign ${campaignId}] Dynamic Instruction: ${campaign.dynamicInstruction || '(not set)'}`);
     console.log(`[Campaign ${campaignId}] Language: ${configuredLanguage}`);
@@ -734,7 +765,8 @@ export class CampaignService {
       transferTo,
       escalationCondition,
       greetingMessage,
-      configuredLanguage
+      configuredLanguage,
+      outboundNumber // 🔑 Pass the outbound number to use for calls
     }).catch((error: any) => {
       console.error(`[Campaign ${campaignId}] Background processing error:`, error);
       // Update campaign status to failed if processing fails
@@ -882,18 +914,43 @@ export class CampaignService {
                 console.warn(`[Campaign ${campaignId}] Could not fetch owner email:`, error.message);
               }
 
+              // 🔑 CRITICAL: Fetch per-number config for THIS call (may differ from campaign start config)
+              // Use the outboundNumber from config, or fallback to phoneSettings.twilioPhoneNumber
+              const callOutboundNumber = config.outboundNumber || config.phoneSettings.twilioPhoneNumber;
+              let callVoiceId = config.voiceId;
+              let callGreetingMessage = config.greetingMessage;
+              let callLanguage = voiceLanguage;
+              let callTransferTo = config.transferTo;
+
+              if (callOutboundNumber) {
+                try {
+                  const { outboundAgentConfigService } = await import('./outboundAgentConfig.service');
+                  const callOutboundConfig = await outboundAgentConfigService.getByOutboundNumber(userId, callOutboundNumber);
+                  if (callOutboundConfig) {
+                    // Use per-number config for THIS specific call
+                    callVoiceId = callOutboundConfig.customVoiceId || VOICE_ID_MAP[callOutboundConfig.selectedVoice] || config.voiceId;
+                    callGreetingMessage = callOutboundConfig.greetingMessage || config.greetingMessage;
+                    callLanguage = callOutboundConfig.language || voiceLanguage;
+                    callTransferTo = callOutboundConfig.humanOperatorPhone || config.transferTo;
+                    console.log(`[Campaign ${campaignId}] ✅ Using per-number config for call: ${callOutboundNumber}`);
+                  }
+                } catch (error: any) {
+                  console.warn(`[Campaign ${campaignId}] Could not fetch per-number config for ${callOutboundNumber}, using campaign config`);
+                }
+              }
+
               // Prepare outbound call request body
               const callRequestBody: any = {
                 phone_number: normalizedPhone,
                 name: contact.name || 'Customer',
                 dynamic_instruction: voiceAgentPrompt,
-                language: voiceLanguage,
-                voice_id: config.voiceId,
+                language: callLanguage,
+                voice_id: callVoiceId,
                 sip_trunk_id: config.phoneSettings.livekitSipTrunkId,
                 provider: provider,
                 api_key: apiKey,
                 collection_names: collectionNames, // Updated to support multiple collections
-                greeting_message: config.greetingMessage, // Add greeting message from inbound config
+                greeting_message: callGreetingMessage, // Use per-number greeting message
                 organisation_id: organizationId.toString(),
                 contact_number: normalizedPhone,
                 email: contact.email || undefined, // Contact's email from campaign row
@@ -901,8 +958,8 @@ export class CampaignService {
               };
 
               // Add optional fields if they exist
-              if (config.transferTo) {
-                callRequestBody.transfer_to = config.transferTo;
+              if (callTransferTo) {
+                callRequestBody.transfer_to = callTransferTo;
               }
               if (config.escalationCondition) {
                 callRequestBody.escalation_condition = config.escalationCondition;

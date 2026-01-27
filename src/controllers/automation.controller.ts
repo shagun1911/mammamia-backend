@@ -134,7 +134,7 @@ export class AutomationController {
       const result = await this.automationService.triggerAutomation(
         req.params.automationId,
         req.body.triggerData,
-        { 
+        {
           userId: req.user?._id,
           organizationId: organizationId?.toString()
         }
@@ -152,12 +152,50 @@ export class AutomationController {
       const result = await this.automationService.triggerByEvent(
         event,
         eventData,
-        { 
+        {
           userId: req.user?._id,
           organizationId: organizationId?.toString()
         }
       );
       res.json(successResponse(result, `${result.length} automation(s) triggered`));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  runBatch = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { listId } = req.body;
+      const organizationId = req.user?.organizationId || req.user?._id;
+
+      if (!organizationId) {
+        throw new Error('Organization ID not found');
+      }
+
+      // Fetch all contacts in the list
+      const ContactListMember = (await import('../models/ContactListMember')).default;
+      const members = await ContactListMember.find({ listId });
+
+      if (!members.length) {
+        return res.status(400).json({ message: 'No contacts in list' });
+      }
+
+      const contactIds = members.map(m => m.contactId.toString());
+
+      // Trigger automation system with batch_call event
+      await this.automationService.triggerByEvent('batch_call', {
+        event: 'batch_call',
+        source: 'list',
+        listId,
+        contactIds,
+        userId: req.user?._id,
+        organizationId: organizationId.toString()
+      }, {
+        userId: req.user?._id,
+        organizationId: organizationId.toString()
+      });
+
+      res.json({ success: true, contactCount: contactIds.length });
     } catch (error) {
       next(error);
     }

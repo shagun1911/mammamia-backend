@@ -244,10 +244,16 @@ export class GoogleSheetsService {
       const oauth2Client = this.getOAuth2Client(integration.accessToken, integration.refreshToken);
       const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
 
+      // 🔑 CRITICAL: DO NOT modify range here - Automation Engine owns range construction
+      // Range is already in correct format (e.g., "Sheet1!A1") from Automation Engine
+      // Any modification here causes double-parsing and INVALID_ARGUMENT errors
+      console.log('[GoogleSheets Service] FINAL RANGE SENT:', range);
+      
       const response = await sheets.spreadsheets.values.append({
         spreadsheetId,
-        range: range,
+        range: range, // TRUST IT - pass through exactly as received from Automation Engine
         valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
         requestBody: {
           values: [values]
         }

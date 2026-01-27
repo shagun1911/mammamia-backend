@@ -20,8 +20,11 @@ router.post('/register', asyncHandler(toolController.register.bind(toolControlle
 // PUT /api/v1/tools/:toolId - Update a tool
 router.put('/:toolId', asyncHandler(toolController.update.bind(toolController)));
 
-// POST /api/v1/tools/delete - Delete a tool
+// POST /api/v1/tools/delete - Delete a tool (legacy)
 router.post('/delete', asyncHandler(toolController.delete.bind(toolController)));
+
+// DELETE /api/v1/tools/:toolId - Delete a tool (REST compliant)
+router.delete('/:toolId', asyncHandler(toolController.deleteById.bind(toolController)));
 
 // GET /api/v1/tools/type/:toolType - Get tools by type
 router.get('/type/:toolType', asyncHandler(toolController.getByType.bind(toolController)));

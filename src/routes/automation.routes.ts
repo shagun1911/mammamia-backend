@@ -17,6 +17,7 @@ router.get('/:automationId/logs', controller.getExecutionLogs);
 router.post('/:automationId/test', controller.test);
 router.post('/:automationId/trigger', controller.trigger);
 router.post('/trigger-event', controller.triggerByEvent);
+router.post('/run-batch', controller.runBatch);
 
 export default router;
 

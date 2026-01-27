@@ -11,16 +11,16 @@ export class ToolController {
   async getAll(req: AuthRequest, res: Response) {
     try {
       const userId = req.user?._id;
-      
+
       if (!userId) {
         throw new AppError(401, 'UNAUTHORIZED', 'User not authenticated');
       }
 
       const tools = await toolService.getAll(userId);
-      
+
       res.json({
         success: true,
-        tools: tools.map(tool => ({
+        data: tools.map(tool => ({
           tool_id: tool.tool_id,
           tool_name: tool.tool_name,
           tool_type: tool.tool_type,
@@ -43,16 +43,16 @@ export class ToolController {
     try {
       const userId = req.user?._id;
       const { toolId } = req.params;
-      
+
       if (!userId) {
         throw new AppError(401, 'UNAUTHORIZED', 'User not authenticated');
       }
 
       const tool = await toolService.getById(toolId, userId);
-      
+
       res.json({
         success: true,
-        tool: {
+        data: {
           tool_id: tool.tool_id,
           tool_name: tool.tool_name,
           tool_type: tool.tool_type,
@@ -74,7 +74,7 @@ export class ToolController {
   async register(req: AuthRequest, res: Response) {
     try {
       const userId = req.user?._id;
-      
+
       if (!userId) {
         throw new AppError(401, 'UNAUTHORIZED', 'User not authenticated');
       }
@@ -99,11 +99,11 @@ export class ToolController {
 
       res.json({
         status: 'success',
-        message: tool.createdAt.getTime() === tool.updatedAt.getTime() 
-          ? 'Tool registered successfully' 
+        message: tool.createdAt.getTime() === tool.updatedAt.getTime()
+          ? 'Tool registered successfully'
           : 'Tool updated successfully',
         tool_id: tool.tool_id,
-        tool: {
+        data: {
           tool_id: tool.tool_id,
           tool_name: tool.tool_name,
           tool_type: tool.tool_type,
@@ -126,7 +126,7 @@ export class ToolController {
     try {
       const userId = req.user?._id;
       const { toolId } = req.params;
-      
+
       if (!userId) {
         throw new AppError(401, 'UNAUTHORIZED', 'User not authenticated');
       }
@@ -153,7 +153,7 @@ export class ToolController {
         status: 'success',
         message: 'Tool updated successfully',
         tool_id: tool.tool_id,
-        tool: {
+        data: {
           tool_id: tool.tool_id,
           tool_name: tool.tool_name,
           tool_type: tool.tool_type,
@@ -175,7 +175,7 @@ export class ToolController {
   async delete(req: AuthRequest, res: Response) {
     try {
       const userId = req.user?._id;
-      
+
       if (!userId) {
         throw new AppError(401, 'UNAUTHORIZED', 'User not authenticated');
       }
@@ -199,6 +199,36 @@ export class ToolController {
   }
 
   /**
+   * Delete a tool by ID (REST compliant)
+   * DELETE /api/v1/tools/:toolId
+   */
+  async deleteById(req: AuthRequest, res: Response) {
+    try {
+      const userId = req.user?._id;
+
+      if (!userId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'User not authenticated');
+      }
+
+      const { toolId } = req.params;
+
+      if (!toolId) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'toolId is required');
+      }
+
+      await toolService.delete(toolId, userId);
+
+      res.json({
+        status: 'success',
+        message: 'Tool deleted successfully',
+        tool_id: toolId,
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  /**
    * Get tools by type
    * GET /api/v1/tools/type/:toolType
    */
@@ -206,16 +236,16 @@ export class ToolController {
     try {
       const userId = req.user?._id;
       const { toolType } = req.params;
-      
+
       if (!userId) {
         throw new AppError(401, 'UNAUTHORIZED', 'User not authenticated');
       }
 
       const tools = await toolService.getByType(userId, toolType);
-      
+
       res.json({
         success: true,
-        tools: tools.map(tool => ({
+        data: tools.map(tool => ({
           tool_id: tool.tool_id,
           tool_name: tool.tool_name,
           tool_type: tool.tool_type,
