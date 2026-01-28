@@ -8,13 +8,17 @@ const router = Router();
 router.use(authenticate);
 
 // NEW Unified Knowledge Base System (aligned with /api/v1/knowledge-base)
+// IMPORTANT: Specific routes must come before parameterized routes
+// List all documents - must come before /:document_id
+router.get('/', knowledgeBaseController.listDocuments);
+
+// Create routes
 router.post('/ingest', upload.single('file'), knowledgeBaseController.ingestDocument);
 router.post('/text', knowledgeBaseController.createFromText);
 router.post('/url', knowledgeBaseController.createFromUrl);
 router.post('/file', upload.single('file'), knowledgeBaseController.createFromFile);
 
-// List, Get, Delete
-router.get('/', knowledgeBaseController.listDocuments);
+// Get, Delete single document - parameterized routes come after specific routes
 router.get('/:document_id', knowledgeBaseController.getDocument);
 router.delete('/:document_id', knowledgeBaseController.deleteDocument);
 

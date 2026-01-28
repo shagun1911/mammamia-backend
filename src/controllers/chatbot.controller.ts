@@ -5,23 +5,34 @@ import { pythonRagService } from '../services/pythonRag.service';
 import { successResponse } from '../utils/response.util';
 import { AppError } from '../middleware/error.middleware';
 import KnowledgeBase from '../models/KnowledgeBase';
+import KnowledgeBaseDocument from '../models/KnowledgeBaseDocument';
 import { getEcommerceCredentials } from '../utils/ecommerce.util';
 import Settings from '../models/Settings';
+import mongoose from 'mongoose';
 
 // Helper function to determine collection names from Settings/AI Behavior
 async function determineCollectionNames(userId: string, knowledgeBaseId?: string): Promise<string[]> {
   let collectionNames: string[] = [];
+  const userObjectId = new mongoose.Types.ObjectId(userId);
   
   if (knowledgeBaseId) {
-    // Use specified knowledge base
-    const kb = await KnowledgeBase.findById(knowledgeBaseId);
-    if (!kb) {
-      throw new AppError(404, 'NOT_FOUND', 'Knowledge base not found');
+    // Use specified knowledge base - check if it's new format (KBDoc_xxx) or old format (ObjectId)
+    if (knowledgeBaseId.startsWith('KBDoc_')) {
+      const kbDoc = await KnowledgeBaseDocument.findOne({ document_id: knowledgeBaseId, userId: userObjectId }).lean();
+      if (!kbDoc) {
+        throw new AppError(404, 'NOT_FOUND', 'Knowledge base document not found');
+      }
+      collectionNames = [kbDoc.name]; // In new system, name is the collection name
+    } else {
+      const kb = await KnowledgeBase.findById(knowledgeBaseId);
+      if (!kb) {
+        throw new AppError(404, 'NOT_FOUND', 'Knowledge base not found');
+      }
+      collectionNames = [kb.collectionName];
     }
-    collectionNames = [kb.collectionName];
   } else {
     // Check Settings first (priority order like other controllers)
-    const settings = await Settings.findOne({ userId });
+    const settings = await Settings.findOne({ userId: userObjectId });
     
     if (settings) {
       // Priority 1: Use collection names from Settings (new format - multiple KBs)
@@ -31,10 +42,37 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
       }
       // Priority 2: Resolve knowledge base IDs from Settings to collection names
       else if (settings.defaultKnowledgeBaseIds && settings.defaultKnowledgeBaseIds.length > 0) {
-        const knowledgeBases = await KnowledgeBase.find({ 
-          _id: { $in: settings.defaultKnowledgeBaseIds } 
-        }).select('collectionName').lean();
-        collectionNames = knowledgeBases.map((kb: any) => kb.collectionName).filter(Boolean);
+        // Check if IDs are new format (KBDoc_xxx) or old format (ObjectId)
+        const newFormatIds = settings.defaultKnowledgeBaseIds.filter((id: string) => id.startsWith('KBDoc_'));
+        const oldFormatIds = settings.defaultKnowledgeBaseIds.filter((id: string) => !id.startsWith('KBDoc_'));
+        
+        const resolvedNames: string[] = [];
+        
+        // Resolve new format IDs from KnowledgeBaseDocument
+        if (newFormatIds.length > 0) {
+          const kbDocs = await KnowledgeBaseDocument.find({ 
+            document_id: { $in: newFormatIds },
+            userId: userObjectId 
+          }).select('name').lean();
+          resolvedNames.push(...kbDocs.map((doc: any) => doc.name).filter(Boolean));
+        }
+        
+        // Resolve old format IDs from KnowledgeBase
+        if (oldFormatIds.length > 0) {
+          // Try to convert to ObjectIds
+          const objectIds = oldFormatIds
+            .filter((id: string) => mongoose.Types.ObjectId.isValid(id))
+            .map((id: string) => new mongoose.Types.ObjectId(id));
+          
+          if (objectIds.length > 0) {
+            const knowledgeBases = await KnowledgeBase.find({ 
+              _id: { $in: objectIds } 
+            }).select('collectionName').lean();
+            resolvedNames.push(...knowledgeBases.map((kb: any) => kb.collectionName).filter(Boolean));
+          }
+        }
+        
+        collectionNames = resolvedNames;
         console.log('[Chatbot] Resolved knowledge base IDs to collection names:', collectionNames);
       }
       // Priority 3: Use single knowledge base name from Settings (legacy format)
@@ -44,11 +82,21 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
       }
       // Priority 4: Resolve single knowledge base ID from Settings (legacy format)
       else if (settings.defaultKnowledgeBaseId) {
-        const kb = await KnowledgeBase.findById(settings.defaultKnowledgeBaseId).select('collectionName').lean();
-        if (kb && kb.collectionName) {
-          collectionNames = [kb.collectionName];
-          console.log('[Chatbot] Resolved knowledge base ID from Settings:', collectionNames);
+        if (settings.defaultKnowledgeBaseId.startsWith('KBDoc_')) {
+          const kbDoc = await KnowledgeBaseDocument.findOne({ 
+            document_id: settings.defaultKnowledgeBaseId,
+            userId: userObjectId 
+          }).select('name').lean();
+          if (kbDoc && kbDoc.name) {
+            collectionNames = [kbDoc.name];
+          }
+        } else if (mongoose.Types.ObjectId.isValid(settings.defaultKnowledgeBaseId)) {
+          const kb = await KnowledgeBase.findById(settings.defaultKnowledgeBaseId).select('collectionName').lean();
+          if (kb && kb.collectionName) {
+            collectionNames = [kb.collectionName];
+          }
         }
+        console.log('[Chatbot] Resolved knowledge base ID from Settings:', collectionNames);
       }
     }
     
@@ -56,11 +104,21 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
     if (collectionNames.length === 0) {
       const aiBehavior = await aiBehaviorService.get(userId);
       if (aiBehavior.knowledgeBaseId) {
-        const kb = await KnowledgeBase.findById(aiBehavior.knowledgeBaseId);
-        if (kb) {
-          collectionNames = [kb.collectionName];
-          console.log('[Chatbot] Using knowledge base from AI Behavior:', collectionNames);
+        if (aiBehavior.knowledgeBaseId.startsWith('KBDoc_')) {
+          const kbDoc = await KnowledgeBaseDocument.findOne({ 
+            document_id: aiBehavior.knowledgeBaseId,
+            userId: userObjectId 
+          }).lean();
+          if (kbDoc) {
+            collectionNames = [kbDoc.name];
+          }
+        } else {
+          const kb = await KnowledgeBase.findById(aiBehavior.knowledgeBaseId);
+          if (kb) {
+            collectionNames = [kb.collectionName];
+          }
         }
+        console.log('[Chatbot] Using knowledge base from AI Behavior:', collectionNames);
       }
     }
     
@@ -432,20 +490,32 @@ export class ChatbotController {
       
       if (settings) {
         // Verify collection names are from this user's KBs
+        // Check both old KnowledgeBase model and new KnowledgeBaseDocument model
         const userKBs = await KnowledgeBase.find({ userId: userObjectId }).select('collectionName').lean();
-        const userCollectionNames = userKBs.map((kb: any) => kb.collectionName).filter(Boolean);
+        const userKBCollectionNames = userKBs.map((kb: any) => kb.collectionName).filter(Boolean);
+        
+        // Check new unified KnowledgeBaseDocument model (name field is the collection name)
+        const userKBDocs = await KnowledgeBaseDocument.find({ userId: userObjectId, status: 'ready' }).select('name').lean();
+        const userKBDocNames = userKBDocs.map((doc: any) => doc.name).filter(Boolean);
+        
+        // Combine both lists
+        const userCollectionNames = [...new Set([...userKBCollectionNames, ...userKBDocNames])];
         
         const invalidCollections = collectionNames.filter((name: string) => !userCollectionNames.includes(name));
         if (invalidCollections.length > 0) {
           console.error('[Widget Chat] ❌ CRITICAL: Collection names do not belong to user!');
           console.error('[Widget Chat] Invalid collections:', invalidCollections);
-          console.error('[Widget Chat] User collections:', userCollectionNames);
+          console.error('[Widget Chat] User collections (old KB):', userKBCollectionNames);
+          console.error('[Widget Chat] User collections (new KB):', userKBDocNames);
+          console.error('[Widget Chat] User collections (combined):', userCollectionNames);
           console.error('[Widget Chat] Resolved collections:', collectionNames);
           throw new AppError(500, 'INVALID_KB_ACCESS', 'Knowledge base collections do not belong to this user. This is a system error.');
         }
         
         console.log('[Widget Chat] ✅ Validated KBs belong to userId:', userId);
-        console.log('[Widget Chat] User KB collections:', userCollectionNames);
+        console.log('[Widget Chat] User KB collections (old):', userKBCollectionNames);
+        console.log('[Widget Chat] User KB collections (new):', userKBDocNames);
+        console.log('[Widget Chat] User KB collections (combined):', userCollectionNames);
       }
 
       console.log('[Widget Chat] ✅ Using AI context:', {

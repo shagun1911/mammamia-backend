@@ -38,6 +38,10 @@ export class KnowledgeBaseController {
         file: req.file
       });
 
+      if (!doc) {
+        throw new AppError(500, 'CREATION_ERROR', 'Failed to create knowledge base document');
+      }
+
       res.status(201).json({
         document_id: doc.document_id,
         id: doc.id,
@@ -100,6 +104,10 @@ export class KnowledgeBaseController {
         url: url_links || req.body.url,
         file: firstFile
       });
+
+      if (!doc) {
+        throw new AppError(500, 'CREATION_ERROR', 'Failed to create knowledge base document');
+      }
 
       res.status(201).json({
         success: true, // Frontend might expect this

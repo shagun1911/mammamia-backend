@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import axios from 'axios';
 import KnowledgeBase from '../models/KnowledgeBase';
 import KnowledgeBaseDocument from '../models/KnowledgeBaseDocument';
 import FAQ from '../models/FAQ';
@@ -9,6 +10,9 @@ import { ragService } from './rag.service';
 import { pythonRagService } from './pythonRag.service';
 import Papa from 'papaparse';
 import { v4 as uuidv4 } from 'uuid';
+
+// Python API base URL - same as used for agents
+const PYTHON_API_BASE_URL = process.env.PYTHON_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
 
 export class KnowledgeBaseService {
   // New Unified Ingestion Method
@@ -33,64 +37,130 @@ export class KnowledgeBaseService {
       throw new AppError(422, 'VALIDATION_ERROR', 'file is required for source_type=file');
     }
 
-    const docId = `KBDoc_${uuidv4().replace(/-/g, '').substring(0, 12)}`;
     const nowUnix = Math.floor(Date.now() / 1000);
-
-    let fileUrl = '';
-    if (source_type === 'file' && file) {
-      try {
-        const { GCSService } = await import('./gcs.service');
-        const gcsService = new GCSService();
-        fileUrl = await gcsService.uploadFile(file.buffer, file.originalname, file.mimetype);
-      } catch (error) {
-        console.error('[KB Service] GCS Upload failed:', error);
-        // We'll proceed but it might fail later
-      }
-    }
-
-    // 2. Create DB entry with status = "processing"
-    // Convert userId string to ObjectId for proper storage
-    // Mongoose will also auto-convert, but being explicit ensures consistency
     const userIdObjectId = new mongoose.Types.ObjectId(userId);
     
     console.log(`[KB Service] ingestDocument - userId string: ${userId}, ObjectId: ${userIdObjectId}`);
-    
-    const doc = await KnowledgeBaseDocument.create({
-      id: docId,
-      document_id: docId,
-      userId: userIdObjectId,
-      name: name || (source_type === 'file' ? file?.originalname : (source_type === 'url' ? url : 'Untitled Document')),
-      source_type,
-      folder_id: parent_folder_id || null,
-      folder_path: null,
-      status: 'processing',
-      source_payload: {
-        text: source_type === 'text' ? text : undefined,
-        url: source_type === 'url' ? url : undefined,
-        file_name: source_type === 'file' ? file?.originalname : undefined,
-        file_type: source_type === 'file' ? file?.mimetype : undefined,
-        file_size_bytes: source_type === 'file' ? file?.size : undefined,
-      },
-      ingestion: {
-        chunk_count: 0,
-        embedding_model: 'text-embedding-3-small',
-        vector_store: 'chroma',
-      },
-      metadata: {
-        file_url: fileUrl || undefined
-      },
-      created_at_unix: nowUnix,
-      updated_at_unix: nowUnix,
-    });
+    console.log(`[KB Service] Calling Python API to create knowledge base...`);
 
-    // 3. Trigger processing
-    // If it's a file, we might need the buffer. If we uploaded it to GCS, we can use the URL.
-    // For simplicity, let's process immediately or pass the buffer if available.
-    this.processDocumentIngestion(doc._id.toString(), file?.buffer).catch(err => {
-      console.error(`[KB Service] Error processing document ${docId}:`, err);
-    });
+    // 2. Call Python API to create knowledge base
+    // Always use multipart/form-data as per Python API spec
+    try {
+      const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/knowledge-base/ingest`;
+      
+      const FormData = require('form-data');
+      const formData = new FormData();
+      
+      // Prepare KB name
+      const kbName = name || (source_type === 'file' ? file?.originalname : (source_type === 'url' ? url : 'Untitled Document'));
+      
+      // Always send all fields as form data (matching Swagger spec)
+      // Swagger shows: -F 'source_type=url' -F 'name=TEST_KB' -F 'parent_folder_id=' -F 'text=string' -F 'url=https://...' -F 'file='
+      formData.append('source_type', source_type);
+      formData.append('name', kbName);
+      formData.append('parent_folder_id', parent_folder_id || '');
+      
+      // Add source-specific fields (send empty string for fields not used)
+      // For file field, we'll append empty Buffer when not used to match Swagger spec
+      if (source_type === 'text') {
+        formData.append('text', text || '');
+        formData.append('url', '');
+        formData.append('file', Buffer.from(''), { filename: '', contentType: 'application/octet-stream' });
+      } else if (source_type === 'url') {
+        formData.append('text', '');
+        formData.append('url', url || '');
+        formData.append('file', Buffer.from(''), { filename: '', contentType: 'application/octet-stream' });
+      } else if (source_type === 'file' && file) {
+        formData.append('text', '');
+        formData.append('url', '');
+        formData.append('file', file.buffer, {
+          filename: file.originalname,
+          contentType: file.mimetype,
+        });
+      } else {
+        // Fallback
+        formData.append('text', '');
+        formData.append('url', '');
+        formData.append('file', Buffer.from(''), { filename: '', contentType: 'application/octet-stream' });
+      }
 
-    return doc;
+      // Log the payload being sent
+      console.log('\n========== KB CREATION - PAYLOAD ==========');
+      console.log(`[KB Service] Endpoint: ${pythonUrl}`);
+      console.log(`[KB Service] Method: POST`);
+      console.log(`[KB Service] Content-Type: multipart/form-data`);
+      console.log(`[KB Service] Payload:`, {
+        source_type: source_type,
+        name: kbName,
+        parent_folder_id: parent_folder_id || '',
+        text: source_type === 'text' ? (text ? `${text.substring(0, 50)}...` : '') : '',
+        url: source_type === 'url' ? (url || '') : '',
+        file: source_type === 'file' ? (file ? `${file.originalname} (${file.size} bytes)` : '') : ''
+      });
+      console.log('==========================================\n');
+
+      const response = await axios.post(pythonUrl, formData, {
+        headers: formData.getHeaders(),
+        timeout: source_type === 'file' ? 300000 : 30000, // 5 minutes for file upload, 30s for others
+      });
+
+      const pythonResponse = response.data;
+      console.log(`[KB Service] Python API response:`, pythonResponse);
+
+      // Store in database using document_id from Python API response
+      // Handle folder_path - Python API returns it as array, convert to string or null
+      const folderPath = Array.isArray(pythonResponse.folder_path) 
+        ? pythonResponse.folder_path.join('/') 
+        : (pythonResponse.folder_path || null);
+
+      const doc = await KnowledgeBaseDocument.create({
+        id: pythonResponse.document_id || pythonResponse.id,
+        document_id: pythonResponse.document_id || pythonResponse.id, // Use document_id from Python API
+        userId: userIdObjectId,
+        name: pythonResponse.name || kbName,
+        source_type: pythonResponse.source_type || source_type,
+        folder_id: parent_folder_id || null,
+        folder_path: folderPath,
+        status: 'ready', // Python API creates it as ready
+        source_payload: {
+          text: source_type === 'text' ? text : undefined,
+          url: source_type === 'url' ? url : undefined,
+          file_name: source_type === 'file' ? file?.originalname : undefined,
+          file_type: source_type === 'file' ? file?.mimetype : undefined,
+          file_size_bytes: source_type === 'file' ? file?.size : undefined,
+        },
+        ingestion: {
+          chunk_count: 0,
+          embedding_model: 'text-embedding-3-small',
+          vector_store: 'chroma',
+        },
+        metadata: {},
+        created_at_unix: nowUnix,
+        updated_at_unix: nowUnix,
+      });
+
+      return doc;
+    } catch (error: any) {
+      console.error('[KB Service] Failed to create knowledge base in Python API:', error);
+      
+      if (error.response) {
+        console.error('[KB Service] Python API error response:', {
+          status: error.response.status,
+          data: error.response.data
+        });
+        throw new AppError(
+          error.response.status || 500,
+          'KB_CREATION_ERROR',
+          error.response.data?.detail || error.response.data?.message || 'Failed to create knowledge base in Python API'
+        );
+      }
+      
+      throw new AppError(
+        500,
+        'KB_CREATION_ERROR',
+        error.message || 'Failed to create knowledge base'
+      );
+    }
   }
 
   private async processDocumentIngestion(mongoId: string, fileBuffer?: Buffer) {
@@ -141,92 +211,160 @@ export class KnowledgeBaseService {
   }
 
   async findDocuments(userId: string, cursor?: string, pageSize = 30, organizationId?: string) {
-    // Filter documents by userId to ensure each user only sees their own KBs
-    console.log(`[KB Service] findDocuments called for userId: ${userId}, organizationId: ${organizationId}`);
+    console.log(`[KB Service] findDocuments called for userId: ${userId}, cursor: ${cursor}, pageSize: ${pageSize}`);
     
-    // Convert userId string to ObjectId for proper MongoDB query
-    const mongoose = require('mongoose');
-    const userObjectId = new mongoose.Types.ObjectId(userId);
-    
-    // Filter by userId - each user should only see their own knowledge bases
-    const docQuery: any = { userId: userObjectId };
-    const kbQuery: any = { userId: userObjectId };
-    
-    console.log(`[KB Service] Filtering documents for userId: ${userId} (ObjectId: ${userObjectId})`);
+    try {
+      // First, get the user's document_ids from our database to filter Python API response
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      const userDocs = await KnowledgeBaseDocument.find({ userId: userObjectId })
+        .select('document_id')
+        .lean();
+      
+      const userDocumentIds = userDocs.map((doc: any) => doc.document_id).filter(Boolean);
+      
+      console.log(`[KB Service] User has ${userDocumentIds.length} knowledge bases in database`);
+      console.log(`[KB Service] User document_ids:`, userDocumentIds);
 
-    if (cursor) {
-      // For KnowledgeBaseDocument, we use _id for cursor
-      docQuery._id = { $lt: cursor };
-      // For KnowledgeBase, we use createdAt for cursor (assuming ISO string or similar)
-      // This is a simplified approach, a more robust cursor might be needed for merged lists
-      // For now, let's assume if a cursor is present, it primarily applies to new docs.
-      // We will fetch all legacy KBs and then filter/paginate client-side for simplicity in merging.
-    }
+      if (userDocumentIds.length === 0) {
+        // User has no knowledge bases, return empty result
+        console.log(`[KB Service] User has no knowledge bases, returning empty result`);
+        return {
+          documents: [],
+          cursor: null,
+        };
+      }
 
-    // Fetch new KnowledgeBaseDocument entries filtered by userId
-    const newDocs = await KnowledgeBaseDocument.find(docQuery)
-      .sort({ created_at_unix: -1 }) // Sort by new timestamp field
-      .lean();
-    
-    console.log(`[KB Service] Found ${newDocs.length} KnowledgeBaseDocument entries for userId: ${userId} (ObjectId: ${userObjectId})`);
-    if (newDocs.length > 0) {
-      const sampleDocUserId = newDocs[0].userId?.toString();
-      console.log(`[KB Service] Sample doc userId: ${sampleDocUserId}, filter userId: ${userId}, match: ${sampleDocUserId === userId}`);
-    } else {
-      console.log(`[KB Service] ⚠️ No documents found. Checking if userId format is correct...`);
-      // Debug: Check what userIds exist in DB
-      const allDocs = await KnowledgeBaseDocument.find({}).limit(5).select('userId').lean();
-      console.log(`[KB Service] Sample userIds in DB:`, allDocs.map(d => d.userId?.toString()));
-    }
+      // Call Python API to fetch knowledge bases
+      const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/knowledge-base`;
+      
+      const params: any = {
+        page_size: Math.min(Math.max(pageSize, 1), 100), // Ensure between 1 and 100
+      };
+      
+      if (cursor) {
+        params.cursor = cursor;
+      }
 
-    // Fetch legacy KnowledgeBase entries filtered by userId
-    const legacyKbs = await KnowledgeBase.find(kbQuery)
-      .sort({ createdAt: -1 })
-      .lean();
-    
-    console.log(`[KB Service] Found ${legacyKbs.length} legacy KnowledgeBase entries for userId: ${userId}`);
+      console.log(`[KB Service] Calling Python API: ${pythonUrl} with params:`, params);
 
-    // Map legacy KBs to a compatible format
-    const mappedLegacyKbs = legacyKbs.map(kb => ({
-      id: kb._id.toString(),
-      document_id: kb._id.toString(), // Ensure document_id for legacy compatibility
-      name: kb.name || kb.collectionName,
-      type: 'legacy', // Default type for legacy KBs
-      status: 'ready', // Assume legacy KBs are ready
-      created_at_unix: Math.floor(kb.createdAt.getTime() / 1000),
-    }));
+      const response = await axios.get(pythonUrl, {
+        params,
+        timeout: 30000,
+      });
 
-    // Merge and sort
-    const allDocuments = [
-      ...newDocs.map(doc => ({
+      console.log(`[KB Service] Python API response received`);
+      
+      // Python API should return { documents: [...], cursor: ... }
+      const pythonData = response.data;
+      
+      // Map Python API response to our format and FILTER by user's document_ids
+      const allPythonDocs = (pythonData.documents || []).map((doc: any) => ({
+        id: doc.document_id || doc.id,
+        document_id: doc.document_id || doc.id,
+        name: doc.name,
+        type: doc.source_type,
+        status: doc.status || 'ready',
+        created_at_unix: doc.created_at_unix || Math.floor(Date.now() / 1000),
+        folder_path: doc.folder_path || null,
+      }));
+
+      // Filter to only include documents that belong to this user
+      const filteredDocuments = allPythonDocs.filter((doc: any) => 
+        userDocumentIds.includes(doc.document_id)
+      );
+
+      console.log(`[KB Service] Python API returned ${allPythonDocs.length} documents, filtered to ${filteredDocuments.length} for user`);
+
+      // Also get full details from our database for any missing fields
+      const localDocs = await KnowledgeBaseDocument.find({ 
+        userId: userObjectId,
+        document_id: { $in: userDocumentIds }
+      })
+        .sort({ created_at_unix: -1 })
+        .lean();
+
+      // Merge Python API results with local database entries
+      // Use document_id as the key to avoid duplicates
+      const docMap = new Map();
+      
+      // Add filtered Python API documents
+      filteredDocuments.forEach((doc: any) => {
+        docMap.set(doc.document_id, doc);
+      });
+      
+      // Add/update with local database documents (for any missing fields or status updates)
+      localDocs.forEach((doc: any) => {
+        const existingDoc = docMap.get(doc.document_id);
+        if (existingDoc) {
+          // Merge local status if available
+          docMap.set(doc.document_id, {
+            ...existingDoc,
+            status: doc.status || existingDoc.status,
+          });
+        } else {
+          // Document exists in DB but not in Python API response
+          docMap.set(doc.document_id, {
+            id: doc.id,
+            document_id: doc.document_id,
+            name: doc.name,
+            type: doc.source_type,
+            status: doc.status,
+            created_at_unix: doc.created_at_unix,
+            folder_path: doc.folder_path,
+          });
+        }
+      });
+
+      const allDocuments = Array.from(docMap.values())
+        .sort((a: any, b: any) => (b.created_at_unix || 0) - (a.created_at_unix || 0));
+
+      // Apply pagination
+      let startIndex = 0;
+      if (cursor) {
+        const cursorIndex = allDocuments.findIndex((doc: any) => doc.document_id === cursor || doc.id === cursor);
+        if (cursorIndex !== -1) {
+          startIndex = cursorIndex + 1;
+        }
+      }
+
+      const paginatedDocs = allDocuments.slice(startIndex, startIndex + pageSize);
+      const nextCursor = paginatedDocs.length === pageSize 
+        ? (paginatedDocs[paginatedDocs.length - 1].document_id || paginatedDocs[paginatedDocs.length - 1].id)
+        : (pythonData.cursor || null);
+
+      console.log(`[KB Service] Returning ${paginatedDocs.length} documents (total: ${allDocuments.length})`);
+
+      return {
+        documents: paginatedDocs,
+        cursor: nextCursor,
+      };
+    } catch (error: any) {
+      console.error('[KB Service] Failed to fetch knowledge bases from Python API:', error);
+      
+      // Fallback to database-only if Python API fails
+      console.log('[KB Service] Falling back to database-only fetch...');
+      
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      const localDocs = await KnowledgeBaseDocument.find({ userId: userObjectId })
+        .sort({ created_at_unix: -1 })
+        .limit(pageSize)
+        .lean();
+
+      const documents = localDocs.map((doc: any) => ({
         id: doc.id,
         document_id: doc.document_id,
         name: doc.name,
         type: doc.source_type,
         status: doc.status,
         created_at_unix: doc.created_at_unix,
-      })),
-      ...mappedLegacyKbs,
-    ].sort((a, b) => (b.created_at_unix || 0) - (a.created_at_unix || 0)); // Sort by newest first
+        folder_path: doc.folder_path,
+      }));
 
-    // Implement in-memory pagination for the merged list
-    let startIndex = 0;
-    if (cursor) {
-      const cursorDoc = allDocuments.find(doc => doc.id === cursor);
-      if (cursorDoc) {
-        startIndex = allDocuments.indexOf(cursorDoc) + 1;
-      }
+      return {
+        documents,
+        cursor: documents.length === pageSize ? documents[documents.length - 1].document_id : null,
+      };
     }
-
-    const paginatedDocs = allDocuments.slice(startIndex, startIndex + pageSize);
-    const nextCursor = paginatedDocs.length === pageSize ? paginatedDocs[paginatedDocs.length - 1].id : null;
-
-    console.log(`[KB Service] Returning ${paginatedDocs.length} documents (total: ${allDocuments.length})`);
-
-    return {
-      documents: paginatedDocs,
-      cursor: nextCursor,
-    };
   }
 
   async getDocument(document_id: string) {
@@ -510,7 +648,7 @@ export class KnowledgeBaseService {
         }
         
         if (!idAlreadyLinked) {
-          existingIds.push(new mongoose.Types.ObjectId(kbId));
+          existingIds.push(kbId); // kbId is already a string
         }
         
         // Determine if this is the first KB (should be default)
@@ -659,7 +797,7 @@ export class KnowledgeBaseService {
 
       // Fallback: get all KBs for user
       const kbs = await KnowledgeBase.find({ userId }).sort({ isDefault: -1, createdAt: -1 });
-      return kbs.map(kb => kb.collectionName);
+      return kbs.map((kb: any) => kb.collectionName);
     } catch (error: any) {
       console.error(`[KB Service] Error getting collection names:`, error);
       return [];

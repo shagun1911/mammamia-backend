@@ -14,7 +14,7 @@ import AIBehavior from '../models/AIBehavior';
 import Tool from '../models/Tool';
 import Automation from '../models/Automation';
 import AutomationExecution from '../models/AutomationExecution';
-import KnowledgeBase from '../models/KnowledgeBase';
+import KnowledgeBaseDocument from '../models/KnowledgeBaseDocument';
 import Organization from '../models/Organization';
 import Conversation from '../models/Conversation';
 import Customer from '../models/Customer';
@@ -321,8 +321,9 @@ export class AuthService {
       const organizations = await Organization.find({ ownerId: userObjectId });
       const organizationIds = organizations.map(org => org._id);
 
-      // Get knowledge base IDs before deleting them (needed for file deletion)
-      const knowledgeBaseIds = await KnowledgeBase.find({ userId: userObjectId }).distinct('_id');
+      // Get knowledge base document IDs before deleting them (needed for file deletion)
+      // Use KnowledgeBaseDocument for the new unified system
+      const knowledgeBaseIds = await KnowledgeBaseDocument.find({ userId: userObjectId }).distinct('_id');
       
       // Get automation IDs before deleting them (needed for automation execution deletion)
       const automationIds = await Automation.find({ userId: userObjectId }).distinct('_id');
@@ -351,7 +352,7 @@ export class AuthService {
         AIBehavior.deleteMany({ userId: userObjectId }),
         Tool.deleteMany({ userId: userObjectId }),
         Automation.deleteMany({ userId: userObjectId }),
-        KnowledgeBase.deleteMany({ userId: userObjectId }),
+        KnowledgeBaseDocument.deleteMany({ userId: userObjectId }),
       ]);
 
       console.log('[Auth] Direct deletions completed:', {
