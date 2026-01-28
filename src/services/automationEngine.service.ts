@@ -13,6 +13,7 @@ import { profileService } from './profile.service';
 import { googleCalendarService } from './googleCalendar.service';
 import { googleSheetsService } from './googleSheets.service';
 import gmailOAuthService from './gmailOAuth.service';
+import { emailService } from './email.service';
 import GoogleIntegration from '../models/GoogleIntegration';
 import SocialIntegration from '../models/SocialIntegration';
 
@@ -671,44 +672,35 @@ export class AutomationEngine {
           userId: context?.userId?.toString()
         });
 
-        // Use external API for email sending (FORCED SMTP / INTERNAL PATH)
-        // By NOT sending X-User-Email header, we ensure the Python API uses platform SMTP
+        // Use local EmailService with SMTP credentials from .env
         try {
           console.log(`[Automation] Sending Aistein Email (SMTP) to ${recipientEmail}...`);
 
-          const requestHeaders: any = {
-            'Content-Type': 'application/json'
-          };
+          // Use EMAIL_FROM from env if available, otherwise use default from EmailService
+          const fromEmail = process.env.EMAIL_FROM || undefined;
 
-          const emailResponse = await axios.post(`${COMM_API}/email/send`, {
+          const emailResult = await emailService.sendEmail({
             to: recipientEmail,
             subject: emailSubject,
-            body: emailBody,
-            // Explicitly specify platform sender type to bypass any Gmail logic in Python API
-            sender_type: 'platform',
-            ...(is_html ? { is_html: true } : {})
-          }, {
-            headers: requestHeaders,
-            timeout: 30000, // 30 seconds timeout
+            ...(is_html ? { html: emailBody } : { text: emailBody }),
+            from: fromEmail
           });
 
-          const success = emailResponse.data.status === 'success' || emailResponse.data.success === true;
-
-          // FAIL HARD: If email sending failed, throw error immediately
-          if (!success) {
-            const errorMessage = emailResponse.data.message || emailResponse.data.error || 'SMTP Email sending failed';
+          if (!emailResult.success) {
+            const errorMessage = emailResult.error || 'SMTP Email sending failed';
             console.error(`[Automation] SMTP Email to ${recipientEmail} failed:`, errorMessage);
             throw new Error(`Aistein Email sending failed: ${errorMessage}`);
           }
 
-          console.log(`[Automation] Aistein Email (SMTP) to ${recipientEmail} sent successfully`);
+          console.log(`[Automation] Aistein Email (SMTP) to ${recipientEmail} sent successfully (Message ID: ${emailResult.messageId})`);
 
           return {
             success: true,
             to: recipientEmail,
             subject: emailSubject,
+            messageId: emailResult.messageId,
             sentAt: new Date(),
-            path: 'aistein_smtp'
+            path: 'local_smtp'
           };
         } catch (error: any) {
           console.error(`[Automation] SMTP Email to ${recipientEmail} failed:`, error.message);

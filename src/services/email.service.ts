@@ -49,10 +49,14 @@ export class EmailService {
     }
 
     // Create transporter
+    // Check SMTP_SECURE from env, fallback to port-based detection
+    const smtpSecure = process.env.SMTP_SECURE === 'true' || 
+                       (process.env.SMTP_SECURE !== 'false' && parseInt(smtpPort, 10) === 465);
+    
     this.transporter = nodemailer.createTransport({
       host: smtpHost,
       port: parseInt(smtpPort, 10),
-      secure: parseInt(smtpPort, 10) === 465, // true for 465, false for other ports
+      secure: smtpSecure, // Use SMTP_SECURE from env or default to port-based
       auth: {
         user: smtpUser,
         pass: smtpPass
@@ -64,8 +68,15 @@ export class EmailService {
     });
 
     this.isConfigured = true;
-    this.defaultFrom = `${this.appName} <${smtpUser}>`;
-    console.log('[EmailService] SMTP configured successfully');
+    // Use EMAIL_FROM from env if available, otherwise use SMTP_USER
+    const emailFrom = process.env.EMAIL_FROM || smtpUser;
+    this.defaultFrom = `${this.appName} <${emailFrom}>`;
+    console.log('[EmailService] SMTP configured successfully', {
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      from: emailFrom
+    });
   }
 
   async sendEmail(options: EmailOptions): Promise<{ success: boolean; messageId?: string; error?: string }> {
