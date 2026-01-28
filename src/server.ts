@@ -56,11 +56,49 @@ initializeSocket(httpServer);
 // CORS configuration - supports multiple origins
 const corsOrigin = process.env.CORS_ORIGIN 
   ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
-  : 'http://localhost:3000';
+  : [
+      'http://localhost:3000',
+      'https://keplero-ai-frontend.vercel.app',
+      'https://keplero-ai-frontend-git-*.vercel.app' // Support preview deployments
+    ];
 
 // CORS configuration - supports multiple origins and file uploads
 app.use(cors({ 
-  origin: corsOrigin,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) {
+      return callback(null, true);
+    }
+    
+    // Check if origin is in allowed list
+    const allowedOrigins = Array.isArray(corsOrigin) ? corsOrigin : [corsOrigin];
+    
+    // Check exact match
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    // Check wildcard patterns (for Vercel preview deployments)
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (allowed.includes('*')) {
+        const pattern = allowed.replace(/\*/g, '.*');
+        const regex = new RegExp(`^${pattern}$`);
+        return regex.test(origin);
+      }
+      return false;
+    });
+    
+    if (isAllowed) {
+      return callback(null, true);
+    }
+    
+    // In development, allow localhost variations
+    if (process.env.NODE_ENV === 'development' && origin.includes('localhost')) {
+      return callback(null, true);
+    }
+    
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
@@ -133,7 +171,9 @@ app.use('/api/v1/conversations', conversationRoutes);
 app.use('/api/v1/settings/templates', templateRoutes);
 app.use('/api/v1/settings', settingsRoutes); // General settings
 app.use('/api/v1/training/knowledge-bases', knowledgeBaseRoutes);
-app.use('/api/v1/knowledge-bases', knowledgeBaseRoutes); // Alias for easier access
+app.use('/api/v1/knowledge-bases', knowledgeBaseRoutes);
+app.use('/api/v1/knowledge-base', knowledgeBaseRoutes);
+app.use('/api/v1/training/knowledge-base', knowledgeBaseRoutes);
 app.use('/api/v1/training/prompts', promptRoutes);
 app.use('/api/v1/ai-behavior', aiBehaviorRoutes);
 app.use('/api/v1/chatbot', chatbotRoutes);

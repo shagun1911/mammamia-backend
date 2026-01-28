@@ -7,6 +7,7 @@ export interface IOutboundAgentConfig extends Document {
   customVoiceId?: string;
   humanOperatorPhone: string;
   escalationRules: string[];
+  knowledge_base_ids: string[]; // NEW Unified Knowledge Base IDs ["KBDoc_xxx"]
   greetingMessage?: string;
   language?: string;
   createdAt: Date;
@@ -36,6 +37,10 @@ const OutboundAgentConfigSchema = new Schema<IOutboundAgentConfig>({
     default: ''
   },
   escalationRules: {
+    type: [String],
+    default: []
+  },
+  knowledge_base_ids: {
     type: [String],
     default: []
   },

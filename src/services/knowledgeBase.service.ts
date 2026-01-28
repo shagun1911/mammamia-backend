@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import KnowledgeBase from '../models/KnowledgeBase';
+import KnowledgeBaseDocument from '../models/KnowledgeBaseDocument';
 import FAQ from '../models/FAQ';
 import Website from '../models/Website';
 import File from '../models/File';
@@ -7,8 +8,345 @@ import { AppError } from '../middleware/error.middleware';
 import { ragService } from './rag.service';
 import { pythonRagService } from './pythonRag.service';
 import Papa from 'papaparse';
+import { v4 as uuidv4 } from 'uuid';
 
 export class KnowledgeBaseService {
+  // New Unified Ingestion Method
+  async ingestDocument(userId: string, data: {
+    source_type: 'text' | 'url' | 'file';
+    name?: string;
+    parent_folder_id?: string;
+    text?: string;
+    url?: string;
+    file?: Express.Multer.File;
+  }) {
+    const { source_type, name, parent_folder_id, text, url, file } = data;
+
+    // 1. Validation
+    if (source_type === 'text' && !text) {
+      throw new AppError(422, 'VALIDATION_ERROR', 'text is required for source_type=text');
+    }
+    if (source_type === 'url' && !url) {
+      throw new AppError(422, 'VALIDATION_ERROR', 'url is required for source_type=url');
+    }
+    if (source_type === 'file' && !file) {
+      throw new AppError(422, 'VALIDATION_ERROR', 'file is required for source_type=file');
+    }
+
+    const docId = `KBDoc_${uuidv4().replace(/-/g, '').substring(0, 12)}`;
+    const nowUnix = Math.floor(Date.now() / 1000);
+
+    let fileUrl = '';
+    if (source_type === 'file' && file) {
+      try {
+        const { GCSService } = await import('./gcs.service');
+        const gcsService = new GCSService();
+        fileUrl = await gcsService.uploadFile(file.buffer, file.originalname, file.mimetype);
+      } catch (error) {
+        console.error('[KB Service] GCS Upload failed:', error);
+        // We'll proceed but it might fail later
+      }
+    }
+
+    // 2. Create DB entry with status = "processing"
+    // Convert userId string to ObjectId for proper storage
+    // Mongoose will also auto-convert, but being explicit ensures consistency
+    const userIdObjectId = new mongoose.Types.ObjectId(userId);
+    
+    console.log(`[KB Service] ingestDocument - userId string: ${userId}, ObjectId: ${userIdObjectId}`);
+    
+    const doc = await KnowledgeBaseDocument.create({
+      id: docId,
+      document_id: docId,
+      userId: userIdObjectId,
+      name: name || (source_type === 'file' ? file?.originalname : (source_type === 'url' ? url : 'Untitled Document')),
+      source_type,
+      folder_id: parent_folder_id || null,
+      folder_path: null,
+      status: 'processing',
+      source_payload: {
+        text: source_type === 'text' ? text : undefined,
+        url: source_type === 'url' ? url : undefined,
+        file_name: source_type === 'file' ? file?.originalname : undefined,
+        file_type: source_type === 'file' ? file?.mimetype : undefined,
+        file_size_bytes: source_type === 'file' ? file?.size : undefined,
+      },
+      ingestion: {
+        chunk_count: 0,
+        embedding_model: 'text-embedding-3-small',
+        vector_store: 'chroma',
+      },
+      metadata: {
+        file_url: fileUrl || undefined
+      },
+      created_at_unix: nowUnix,
+      updated_at_unix: nowUnix,
+    });
+
+    // 3. Trigger processing
+    // If it's a file, we might need the buffer. If we uploaded it to GCS, we can use the URL.
+    // For simplicity, let's process immediately or pass the buffer if available.
+    this.processDocumentIngestion(doc._id.toString(), file?.buffer).catch(err => {
+      console.error(`[KB Service] Error processing document ${docId}:`, err);
+    });
+
+    return doc;
+  }
+
+  private async processDocumentIngestion(mongoId: string, fileBuffer?: Buffer) {
+    const doc = await KnowledgeBaseDocument.findById(mongoId);
+    if (!doc) return;
+
+    try {
+      console.log(`[KB Service] Processing ingestion for doc: ${doc.document_id} (${doc.source_type})`);
+      
+      const collectionName = `user_${doc.userId.toString()}_kb`;
+
+      if (doc.source_type === 'text' && doc.source_payload.text) {
+        // Implement text ingestion (could be via a temporary file or new Python endpoint)
+        // For now, let's assume pythonRagService can handle it or we use a placeholder
+        console.log('[KB Service] Text ingestion requested');
+      } else if (doc.source_type === 'url' && doc.source_payload.url) {
+        await pythonRagService.ingestData({
+          collectionName,
+          urlLinks: [doc.source_payload.url],
+        });
+      } else if (doc.source_type === 'file' && fileBuffer) {
+        const isPdf = doc.source_payload.file_type === 'application/pdf';
+        const isExcel = doc.source_payload.file_type?.includes('spreadsheet') || doc.source_payload.file_type?.includes('excel');
+
+        if (isPdf) {
+          await pythonRagService.ingestData({
+            collectionName,
+            pdfFiles: [fileBuffer],
+          });
+        } else if (isExcel) {
+          await pythonRagService.ingestData({
+            collectionName,
+            excelFiles: [fileBuffer],
+          });
+        }
+      }
+
+      doc.status = 'ready';
+      doc.updated_at_unix = Math.floor(Date.now() / 1000);
+      await doc.save();
+      console.log(`[KB Service] ✅ Doc ${doc.document_id} is ready`);
+    } catch (error) {
+      console.error(`[KB Service] ❌ Ingestion failed for doc ${doc.document_id}:`, error);
+      doc.status = 'failed';
+      doc.updated_at_unix = Math.floor(Date.now() / 1000);
+      await doc.save();
+    }
+  }
+
+  async findDocuments(userId: string, cursor?: string, pageSize = 30, organizationId?: string) {
+    // Filter documents by userId to ensure each user only sees their own KBs
+    console.log(`[KB Service] findDocuments called for userId: ${userId}, organizationId: ${organizationId}`);
+    
+    // Convert userId string to ObjectId for proper MongoDB query
+    const mongoose = require('mongoose');
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+    
+    // Filter by userId - each user should only see their own knowledge bases
+    const docQuery: any = { userId: userObjectId };
+    const kbQuery: any = { userId: userObjectId };
+    
+    console.log(`[KB Service] Filtering documents for userId: ${userId} (ObjectId: ${userObjectId})`);
+
+    if (cursor) {
+      // For KnowledgeBaseDocument, we use _id for cursor
+      docQuery._id = { $lt: cursor };
+      // For KnowledgeBase, we use createdAt for cursor (assuming ISO string or similar)
+      // This is a simplified approach, a more robust cursor might be needed for merged lists
+      // For now, let's assume if a cursor is present, it primarily applies to new docs.
+      // We will fetch all legacy KBs and then filter/paginate client-side for simplicity in merging.
+    }
+
+    // Fetch new KnowledgeBaseDocument entries filtered by userId
+    const newDocs = await KnowledgeBaseDocument.find(docQuery)
+      .sort({ created_at_unix: -1 }) // Sort by new timestamp field
+      .lean();
+    
+    console.log(`[KB Service] Found ${newDocs.length} KnowledgeBaseDocument entries for userId: ${userId} (ObjectId: ${userObjectId})`);
+    if (newDocs.length > 0) {
+      const sampleDocUserId = newDocs[0].userId?.toString();
+      console.log(`[KB Service] Sample doc userId: ${sampleDocUserId}, filter userId: ${userId}, match: ${sampleDocUserId === userId}`);
+    } else {
+      console.log(`[KB Service] ⚠️ No documents found. Checking if userId format is correct...`);
+      // Debug: Check what userIds exist in DB
+      const allDocs = await KnowledgeBaseDocument.find({}).limit(5).select('userId').lean();
+      console.log(`[KB Service] Sample userIds in DB:`, allDocs.map(d => d.userId?.toString()));
+    }
+
+    // Fetch legacy KnowledgeBase entries filtered by userId
+    const legacyKbs = await KnowledgeBase.find(kbQuery)
+      .sort({ createdAt: -1 })
+      .lean();
+    
+    console.log(`[KB Service] Found ${legacyKbs.length} legacy KnowledgeBase entries for userId: ${userId}`);
+
+    // Map legacy KBs to a compatible format
+    const mappedLegacyKbs = legacyKbs.map(kb => ({
+      id: kb._id.toString(),
+      document_id: kb._id.toString(), // Ensure document_id for legacy compatibility
+      name: kb.name || kb.collectionName,
+      type: 'legacy', // Default type for legacy KBs
+      status: 'ready', // Assume legacy KBs are ready
+      created_at_unix: Math.floor(kb.createdAt.getTime() / 1000),
+    }));
+
+    // Merge and sort
+    const allDocuments = [
+      ...newDocs.map(doc => ({
+        id: doc.id,
+        document_id: doc.document_id,
+        name: doc.name,
+        type: doc.source_type,
+        status: doc.status,
+        created_at_unix: doc.created_at_unix,
+      })),
+      ...mappedLegacyKbs,
+    ].sort((a, b) => (b.created_at_unix || 0) - (a.created_at_unix || 0)); // Sort by newest first
+
+    // Implement in-memory pagination for the merged list
+    let startIndex = 0;
+    if (cursor) {
+      const cursorDoc = allDocuments.find(doc => doc.id === cursor);
+      if (cursorDoc) {
+        startIndex = allDocuments.indexOf(cursorDoc) + 1;
+      }
+    }
+
+    const paginatedDocs = allDocuments.slice(startIndex, startIndex + pageSize);
+    const nextCursor = paginatedDocs.length === pageSize ? paginatedDocs[paginatedDocs.length - 1].id : null;
+
+    console.log(`[KB Service] Returning ${paginatedDocs.length} documents (total: ${allDocuments.length})`);
+
+    return {
+      documents: paginatedDocs,
+      cursor: nextCursor,
+    };
+  }
+
+  async getDocument(document_id: string) {
+    const doc = await KnowledgeBaseDocument.findOne({ document_id }).lean();
+    if (!doc) {
+      throw new AppError(404, 'NOT_FOUND', 'Document not found');
+    }
+    return {
+      id: doc.id,
+      document_id: doc.document_id,
+      name: doc.name,
+      type: doc.source_type,
+      status: doc.status,
+      created_at_unix: doc.created_at_unix,
+    };
+  }
+
+  async deleteDocument(document_id: string) {
+    // Try to delete from new KnowledgeBaseDocument
+    let doc = await KnowledgeBaseDocument.findOne({ document_id });
+
+    if (doc) {
+      // 1. Remove DB record
+      await KnowledgeBaseDocument.deleteOne({ document_id });
+
+      // TODO: 2. Delete vectors from vector store (needs implementation)
+      // TODO: 3. Remove file from storage (if file)
+      // TODO: 4. Detach from all agents (needs implementation)
+
+      return { success: true, message: `Document ${document_id} deleted successfully` };
+    } else {
+      // If not found in new, try to delete from legacy KnowledgeBase
+      // The document_id from the frontend could be a legacy _id
+      const kb = await KnowledgeBase.findById(document_id);
+      if (!kb) {
+        throw new AppError(404, 'NOT_FOUND', 'Document not found');
+      }
+
+      console.log(`[KB Service] Deleting legacy knowledge base: ${kb.name} (${kb.collectionName})`);
+
+      // Delete collection from Python RAG system
+      try {
+        await pythonRagService.deleteCollection(kb.collectionName);
+        console.log(`[KB Service] ✅ Collection deleted from Python RAG system`);
+      } catch (error: any) {
+        console.error(`[KB Service] ⚠️ Failed to delete collection from Python RAG:`, error.message);
+        // Continue with MongoDB cleanup even if Python deletion fails
+      }
+
+      // Clean up Settings references before deleting KB
+      const userId = kb.userId.toString();
+      const collectionName = kb.collectionName;
+      const kbObjectId = new mongoose.Types.ObjectId(document_id); // Use document_id as kbId
+
+      try {
+        const Settings = (await import('../models/Settings')).default;
+        const settings = await Settings.findOne({ userId });
+
+        if (settings) {
+          // Remove from arrays
+          const updatedNames = Array.isArray(settings.defaultKnowledgeBaseNames)
+            ? settings.defaultKnowledgeBaseNames.filter((name: string) => name !== collectionName)
+            : [];
+
+          const updatedIds = Array.isArray(settings.defaultKnowledgeBaseIds)
+            ? settings.defaultKnowledgeBaseIds.filter((id: any) => id.toString() !== document_id)
+            : [];
+
+          // Update Settings - remove KB references
+          const updateData: any = {
+            defaultKnowledgeBaseNames: updatedNames,
+            defaultKnowledgeBaseIds: updatedIds
+          };
+
+          // If this was the default KB, clear default fields or set to next available
+          if (settings.defaultKnowledgeBaseId?.toString() === document_id ||
+              settings.defaultKnowledgeBaseName === collectionName) {
+            // If there are other KBs, set the first one as default
+            if (updatedNames.length > 0) {
+              // Find the first remaining KB
+              const remainingKB = await KnowledgeBase.findOne({
+                userId: kb.userId,
+                _id: { $ne: document_id }
+              }).sort({ isDefault: -1, createdAt: -1 });
+
+              if (remainingKB) {
+                updateData.defaultKnowledgeBaseId = remainingKB._id;
+                updateData.defaultKnowledgeBaseName = remainingKB.collectionName;
+              } else {
+                // No more KBs - clear default fields
+                updateData.defaultKnowledgeBaseId = null;
+                updateData.defaultKnowledgeBaseName = null;
+              }
+            } else {
+              // No more KBs - clear default fields
+              updateData.defaultKnowledgeBaseId = null;
+              updateData.defaultKnowledgeBaseName = null;
+            }
+          }
+
+          await Settings.updateOne({ userId }, { $set: updateData });
+          console.log(`[KB Service] ✅ Cleaned up Settings references for deleted KB`);
+        }
+      } catch (error: any) {
+        console.error(`[KB Service] ⚠️ Failed to clean up Settings references:`, error.message);
+        // Continue with deletion even if cleanup fails
+      }
+
+      // Delete all associated data from MongoDB
+      await Promise.all([
+        FAQ.deleteMany({ knowledgeBaseId: document_id }),
+        Website.deleteMany({ knowledgeBaseId: document_id }),
+        File.deleteMany({ knowledgeBaseId: document_id }),
+        KnowledgeBase.findByIdAndDelete(document_id)
+      ]);
+
+      console.log(`[KB Service] ✅ Legacy Knowledge base and all associated data deleted`);
+      return { success: true, message: `Knowledge base ${document_id} deleted successfully` };
+    }
+  }
   // List all knowledge bases
   async findAll(userId: string) {
     const knowledgeBases = await KnowledgeBase.find({ userId }).sort({ createdAt: -1 }).lean();

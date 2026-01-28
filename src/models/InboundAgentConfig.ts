@@ -3,7 +3,8 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IInboundAgentConfig extends Document {
   userId: mongoose.Types.ObjectId;
   voice_id: string; // Selected voice from settings (either selectedVoice or customVoiceId)
-  collections: string[]; // Default knowledge base collection names
+  collections: string[]; // Default knowledge base collection names (Legacy)
+  knowledge_base_ids: string[]; // NEW Unified Knowledge Base IDs ["KBDoc_xxx"]
   language: string; // Language from AI behavior settings or phone settings
   calledNumber: string; // First inbound phone number from phone settings
   agent_instruction: string; // System prompt from AI behavior
@@ -30,6 +31,10 @@ const InboundAgentConfigSchema = new Schema<IInboundAgentConfig>({
     default: ''
   },
   collections: {
+    type: [String],
+    default: []
+  },
+  knowledge_base_ids: {
     type: [String],
     default: []
   },

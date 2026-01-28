@@ -11,7 +11,8 @@ export interface ISettings extends Document {
   autoReplyMessage?: string;
   defaultKnowledgeBaseId?: mongoose.Types.ObjectId; // Reference to default knowledge base (deprecated - use defaultKnowledgeBaseIds)
   defaultKnowledgeBaseName?: string; // Collection name for RAG (deprecated - use defaultKnowledgeBaseNames)
-  defaultKnowledgeBaseIds?: mongoose.Types.ObjectId[]; // References to multiple default knowledge bases
+  defaultKnowledgeBaseIds?: mongoose.Types.ObjectId[]; // References to multiple default knowledge bases (Legacy)
+  knowledge_base_ids?: string[]; // NEW Unified Knowledge Base IDs ["KBDoc_xxx"]
   defaultKnowledgeBaseNames?: string[]; // Collection names for RAG (supports multiple)
   businessHours?: any;
   // Conversation Settings
@@ -85,6 +86,10 @@ const SettingsSchema = new Schema<ISettings>({
     type: Schema.Types.ObjectId,
     ref: 'KnowledgeBase'
   }],
+  knowledge_base_ids: {
+    type: [String],
+    default: []
+  },
   defaultKnowledgeBaseNames: [String],
   businessHours: Schema.Types.Mixed,
   // Conversation Settings

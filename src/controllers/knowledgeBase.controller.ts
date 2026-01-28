@@ -20,6 +20,147 @@ export class KnowledgeBaseController {
     this.docProcessor = new DocumentProcessorService();
   }
 
+  // ===== Unified Knowledge Base (New) =====
+
+  ingestDocument = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { source_type, name, parent_folder_id, text, url } = req.body;
+      // Use _id.toString() to ensure consistency with listDocuments
+      const userId = req.user!._id ? req.user!._id.toString() : req.user!.id;
+      console.log(`[KB Controller] ingestDocument - userId: ${userId}, user._id: ${req.user!._id}`);
+
+      const doc = await this.kbService.ingestDocument(userId, {
+        source_type: source_type || req.body.type, // Handle 'type' alias
+        name,
+        parent_folder_id,
+        text,
+        url,
+        file: req.file
+      });
+
+      res.status(201).json({
+        document_id: doc.document_id,
+        id: doc.id,
+        name: doc.name,
+        folder_path: doc.folder_path,
+        source_type: doc.source_type,
+        status: doc.status
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  createFromText = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    req.body.source_type = 'text';
+    return this.ingestDocument(req, res, next);
+  };
+
+  createFromUrl = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    req.body.source_type = 'url';
+    return this.ingestDocument(req, res, next);
+  };
+
+  createFromFile = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    req.body.source_type = 'file';
+    return this.ingestDocument(req, res, next);
+  };
+
+  // Fallback for legacy POST /api/v1/knowledge-bases
+  handleLegacyCreate = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { name, url_links, text } = req.body;
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+      
+      // Determine source type from payload
+      let source_type: 'text' | 'url' | 'file' = 'text';
+      if (url_links || req.body.url) source_type = 'url';
+      
+      // Check for any uploaded files
+      const hasFiles = (files?.pdf_files && files.pdf_files.length > 0) || 
+                       (files?.excel_files && files.excel_files.length > 0) ||
+                       (files?.file && files.file.length > 0) ||
+                       req.file;
+      
+      if (hasFiles) source_type = 'file';
+
+      // For legacy creation with multiple files, we pick the first one for the unified doc
+      // and let the ingestion service handle the rest if it supports it, 
+      // or we just process them one by one.
+      // For now, to match the unified schema, we ingest the first one.
+      const firstFile = files?.pdf_files?.[0] || files?.excel_files?.[0] || files?.file?.[0] || req.file;
+
+      // Use _id.toString() to ensure consistency
+      const userId = req.user!._id ? req.user!._id.toString() : req.user!.id;
+      console.log(`[KB Controller] handleLegacyCreate - userId: ${userId}`);
+      const doc = await this.kbService.ingestDocument(userId, {
+        source_type,
+        name,
+        text,
+        url: url_links || req.body.url,
+        file: firstFile
+      });
+
+      res.status(201).json({
+        success: true, // Frontend might expect this
+        data: {
+          document_id: doc.document_id,
+          id: doc.id,
+          _id: doc.id, // Legacy compatibility
+          name: doc.name,
+          collectionName: doc.name, // Legacy compatibility
+          source_type: doc.source_type,
+          status: doc.status,
+          createdAt: doc.created_at_unix ? new Date(doc.created_at_unix * 1000).toISOString() : new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  listDocuments = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      // Use _id.toString() to ensure we get the MongoDB ObjectId string
+      // req.user.id is a virtual getter that returns _id.toString(), but being explicit
+      const userId = req.user!._id ? req.user!._id.toString() : req.user!.id;
+      const organizationId = req.user!.organizationId?.toString();
+      const { cursor, page_size } = req.query;
+      
+      console.log(`[KB Controller] listDocuments - userId: ${userId}, user._id: ${req.user!._id}, user.id: ${req.user!.id}, organizationId: ${organizationId}`);
+      
+      const result = await this.kbService.findDocuments(
+        userId, 
+        cursor as string, 
+        page_size ? Number(page_size) : 30,
+        organizationId
+      );
+      
+      console.log(`[KB Controller] Returning ${result.documents?.length || 0} documents for user ${userId}`);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  getDocument = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const doc = await this.kbService.getDocument(req.params.document_id);
+      res.json(doc);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  deleteDocument = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await this.kbService.deleteDocument(req.params.document_id);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  };
+
   // ===== Knowledge Base =====
   
   getAllKnowledgeBases = async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -38,7 +179,8 @@ export class KnowledgeBaseController {
   createKnowledgeBase = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const { name, url_links } = req.body;
-      const userId = req.user!.id;
+      // Use _id.toString() for consistency with other endpoints
+      const userId = req.user!._id ? req.user!._id.toString() : req.user!.id;
       
       // Validate required fields
       if (!name || typeof name !== 'string' || name.trim() === '') {

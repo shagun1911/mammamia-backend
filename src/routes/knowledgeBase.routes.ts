@@ -7,14 +7,32 @@ const router = Router();
 
 router.use(authenticate);
 
-// Knowledge Base
-router.get('/', knowledgeBaseController.getAllKnowledgeBases);
+// NEW Unified Knowledge Base System (aligned with /api/v1/knowledge-base)
+router.post('/ingest', upload.single('file'), knowledgeBaseController.ingestDocument);
+router.post('/text', knowledgeBaseController.createFromText);
+router.post('/url', knowledgeBaseController.createFromUrl);
+router.post('/file', upload.single('file'), knowledgeBaseController.createFromFile);
+
+// List, Get, Delete
+router.get('/', knowledgeBaseController.listDocuments);
+router.get('/:document_id', knowledgeBaseController.getDocument);
+router.delete('/:document_id', knowledgeBaseController.deleteDocument);
+
+// Legacy Root POST Fallback (to prevent 404 for old frontend)
 router.post('/', upload.fields([
+  { name: 'file', maxCount: 1 },
+  { name: 'pdf_files', maxCount: 10 },
+  { name: 'excel_files', maxCount: 10 }
+]), knowledgeBaseController.handleLegacyCreate);
+
+// LEGACY Knowledge Base (Deprecated - moved to /legacy)
+router.get('/legacy/all', knowledgeBaseController.getAllKnowledgeBases);
+router.post('/legacy/create', upload.fields([
   { name: 'pdf_files', maxCount: 10 },
   { name: 'excel_files', maxCount: 10 }
 ]), knowledgeBaseController.createKnowledgeBase);
-router.delete('/:kbId', knowledgeBaseController.deleteKnowledgeBase);
-router.get('/:kbId/space-usage', knowledgeBaseController.getSpaceUsage);
+router.delete('/legacy/:kbId', knowledgeBaseController.deleteKnowledgeBase);
+router.get('/legacy/:kbId/space-usage', knowledgeBaseController.getSpaceUsage);
 
 // FAQs
 router.get('/:kbId/faqs', knowledgeBaseController.getAllFAQs);
@@ -37,4 +55,3 @@ router.post('/:kbId/files', upload.single('file'), knowledgeBaseController.uploa
 router.delete('/:kbId/files/:fileId', knowledgeBaseController.deleteFile);
 
 export default router;
-
