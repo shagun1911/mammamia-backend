@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { ContactController } from '../controllers/contact.controller';
 import { authenticate } from '../middleware/auth.middleware';
-import { upload } from '../config/multer';
+import { upload, csvUpload } from '../config/multer';
 
 const router = Router();
 const controller = new ContactController();
@@ -23,7 +23,9 @@ router.get('/lists/all', controller.getAllLists);
 router.post('/lists', controller.createList);
 router.patch('/lists/:listId', controller.updateList);
 router.delete('/lists/:listId', controller.deleteList);
-router.post('/lists/:listId/import', upload.single('file'), controller.importCSV);
+router.post('/lists/:listId/import', csvUpload.single('file'), controller.importCSV);
+router.get('/imports/:importId', controller.getImportStatus);
+router.delete('/lists/:listId/contacts', controller.deleteAllContactsFromList);
 
 // Kanban Statuses
 router.post('/lists/:listId/statuses', controller.createStatus);

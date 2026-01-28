@@ -10,7 +10,7 @@ import Papa from 'papaparse';
 export class ContactService {
   // ===== Contacts =====
 
-  async findAll(organizationId: string, filters: any = {}, page = 1, limit = 20) {
+  async findAll(organizationId: string, filters: any = {}, page = 1, limit = 30) {
     const query: any = { organizationId };
 
     // Filter by list
@@ -294,12 +294,60 @@ export class ContactService {
     return { message: 'Contact deleted successfully' };
   }
 
-  async bulkDelete(contactIds: string[]) {
-    const result = await Customer.deleteMany({ _id: { $in: contactIds } });
-    await ContactListMember.deleteMany({ contactId: { $in: contactIds } });
+  async bulkDelete(contactIds: string[], organizationId: string) {
+    if (!contactIds || contactIds.length === 0) {
+      return {
+        deleted: 0,
+        failed: 0
+      };
+    }
+
+    // Convert string IDs to ObjectIds for proper querying
+    const mongoose = (await import('mongoose')).default;
+    const objectIds = contactIds
+      .filter(id => id && mongoose.Types.ObjectId.isValid(id))
+      .map(id => new mongoose.Types.ObjectId(id));
+
+    if (objectIds.length === 0) {
+      console.warn('[Contact Service] No valid contact IDs provided for bulk delete');
+      return {
+        deleted: 0,
+        failed: contactIds.length
+      };
+    }
+
+    // Verify all contacts belong to this organization before deleting
+    const contacts = await Customer.find({
+      _id: { $in: objectIds },
+      organizationId
+    }).select('_id').lean();
+
+    const validContactIds = contacts.map(c => c._id);
+    
+    if (validContactIds.length === 0) {
+      console.warn('[Contact Service] No contacts found for deletion (may not belong to organization)');
+      return {
+        deleted: 0,
+        failed: contactIds.length
+      };
+    }
+
+    console.log(`[Contact Service] Deleting ${validContactIds.length} contacts for organization ${organizationId}`);
+
+    // Delete contacts and their list memberships
+    const result = await Customer.deleteMany({ 
+      _id: { $in: validContactIds },
+      organizationId 
+    });
+    
+    await ContactListMember.deleteMany({ 
+      contactId: { $in: validContactIds } 
+    });
+
+    console.log(`[Contact Service] Successfully deleted ${result.deletedCount} contacts`);
 
     return {
-      deleted: result.deletedCount,
+      deleted: result.deletedCount || 0,
       failed: contactIds.length - (result.deletedCount || 0)
     };
   }
@@ -346,166 +394,85 @@ export class ContactService {
   }
 
   async importFromCSV(listId: string, csvContent: string, defaultCountryCode: string, userId: string, organizationId: string) {
-    console.log('[CSV Import Service] Starting import for list:', listId);
+    console.log('[CSV Import Service] Starting optimized import for list:', listId);
     console.log('[CSV Import Service] CSV content length:', csvContent.length);
 
-    return new Promise((resolve, reject) => {
-      const results: any[] = [];
-      const errors: any[] = [];
-      const duplicates: string[] = [];
+    // Verify list exists
+    const list = await ContactList.findById(listId);
+    if (!list) {
+      throw new AppError(404, 'NOT_FOUND', 'List not found');
+    }
 
-      // Use organization ID from the list first (before processing rows)
-      ContactList.findById(listId).then(list => {
-        if (!list) {
-          reject(new AppError(404, 'NOT_FOUND', 'List not found'));
-          return;
-        }
+    // Use streaming CSV import service for better performance
+    const { csvImportService } = await import('./csvImport.service');
+    const csvBuffer = Buffer.from(csvContent, 'utf-8');
 
-        // organizationId passed from controller is preferred, but we can verify it matches list
-        const orgId = organizationId || list.organizationId;
-
-        Papa.parse(csvContent, {
-          header: true,
-          skipEmptyLines: true,
-          transformHeader: (header: string) => {
-            // Normalize headers: trim whitespace, handle case variations
-            return header.trim().toLowerCase();
-          },
-          transform: (value: string) => {
-            // Clean and trim values
-            return value ? value.trim() : '';
-          },
-          complete: async (parseResult: any) => {
-            const rows = parseResult.data as any[];
-            console.log('[CSV Import Service] Parsed rows:', rows.length);
-            console.log('[CSV Import Service] First row:', rows[0]);
-            console.log('[CSV Import Service] Headers:', parseResult.meta?.fields);
-
-            for (let i = 0; i < rows.length; i++) {
-              const row = rows[i];
-
-              try {
-                // Extract fields (headers are already normalized to lowercase by transformHeader)
-                const name = (row.name || '').trim();
-                const email = (row.email || '').trim().toLowerCase();
-                let phone = (row.phone || '').trim();
-                const company = (row.company || '').trim();
-                const notes = (row.notes || '').trim();
-                const tagsStr = (row.tags || '').trim();
-                const tags = tagsStr ? tagsStr.split(',').map((t: string) => t.trim()).filter(Boolean) : [];
-
-                // Validate required fields
-                if (!name) {
-                  errors.push({ row: i + 2, error: 'Name is required' }); // +2 because header is row 1
-                  continue;
-                }
-
-                // Normalize phone number
-                if (phone) {
-                  // Remove all non-digit characters
-                  phone = phone.replace(/\D/g, '');
-                  // Add country code if not present
-                  if (phone && !phone.startsWith('+')) {
-                    const countryCode = defaultCountryCode.replace(/\D/g, '');
-                    phone = `+${countryCode}${phone}`;
-                  } else if (phone && !phone.startsWith('+')) {
-                    phone = `+${phone}`;
-                  }
-                }
-
-                // Build metadata object for company and notes
-                const metadata: Record<string, any> = {};
-                if (company) metadata.company = company;
-                if (notes) metadata.notes = notes;
-
-                // Check for duplicates WITHIN the same organization
-                const duplicateQuery: any = {
-                  organizationId: organizationId
-                };
-
-                const duplicateConditions: any[] = [];
-                if (email) duplicateConditions.push({ email: email.toLowerCase() });
-                if (phone) duplicateConditions.push({ phone: phone });
-
-                if (duplicateConditions.length > 0) {
-                  duplicateQuery.$or = duplicateConditions;
-
-                  const existing = await Customer.findOne(duplicateQuery);
-
-                  if (existing) {
-                    duplicates.push(email || phone || name);
-
-                    // Add to list even if duplicate
-                    await ContactListMember.findOneAndUpdate(
-                      { contactId: existing._id, listId },
-                      { contactId: existing._id, listId },
-                      { upsert: true, new: true }
-                    ).catch(() => { });
-
-                    continue;
-                  }
-                }
-
-                // Create contact with organization ID
-                const contact = await Customer.create({
-                  name,
-                  email: email || undefined,
-                  phone: phone || undefined,
-                  organizationId: organizationId,
-                  tags,
-                  source: 'import',
-                  metadata: Object.keys(metadata).length > 0 ? metadata : undefined
-                });
-
-                // Add to list
-                await ContactListMember.create({
-                  contactId: contact._id,
-                  listId
-                });
-
-                results.push(contact);
-                console.log('[CSV Import Service] Created contact:', contact._id, contact.name);
-
-              } catch (error: any) {
-                console.error(`[CSV Import Service] Error on row ${i + 2}:`, error.message);
-                console.error(`[CSV Import Service] Row data:`, row);
-                errors.push({ row: i + 2, error: error.message || 'Unknown error' });
-              }
-            }
-
-            const summary = {
-              imported: results.length,
-              failed: errors.length,
-              duplicates: duplicates.length,
-              errors: errors.slice(0, 10) // Return max 10 errors
-            };
-
-            console.log('[CSV Import Service] Import complete:', summary);
-
-            // ✅ TRIGGER BATCH AUTOMATION (Part 2)
-            if (results.length > 0) {
-              automationEngine.triggerByEvent('batch_call', {
-                event: 'batch_call',
-                source: 'csv',
-                listId,
-                contactIds: results.map(c => (c._id as any).toString()),
-                userId,
-                organizationId: orgId
-              }).catch(err => console.error('[CSV Import Service] Automation trigger error:', err));
-            }
-
-            resolve(summary);
-          },
-          error: (error: any) => {
-            console.error('[CSV Import Service] Parse error:', error);
-            reject(new AppError(400, 'VALIDATION_ERROR', `CSV parsing error: ${error.message}`));
-          }
-        });
-      }).catch(error => {
-        console.error('[CSV Import Service] Error fetching list:', error);
-        reject(new AppError(404, 'NOT_FOUND', 'List not found'));
-      });
+    const result = await csvImportService.importFromStream(csvBuffer, {
+      listId,
+      defaultCountryCode,
+      userId,
+      organizationId
     });
+
+    console.log('[CSV Import Service] Import complete:', result);
+
+    // Trigger batch automation ONLY if automations exist and contacts were imported
+    if (result.imported > 0) {
+      // Check if there are any active automations for this organization first
+      const Automation = (await import('../models/Automation')).default;
+      const hasAutomations = await Automation.exists({
+        organizationId,
+        isActive: true,
+        'nodes.type': 'trigger',
+        'nodes.config.event': 'batch_call'
+      });
+
+      // Only trigger if automations exist
+      if (hasAutomations) {
+        // Get imported contact IDs (recent imports without importBatchId for backward compatibility)
+        const recentContacts = await Customer.find({
+          organizationId,
+          source: 'import',
+          createdAt: { $gte: new Date(Date.now() - 60000) } // Last minute
+        })
+        .sort({ createdAt: -1 })
+        .limit(result.imported)
+        .select('_id')
+        .lean();
+
+        if (recentContacts.length > 0) {
+          const contactIds = recentContacts.map(c => (c._id as any).toString());
+          
+          // Trigger automation in batches to avoid overwhelming the system
+          const automationBatchSize = 100;
+          for (let i = 0; i < contactIds.length; i += automationBatchSize) {
+            const batch = contactIds.slice(i, i + automationBatchSize);
+            automationEngine.triggerByEvent('batch_call', {
+              event: 'batch_call',
+              source: 'csv',
+              listId,
+              contactIds: batch,
+              userId,
+              organizationId
+            }).catch(err => console.error('[CSV Import Service] Automation trigger error:', err));
+            
+            // Rate limit: wait 1 second between automation batches
+            if (i + automationBatchSize < contactIds.length) {
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          }
+        }
+      } else {
+        console.log('[CSV Import Service] No active automations found, skipping trigger');
+      }
+    }
+
+    return {
+      imported: result.imported,
+      failed: result.failed,
+      duplicates: result.duplicates,
+      errors: result.errors
+    };
   }
 
   async updateContactStatus(contactId: string, listId: string, statusId: string | null) {
@@ -581,6 +548,50 @@ export class ContactService {
     await ContactListMember.deleteMany({ listId });
 
     return { message: 'List deleted successfully' };
+  }
+
+  async deleteAllContactsFromList(listId: string, organizationId: string) {
+    const list = await ContactList.findById(listId);
+
+    if (!list) {
+      throw new AppError(404, 'NOT_FOUND', 'List not found');
+    }
+
+    // Verify organization ownership
+    if (list.organizationId?.toString() !== organizationId) {
+      throw new AppError(403, 'FORBIDDEN', 'Access denied');
+    }
+
+    // Get all contact IDs in this list
+    const members = await ContactListMember.find({ listId });
+    const contactIds = members.map(m => m.contactId);
+
+    // Delete all list members
+    await ContactListMember.deleteMany({ listId });
+
+    // Delete contacts that are ONLY in this list (not in other lists)
+    if (contactIds.length > 0) {
+      const contactsInOtherLists = await ContactListMember.find({
+        contactId: { $in: contactIds },
+        listId: { $ne: listId }
+      }).distinct('contactId');
+
+      const contactsToDelete = contactIds.filter(
+        id => !contactsInOtherLists.some(otherId => otherId.toString() === id.toString())
+      );
+
+      if (contactsToDelete.length > 0) {
+        await Customer.deleteMany({
+          _id: { $in: contactsToDelete },
+          organizationId
+        });
+      }
+    }
+
+    return { 
+      message: 'All contacts deleted from list',
+      deletedCount: contactIds.length
+    };
   }
 
   // ===== Kanban Statuses =====

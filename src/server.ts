@@ -200,6 +200,15 @@ const startServer = async () => {
     } catch (error: any) {
       logger.warn('⚠️  Could not initialize plans:', error.message);
     }
+
+    // Initialize CSV import queue (will check Redis availability internally)
+    try {
+      await import('./queues/csvImport.queue');
+      // Queue creation happens asynchronously after Redis connection
+      logger.info('✅ CSV Import queue module loaded');
+    } catch (error: any) {
+      logger.warn('⚠️  Could not load CSV import queue:', error.message);
+    }
     
     // Start server with Socket.io
     httpServer.listen(PORT, () => {

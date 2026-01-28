@@ -20,7 +20,7 @@ export class ContactController {
       if (!organizationId) {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
       }
-      const { page = 1, limit = 20, ...filters } = req.query;
+      const { page = 1, limit = 30, ...filters } = req.query;
       const result = await this.contactService.findAll(
         organizationId.toString(),
         filters,
@@ -100,7 +100,11 @@ export class ContactController {
 
   bulkDelete = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const result = await this.contactService.bulkDelete(req.body.contactIds);
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const result = await this.contactService.bulkDelete(req.body.contactIds, organizationId.toString());
       res.json(successResponse(result, 'Contacts deleted'));
     } catch (error) {
       next(error);
@@ -135,25 +139,173 @@ export class ContactController {
 
       const csvContent = req.file.buffer.toString('utf-8');
       console.log('[CSV Import Controller] CSV Content length:', csvContent.length);
-      console.log('[CSV Import Controller] First 200 chars:', csvContent.substring(0, 200));
 
       const organizationId = req.user?.organizationId || req.user?._id;
       if (!organizationId) {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
       }
 
-      const result = await this.contactService.importFromCSV(
-        listId,
-        csvContent,
-        defaultCountryCode,
-        req.user?._id?.toString() || '',
-        organizationId.toString()
-      );
+      const userId = req.user?._id?.toString() || '';
+      const orgId = organizationId.toString();
 
-      console.log('[CSV Import Controller] Import result:', result);
-      res.json(successResponse(result, 'Contacts imported'));
+      // Count total rows efficiently (streaming, no full file load)
+      // Fast row count: count newlines (excluding header)
+      const totalRows = Math.max(0, csvContent.split('\n').length - 1);
+      console.log('[CSV Import Controller] Estimated total rows:', totalRows);
+
+      // Check if queue is available (for large imports)
+      // Import queue to check availability
+      const { csvImportQueue } = await import('../queues/csvImport.queue');
+      
+      console.log('[CSV Import Controller] Queue available:', !!csvImportQueue);
+      console.log('[CSV Import Controller] Total rows:', totalRows, 'Threshold:', 1000);
+      
+      // Always create import record for progress tracking (even for sync imports)
+      const CSVImport = (await import('../models/CSVImport')).default;
+      const importRecord = await CSVImport.create({
+        userId,
+        organizationId: orgId,
+        listId,
+        filename: req.file.originalname,
+        fileSize: req.file.size,
+        totalRows,
+        status: 'processing'
+      });
+
+      console.log('[CSV Import Controller] Created import record:', importRecord._id.toString());
+
+      // If no queue or small file, use synchronous import
+      // IMPORTANT: Always use synchronous import if queue is not available
+      if (!csvImportQueue || totalRows <= 1000) {
+        console.log('[CSV Import Controller] Using synchronous import');
+        console.log('[CSV Import Controller] Reason:', !csvImportQueue ? 'Queue unavailable (Redis not connected)' : 'Small file (≤1000 rows)');
+        
+        try {
+          // Update import record as processing
+          importRecord.startedAt = new Date();
+          await importRecord.save();
+
+          const result = await this.contactService.importFromCSV(
+            listId,
+            csvContent,
+            defaultCountryCode,
+            userId,
+            orgId
+          );
+
+          // Update import record with results
+          importRecord.status = 'completed';
+          importRecord.completedAt = new Date();
+          importRecord.processedRows = totalRows;
+          importRecord.importedCount = result.imported || 0;
+          importRecord.duplicateCount = result.duplicates || 0;
+          importRecord.failedCount = result.failed || 0;
+          importRecord.importErrors = result.errors || [];
+          await importRecord.save();
+
+          console.log('[CSV Import Controller] Import result:', result);
+          res.json(successResponse({
+            importId: importRecord._id.toString(),
+            imported: result.imported || 0,
+            duplicates: result.duplicates || 0,
+            failed: result.failed || 0,
+            totalRows: importRecord.totalRows,
+            status: 'completed'
+          }, 'Contacts imported'));
+        } catch (error: any) {
+          // Update import record with error
+          importRecord.status = 'failed';
+          importRecord.completedAt = new Date();
+          importRecord.failedCount = totalRows;
+          importRecord.importErrors = [{ row: 0, error: error.message || 'Import failed' }];
+          await importRecord.save();
+          throw error;
+        }
+        return;
+      }
+      
+      // Use queue for large imports (>1000 rows)
+      if (totalRows > 1000) {
+        console.log('[CSV Import Controller] Using queue for large import');
+
+        // Queue the import job
+        try {
+          const job = await csvImportQueue.add('import-csv', {
+            importId: importRecord._id.toString(),
+            csvContent,
+            listId,
+            defaultCountryCode,
+            userId,
+            organizationId: orgId
+          }, {
+            attempts: 1,
+            removeOnComplete: false,
+            removeOnFail: false
+          });
+
+          console.log('[CSV Import Controller] Queued import job:', job.id, 'for import:', importRecord._id.toString());
+          
+          res.json(successResponse({
+            importId: importRecord._id.toString(),
+            status: 'queued',
+            totalRows,
+            message: 'Import queued. Use /contacts/imports/:importId to check progress.'
+          }, 'CSV import queued'));
+        } catch (queueError: any) {
+          console.error('[CSV Import Controller] Failed to queue job:', queueError);
+          // Fallback to synchronous import if queue fails
+          console.log('[CSV Import Controller] Falling back to synchronous import');
+          const result = await this.contactService.importFromCSV(
+            listId,
+            csvContent,
+            defaultCountryCode,
+            userId,
+            orgId
+          );
+          res.json(successResponse(result, 'Contacts imported (synchronous fallback)'));
+        }
+      }
     } catch (error) {
       console.error('[CSV Import Controller] Error:', error);
+      next(error);
+    }
+  };
+
+  getImportStatus = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { importId } = req.params;
+      const CSVImport = (await import('../models/CSVImport')).default;
+      
+      const importRecord = await CSVImport.findById(importId);
+      if (!importRecord) {
+        throw new AppError(404, 'NOT_FOUND', 'Import not found');
+      }
+
+      // Verify ownership
+      const userId = req.user?._id?.toString() || '';
+      if (importRecord.userId !== userId) {
+        throw new AppError(403, 'FORBIDDEN', 'Access denied');
+      }
+
+      const progress = importRecord.totalRows > 0 
+        ? Math.round((importRecord.processedRows / importRecord.totalRows) * 100)
+        : 0;
+
+      res.json(successResponse({
+        importId: importRecord._id.toString(),
+        status: importRecord.status,
+        progress,
+        totalRows: importRecord.totalRows,
+        processedRows: importRecord.processedRows,
+        importedCount: importRecord.importedCount,
+        failedCount: importRecord.failedCount,
+        duplicateCount: importRecord.duplicateCount,
+        errors: importRecord.importErrors,
+        startedAt: importRecord.startedAt,
+        completedAt: importRecord.completedAt,
+        createdAt: importRecord.createdAt
+      }, 'Import status retrieved'));
+    } catch (error) {
       next(error);
     }
   };
@@ -212,6 +364,22 @@ export class ContactController {
     try {
       const result = await this.contactService.deleteList(req.params.listId);
       res.json(successResponse(result));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  deleteAllContactsFromList = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const organizationId = req.user?.organizationId || req.user?._id;
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+      const result = await this.contactService.deleteAllContactsFromList(
+        req.params.listId,
+        organizationId.toString()
+      );
+      res.json(successResponse(result, 'All contacts deleted from list'));
     } catch (error) {
       next(error);
     }

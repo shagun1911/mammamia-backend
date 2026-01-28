@@ -64,6 +64,22 @@ export const upload = multer({
   }
 });
 
+// Multer for CSV contact imports (large files allowed)
+export const csvUpload = multer({
+  storage,
+  fileFilter: (req: any, file: any, cb: any) => {
+    // Only allow CSV files for contact imports
+    if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
+      cb(null, true);
+    } else {
+      cb(new AppError(400, 'INVALID_FILE_TYPE', 'Only CSV files are allowed for contact imports'), false);
+    }
+  },
+  limits: {
+    fileSize: 500 * 1024 * 1024 // 500MB - supports 1M+ contacts
+  }
+});
+
 // Multer for conversation attachments (permissive)
 export const attachmentUpload = multer({
   storage,

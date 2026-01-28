@@ -11,6 +11,7 @@ export interface ICustomer extends Document {
   customProperties: Record<string, any>;
   source?: string;
   metadata?: Record<string, any>;
+  importBatchId?: string;
   organizationId?: mongoose.Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
@@ -48,6 +49,12 @@ const CustomerSchema = new Schema<ICustomer>({
   metadata: {
     type: Schema.Types.Mixed,
     default: {}
+  },
+  importBatchId: {
+    type: String,
+    index: true,
+    sparse: true,
+    required: false
   }
 }, { timestamps: true });
 
