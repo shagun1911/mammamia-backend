@@ -20,6 +20,21 @@ export interface CreateAgentResponse {
   agent_id: string;
 }
 
+export interface UpdateAgentPromptRequest {
+  first_message: string;
+  system_prompt: string;
+  language: string;
+  knowledge_base_ids: string[];
+  // tool_ids are automatically added from env variables, not required in request
+}
+
+export interface UpdateAgentPromptResponse {
+  agent_id: string;
+  name: string;
+  conversation_config?: any;
+  [key: string]: any;
+}
+
 export class AgentService {
   /**
    * Create a new agent by calling external Python API
@@ -178,11 +193,117 @@ export class AgentService {
   }
 
   /**
-   * Delete an agent
+   * Update agent prompt by calling external Python API
+   * Then update the agent configuration in the database
+   */
+  async updateAgentPrompt(agentId: string, userId: string, data: UpdateAgentPromptRequest): Promise<IAgent> {
+    try {
+      // Get static tool IDs from environment variables
+      const productsToolId = process.env.PRODUCTS_TOOL_ID;
+      const ordersToolId = process.env.ORDERS_TOOL_ID;
+      
+      // Build tool_ids array from env variables (filter out undefined values)
+      const toolIds: string[] = [];
+      if (productsToolId) toolIds.push(productsToolId);
+      if (ordersToolId) toolIds.push(ordersToolId);
+
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      
+      // First, verify the agent exists and belongs to the user
+      const agent = await Agent.findOne({ 
+        agent_id: agentId,
+        userId: userObjectId 
+      });
+
+      if (!agent) {
+        throw new AppError(404, 'AGENT_NOT_FOUND', 'Agent not found');
+      }
+
+      console.log(`[Agent Service] Updating agent prompt for agent_id: ${agentId}, userId: ${userId}`);
+      console.log(`[Agent Service] Update data:`, {
+        language: data.language,
+        knowledge_base_ids_count: data.knowledge_base_ids.length,
+        tool_ids_count: toolIds.length,
+        tool_ids: toolIds
+      });
+
+      // Call external Python API to update agent prompt
+      const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${agentId}/prompt`;
+      
+      console.log(`[Agent Service] Calling Python API: ${pythonUrl}`);
+      
+      const requestBody = {
+        first_message: data.first_message,
+        system_prompt: data.system_prompt,
+        language: data.language,
+        knowledge_base_ids: data.knowledge_base_ids,
+        tool_ids: toolIds, // Static tool IDs from env
+      };
+
+      console.log(`[Agent Service] Request body:`, JSON.stringify(requestBody, null, 2));
+
+      const response = await axios.patch<UpdateAgentPromptResponse>(
+        pythonUrl,
+        requestBody,
+        {
+          timeout: 30000, // 30 seconds timeout
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      console.log(`[Agent Service] Python API response:`, response.data);
+
+      if (!response.data.agent_id) {
+        throw new AppError(500, 'INVALID_RESPONSE', 'Python API did not return agent_id');
+      }
+
+      // Update agent configuration in database
+      agent.first_message = data.first_message;
+      agent.system_prompt = data.system_prompt;
+      agent.language = data.language;
+      agent.knowledge_base_ids = data.knowledge_base_ids;
+      agent.tool_ids = toolIds; // Update with static tool IDs from env
+      await agent.save();
+
+      console.log(`[Agent Service] Agent prompt updated successfully for agent_id: ${agentId}`);
+      return agent;
+    } catch (error: any) {
+      console.error('[Agent Service] Failed to update agent prompt:', error);
+      
+      if (error instanceof AppError) {
+        throw error;
+      }
+      
+      if (error.response) {
+        console.error('[Agent Service] Python API error response:', {
+          status: error.response.status,
+          data: error.response.data
+        });
+        throw new AppError(
+          error.response.status || 500,
+          'AGENT_UPDATE_ERROR',
+          error.response.data?.detail || error.response.data?.message || 'Failed to update agent prompt in Python API'
+        );
+      }
+      
+      throw new AppError(
+        500,
+        'AGENT_UPDATE_ERROR',
+        error.message || 'Failed to update agent prompt'
+      );
+    }
+  }
+
+  /**
+   * Delete an agent by calling external Python API first, then deleting from database
    */
   async deleteAgent(agentId: string, userId: string): Promise<void> {
     try {
       const userObjectId = new mongoose.Types.ObjectId(userId);
+      
+      // First, find the agent to get the Python API agent_id
       const agent = await Agent.findOne({ 
         _id: agentId,
         userId: userObjectId 
@@ -192,11 +313,44 @@ export class AgentService {
         throw new AppError(404, 'AGENT_NOT_FOUND', 'Agent not found');
       }
 
-      // TODO: Optionally call Python API to delete the agent there too
-      // For now, just delete from our database
+      const pythonAgentId = agent.agent_id;
+
+      console.log(`[Agent Service] Deleting agent: MongoDB _id=${agentId}, Python agent_id=${pythonAgentId}`);
+
+      // Call external Python API to delete the agent
+      const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${pythonAgentId}`;
       
+      console.log(`[Agent Service] Calling Python API to delete agent: ${pythonUrl}`);
+
+      try {
+        const response = await axios.delete(pythonUrl, {
+          timeout: 30000, // 30 seconds timeout
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+
+        console.log(`[Agent Service] Python API delete response:`, response.data);
+      } catch (pythonError: any) {
+        // Log the error but continue with database deletion
+        // This allows cleanup even if Python API fails
+        console.error('[Agent Service] Python API delete failed (continuing with DB deletion):', {
+          status: pythonError.response?.status,
+          data: pythonError.response?.data,
+          message: pythonError.message
+        });
+        
+        // If it's a 404, the agent might already be deleted from Python API, which is fine
+        if (pythonError.response?.status !== 404) {
+          // For other errors, we might want to still proceed or throw
+          // For now, we'll proceed with database deletion to allow cleanup
+          console.warn('[Agent Service] Python API delete failed, but proceeding with database cleanup');
+        }
+      }
+      
+      // Delete from our database
       await Agent.deleteOne({ _id: agentId, userId: userObjectId });
-      console.log(`[Agent Service] Agent deleted: ${agentId}`);
+      console.log(`[Agent Service] Agent deleted from database: ${agentId}`);
     } catch (error: any) {
       if (error instanceof AppError) {
         throw error;

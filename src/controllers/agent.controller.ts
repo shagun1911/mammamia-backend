@@ -94,6 +94,52 @@ export class AgentController {
   };
 
   /**
+   * PATCH /api/v1/agents/:agent_id/prompt
+   * Update agent prompt
+   */
+  updateAgentPrompt = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user!.id;
+      const agentId = req.params.agent_id; // This is the Python API's agent_id
+      const {
+        first_message,
+        system_prompt,
+        language,
+        knowledge_base_ids
+      } = req.body;
+
+      // Validation
+      if (!first_message || typeof first_message !== 'string' || first_message.trim() === '') {
+        throw new AppError(400, 'VALIDATION_ERROR', 'First message is required');
+      }
+
+      if (!system_prompt || typeof system_prompt !== 'string' || system_prompt.trim() === '') {
+        throw new AppError(400, 'VALIDATION_ERROR', 'System prompt is required');
+      }
+
+      if (!language || typeof language !== 'string') {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Language is required');
+      }
+
+      if (!Array.isArray(knowledge_base_ids)) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'knowledge_base_ids must be an array');
+      }
+
+      // tool_ids are automatically added from env variables (PRODUCTS_TOOL_ID and ORDERS_TOOL_ID)
+      const agent = await agentService.updateAgentPrompt(agentId, userId, {
+        first_message: first_message.trim(),
+        system_prompt: system_prompt.trim(),
+        language: language.trim(),
+        knowledge_base_ids: knowledge_base_ids
+      });
+
+      res.json(successResponse(agent, 'Agent prompt updated successfully'));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /**
    * DELETE /api/v1/agents/:id
    * Delete an agent
    */

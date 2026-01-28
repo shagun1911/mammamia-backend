@@ -1,0 +1,15 @@
+import { Router } from 'express';
+import { emailTemplateController } from '../controllers/emailTemplate.controller';
+import { authenticate } from '../middleware/auth.middleware';
+
+const router = Router();
+
+router.use(authenticate);
+
+router.post('/', emailTemplateController.createEmailTemplate);
+router.get('/', emailTemplateController.getEmailTemplates);
+router.get('/:templateId', emailTemplateController.getEmailTemplateById);
+router.delete('/:templateId', emailTemplateController.deleteEmailTemplate);
+
+export default router;
+
