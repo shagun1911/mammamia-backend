@@ -11,8 +11,8 @@ import { pythonRagService } from './pythonRag.service';
 import Papa from 'papaparse';
 import { v4 as uuidv4 } from 'uuid';
 
-// Python API base URL - same as used for agents
-const PYTHON_API_BASE_URL = process.env.PYTHON_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
+// Python API base URL - use COMM_API_URL if PYTHON_API_URL is not set (for consistency)
+const PYTHON_API_BASE_URL = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
 
 export class KnowledgeBaseService {
   // New Unified Ingestion Method
@@ -45,8 +45,8 @@ export class KnowledgeBaseService {
 
     // 2. Call Python API to create knowledge base
     // Always use multipart/form-data as per Python API spec
+    const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/knowledge-base/ingest`;
     try {
-      const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/knowledge-base/ingest`;
       
       const FormData = require('form-data');
       const formData = new FormData();
@@ -108,9 +108,10 @@ export class KnowledgeBaseService {
       console.log(`[KB Service] Python API response:`, pythonResponse);
 
       // Store in database using document_id from Python API response
-      // Handle folder_path - Python API returns it as array, convert to string or null
+      // Handle folder_path - Python API returns it as array, keep as array or convert to string for storage
+      // For storage, we'll keep it flexible - store as string if it's a path, or null if empty array
       const folderPath = Array.isArray(pythonResponse.folder_path) 
-        ? pythonResponse.folder_path.join('/') 
+        ? (pythonResponse.folder_path.length > 0 ? pythonResponse.folder_path.join('/') : null)
         : (pythonResponse.folder_path || null);
 
       const doc = await KnowledgeBaseDocument.create({
@@ -142,16 +143,43 @@ export class KnowledgeBaseService {
       return doc;
     } catch (error: any) {
       console.error('[KB Service] Failed to create knowledge base in Python API:', error);
+      console.error('[KB Service] Python API URL attempted:', pythonUrl);
+      console.error('[KB Service] Error details:', {
+        message: error.message,
+        code: error.code,
+        response: error.response ? {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data
+        } : 'No response'
+      });
       
       if (error.response) {
         console.error('[KB Service] Python API error response:', {
           status: error.response.status,
           data: error.response.data
         });
+        // If Python API returns 404, provide clearer error message
+        if (error.response.status === 404) {
+          throw new AppError(
+            404,
+            'KB_CREATION_ERROR',
+            `Python API endpoint not found: ${pythonUrl}. Please check PYTHON_API_URL environment variable.`
+          );
+        }
         throw new AppError(
           error.response.status || 500,
           'KB_CREATION_ERROR',
           error.response.data?.detail || error.response.data?.message || 'Failed to create knowledge base in Python API'
+        );
+      }
+      
+      // Handle network errors (connection refused, etc.)
+      if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+        throw new AppError(
+          503,
+          'KB_CREATION_ERROR',
+          `Cannot connect to Python API at ${pythonUrl}. Please ensure the Python service is running.`
         );
       }
       

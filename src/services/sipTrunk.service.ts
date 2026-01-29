@@ -1,7 +1,9 @@
 import axios from 'axios';
 import { AppError } from '../middleware/error.middleware';
 
-const COMM_API_URL = process.env.COMM_API_URL || 'https://keplerov1-python-2.onrender.com';
+// Use PYTHON_API_URL if available (for elvenlabs-voiceagent), otherwise fall back to COMM_API_URL
+// This ensures consistency - if PYTHON_API_URL is set, use it for all Python API calls
+const COMM_API_URL = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
 
 interface SetupSipTrunkRequest {
   label: string;
@@ -87,6 +89,33 @@ interface CreateDispatchRuleResponse {
   message: string;
   dispatch_rule_id: string;
   dispatch_rule_name: string;
+}
+
+interface OutboundCallRequest {
+  agent_id: string;
+  agent_phone_number_id: string;
+  to_number: string;
+  customer_info?: {
+    email?: string;
+    name?: string;
+  };
+  sender_email?: string;
+}
+
+/** Twilio outbound: uses agent_phone_number_id from ElevenLabs, with optional credentials for unregistered numbers */
+interface TwilioOutboundCallRequest extends OutboundCallRequest {
+  phone_number?: string;  // E.164 from number (fallback if not registered)
+  sid?: string;          // Twilio Account SID (fallback if not registered)
+  token?: string;        // Twilio Auth Token (fallback if not registered)
+}
+
+interface OutboundCallResponse {
+  success: boolean;
+  message: string;
+  conversation_id: string;
+  sip_call_id?: string;
+  callSid?: string; // Twilio call SID (for Twilio calls)
+  ecommerce_enabled?: boolean;
 }
 
 export class SipTrunkService {
@@ -192,52 +221,83 @@ export class SipTrunkService {
    */
   async createGenericSipTrunk(data: CreateGenericSipTrunkRequest): Promise<CreateGenericSipTrunkResponse> {
     try {
-      const pythonUrl = `${COMM_API_URL}/calls/create-generic-sip-trunk`;
+      // Try multiple possible endpoints for SIP trunk registration
+      // The correct endpoint structure may vary
+      const possibleEndpoints = [
+        `${COMM_API_URL}/api/v1/sip-trunk/create-generic`,
+        `${COMM_API_URL}/api/v1/sip-trunk`,
+        `${COMM_API_URL}/calls/create-generic-sip-trunk`
+      ];
       
-      console.log('[SIP Trunk Service] ===== CREATING GENERIC SIP TRUNK =====');
-      console.log('[SIP Trunk Service] Python API URL:', pythonUrl);
-      console.log('[SIP Trunk Service] Request payload:', {
-        label: data.label,
-        phone_number: data.phone_number,
-        sip_address: data.sip_address,
-        username: data.username,
-        password: '***hidden***',
-        provider_name: data.provider_name || 'generic',
-        transport: data.transport || 'udp',
-        port: data.port || 5060
-      });
+      let lastError: any = null;
+      let response: any = null;
       
-      const response = await axios.post<CreateGenericSipTrunkResponse>(
-        pythonUrl,
-        {
-          label: data.label,
-          phone_number: data.phone_number,
-          sip_address: data.sip_address,
-          username: data.username,
-          password: data.password,
-          provider_name: data.provider_name || 'generic',
-          transport: data.transport || 'udp',
-          port: data.port || 5060
-        },
-        {
-          timeout: 60000 // 60 seconds timeout
+      for (const pythonUrl of possibleEndpoints) {
+        try {
+          console.log('[SIP Trunk Service] ===== CREATING GENERIC SIP TRUNK =====');
+          console.log('[SIP Trunk Service] Trying Python API URL:', pythonUrl);
+          console.log('[SIP Trunk Service] Request payload:', {
+            label: data.label,
+            phone_number: data.phone_number,
+            sip_address: data.sip_address,
+            username: data.username,
+            password: '***hidden***',
+            provider_name: data.provider_name || 'generic',
+            transport: data.transport || 'udp',
+            port: data.port || 5060
+          });
+          
+          response = await axios.post<CreateGenericSipTrunkResponse>(
+            pythonUrl,
+            {
+              label: data.label,
+              phone_number: data.phone_number,
+              sip_address: data.sip_address,
+              username: data.username,
+              password: data.password,
+              provider_name: data.provider_name || 'generic',
+              transport: data.transport || 'udp',
+              port: data.port || 5060
+            },
+            {
+              timeout: 60000 // 60 seconds timeout
+            }
+          );
+          
+          // Success - break out of loop
+          console.log('[SIP Trunk Service] ✅ Generic SIP trunk created successfully');
+          console.log('[SIP Trunk Service] Working endpoint:', pythonUrl);
+          break;
+        } catch (error: any) {
+          lastError = error;
+          // If 404, try next endpoint
+          if (error.response?.status === 404) {
+            console.warn(`[SIP Trunk Service] Endpoint ${pythonUrl} returned 404, trying next...`);
+            continue;
+          }
+          // For other errors, throw immediately
+          throw error;
         }
-      );
-
-      console.log('[SIP Trunk Service] ✅ Generic SIP trunk created successfully');
-      console.log('[SIP Trunk Service] Response status:', response.status);
-      console.log('[SIP Trunk Service] Response body:');
-      console.log(JSON.stringify(response.data, null, 2));
-      console.log('[SIP Trunk Service] Response fields:');
-      console.log('  - status:', response.data.status);
-      console.log('  - message:', response.data.message);
-      console.log('  - livekit_trunk_id:', response.data.livekit_trunk_id);
-      console.log('  - provider_name:', response.data.provider_name);
-      console.log('  - sip_address:', response.data.sip_address);
-      console.log('  - phone_number:', response.data.phone_number);
-      console.log('  - transport:', response.data.transport);
+      }
       
-      return response.data;
+      // If we have a successful response, return it
+      if (response && response.data) {
+        console.log('[SIP Trunk Service] Response status:', response.status);
+        console.log('[SIP Trunk Service] Response body:');
+        console.log(JSON.stringify(response.data, null, 2));
+        console.log('[SIP Trunk Service] Response fields:');
+        console.log('  - status:', response.data.status);
+        console.log('  - message:', response.data.message);
+        console.log('  - livekit_trunk_id:', response.data.livekit_trunk_id);
+        console.log('  - provider_name:', response.data.provider_name);
+        console.log('  - sip_address:', response.data.sip_address);
+        console.log('  - phone_number:', response.data.phone_number);
+        console.log('  - transport:', response.data.transport);
+        return response.data;
+      }
+      
+      // If we get here, all endpoints failed
+      throw lastError || new Error('All SIP trunk registration endpoints failed');
     } catch (error: any) {
       console.error('[SIP Trunk] ❌ Failed to create Generic SIP trunk:', error.response?.data || error.message);
       throw new AppError(
@@ -301,6 +361,198 @@ export class SipTrunkService {
   }
 
   /**
+   * Register Twilio phone number with ElevenLabs Python API
+   * POST /api/v1/phone-numbers (Import Phone Number for Twilio)
+   * This MUST be called to register the phone number before making outbound calls
+   * Matches ElevenLabs API schema exactly
+   */
+  async registerTwilioPhoneNumberWithElevenLabs(data: {
+    label: string;
+    phone_number: string;
+    sid: string;
+    token: string;
+    supports_inbound?: boolean;
+    supports_outbound?: boolean;
+  }): Promise<{ phone_number_id: string }> {
+    try {
+      const pythonUrl = `${COMM_API_URL}/api/v1/phone-numbers`;
+      
+      // Build payload matching ElevenLabs API schema exactly
+      // According to API docs: POST /api/v1/phone-numbers - Import Phone Number (Twilio)
+      const payload: any = {
+        label: data.label,
+        phone_number: data.phone_number,
+        sid: data.sid,
+        token: data.token,
+        supports_inbound: data.supports_inbound ?? true,
+        supports_outbound: data.supports_outbound ?? true
+      };
+      
+      console.log('[SIP Trunk Service] ===== REGISTERING TWILIO PHONE NUMBER WITH ELEVENLABS =====');
+      console.log('[SIP Trunk Service] ElevenLabs Python API URL:', pythonUrl);
+      console.log('[SIP Trunk Service] Request payload:', {
+        label: payload.label,
+        phone_number: payload.phone_number,
+        sid: '***',
+        token: '***',
+        supports_inbound: payload.supports_inbound,
+        supports_outbound: payload.supports_outbound
+      });
+      
+      const response = await axios.post<any>(
+        pythonUrl,
+        payload,
+        {
+          timeout: 60000 // 60 seconds timeout
+        }
+      );
+
+      console.log('[SIP Trunk Service] ✅ Twilio phone number registered with ElevenLabs');
+      console.log('[SIP Trunk Service] Response status:', response.status);
+      console.log('[SIP Trunk Service] Full response:', JSON.stringify(response.data, null, 2));
+      
+      // Handle different possible response formats
+      const phoneNumberId = response.data?.phone_number_id || response.data?.id || response.data?.phoneNumberId;
+      
+      if (!phoneNumberId) {
+        console.error('[SIP Trunk Service] ❌ Response does not contain phone_number_id:', response.data);
+        throw new Error('Registration response does not contain phone_number_id');
+      }
+      
+      console.log('[SIP Trunk Service] ElevenLabs phone_number_id:', phoneNumberId);
+      
+      return { phone_number_id: phoneNumberId };
+    } catch (error: any) {
+      // If phone number already exists (409 Conflict or similar), try to fetch it
+      if (error.response?.status === 409 || error.response?.status === 400) {
+        console.log('[SIP Trunk Service] Phone number may already exist, attempting to fetch existing phone number...');
+        try {
+          // Try to list phone numbers and find this one
+          const listResponse = await axios.get<any>(`${COMM_API_URL}/api/v1/phone-numbers`, {
+            timeout: 60000
+          });
+          
+          const existingNumber = listResponse.data?.phone_numbers?.find(
+            (pn: any) => pn.phone_number === data.phone_number
+          );
+          
+          if (existingNumber?.phone_number_id) {
+            console.log('[SIP Trunk Service] ✅ Found existing phone number:', existingNumber.phone_number_id);
+            return { phone_number_id: existingNumber.phone_number_id };
+          }
+        } catch (fetchError: any) {
+          console.warn('[SIP Trunk Service] Failed to fetch existing phone number:', fetchError.message);
+        }
+      }
+      
+      console.error('[SIP Trunk Service] ❌ Failed to register Twilio phone number with ElevenLabs:', error.response?.data || error.message);
+      throw new AppError(
+        error.response?.status || 500,
+        'ELEVENLABS_REGISTRATION_ERROR',
+        error.response?.data?.message || error.response?.data?.detail || 'Failed to register Twilio phone number with ElevenLabs'
+      );
+    }
+  }
+
+  /**
+   * Register SIP trunk phone number with ElevenLabs Python API
+   * POST /api/v1/phone-numbers/sip-trunk (ElevenLabs endpoint)
+   * This MUST be called to register the phone number before making outbound calls
+   * Matches ElevenLabs API schema exactly
+   */
+  async registerSipPhoneNumberWithElevenLabs(data: {
+    label: string;
+    phone_number: string;
+    provider: string;
+    supports_inbound: boolean;
+    supports_outbound: boolean;
+    inbound_trunk_config?: {
+      address: string;
+      credentials: {
+        username: string;
+        password: string;
+      };
+    };
+    outbound_trunk_config?: {
+      address: string;
+      credentials: {
+        username: string;
+        password: string;
+      };
+      media_encryption?: string;
+      transport?: string;
+    };
+  }): Promise<{ phone_number_id: string }> {
+    try {
+      const pythonUrl = `${COMM_API_URL}/api/v1/phone-numbers/sip-trunk`;
+      
+      // Build payload matching ElevenLabs API schema exactly
+      const payload: any = {
+        label: data.label,
+        phone_number: data.phone_number,
+        provider: data.provider,
+        supports_inbound: data.supports_inbound,
+        supports_outbound: data.supports_outbound
+      };
+
+      if (data.inbound_trunk_config) {
+        payload.inbound_trunk_config = {
+          address: data.inbound_trunk_config.address,
+          credentials: {
+            username: data.inbound_trunk_config.credentials.username,
+            password: data.inbound_trunk_config.credentials.password
+          }
+        };
+      }
+
+      if (data.outbound_trunk_config) {
+        payload.outbound_trunk_config = {
+          address: data.outbound_trunk_config.address,
+          credentials: {
+            username: data.outbound_trunk_config.credentials.username,
+            password: data.outbound_trunk_config.credentials.password
+          }
+        };
+        if (data.outbound_trunk_config.media_encryption) {
+          payload.outbound_trunk_config.media_encryption = data.outbound_trunk_config.media_encryption;
+        }
+        if (data.outbound_trunk_config.transport) {
+          payload.outbound_trunk_config.transport = data.outbound_trunk_config.transport;
+        }
+      }
+      
+      console.log('[SIP Trunk Service] ===== REGISTERING SIP PHONE NUMBER WITH ELEVENLABS =====');
+      console.log('[SIP Trunk Service] ElevenLabs Python API URL:', pythonUrl);
+      console.log('[SIP Trunk Service] Request payload:', {
+        ...payload,
+        inbound_trunk_config: payload.inbound_trunk_config ? { ...payload.inbound_trunk_config, credentials: { ...payload.inbound_trunk_config.credentials, password: '***hidden***' } } : undefined,
+        outbound_trunk_config: payload.outbound_trunk_config ? { ...payload.outbound_trunk_config, credentials: { ...payload.outbound_trunk_config.credentials, password: '***hidden***' } } : undefined
+      });
+      
+      const response = await axios.post<{ phone_number_id: string }>(
+        pythonUrl,
+        payload,
+        {
+          timeout: 60000 // 60 seconds timeout
+        }
+      );
+
+      console.log('[SIP Trunk Service] ✅ Phone number registered with ElevenLabs');
+      console.log('[SIP Trunk Service] Response status:', response.status);
+      console.log('[SIP Trunk Service] ElevenLabs phone_number_id:', response.data.phone_number_id);
+      
+      return response.data;
+    } catch (error: any) {
+      console.error('[SIP Trunk Service] ❌ Failed to register phone number with ElevenLabs:', error.response?.data || error.message);
+      throw new AppError(
+        error.response?.status || 500,
+        'ELEVENLABS_REGISTRATION_ERROR',
+        error.response?.data?.message || error.response?.data?.detail || 'Failed to register phone number with ElevenLabs'
+      );
+    }
+  }
+
+  /**
    * Create Dispatch Rule
    * Calls Python /calls/create-dispatch-rule endpoint
    */
@@ -354,6 +606,129 @@ export class SipTrunkService {
         error.response?.status || 500,
         'DISPATCH_RULE_ERROR',
         error.response?.data?.message || error.response?.data?.detail || 'Failed to create dispatch rule'
+      );
+    }
+  }
+
+  /**
+   * Initiate outbound call via Twilio
+   * Calls Python /api/v1/phone-numbers/twilio/outbound-call
+   * Numbers imported via POST /api/v1/phone-numbers (label, phone_number, sid, token).
+   * If agent_phone_number_id looks like a phone number (starts with +), include credentials as fallback.
+   */
+  async twilioOutboundCall(data: TwilioOutboundCallRequest): Promise<OutboundCallResponse> {
+    try {
+      const pythonUrl = `${COMM_API_URL}/api/v1/phone-numbers/twilio/outbound-call`;
+      console.log('[SIP Trunk Service] ===== INITIATING TWILIO OUTBOUND CALL =====');
+      console.log('[SIP Trunk Service] Python API URL:', pythonUrl);
+      
+      // Build payload matching ElevenLabs API schema
+      const body: Record<string, unknown> = {
+        agent_id: data.agent_id,
+        agent_phone_number_id: data.agent_phone_number_id,
+        to_number: data.to_number,
+        customer_info: data.customer_info || {},
+        sender_email: data.sender_email
+      };
+
+      // If agent_phone_number_id looks like a phone number (not a registered ID),
+      // include credentials as fallback - Python API might handle Twilio dynamically
+      if (data.agent_phone_number_id?.startsWith('+') && data.phone_number && data.sid && data.token) {
+        console.log('[SIP Trunk Service] ⚠️ Using phone number as ID - including credentials as fallback');
+        body.phone_number = data.phone_number;
+        body.sid = data.sid;
+        body.token = data.token;
+      }
+
+      console.log('[SIP Trunk Service] Request payload:', {
+        agent_id: body.agent_id,
+        agent_phone_number_id: body.agent_phone_number_id,
+        to_number: body.to_number,
+        customer_info: body.customer_info,
+        sender_email: body.sender_email,
+        phone_number: body.phone_number ? '***' : undefined,
+        sid: body.sid ? '***' : undefined,
+        token: body.token ? '***' : undefined
+      });
+
+      const response = await axios.post<OutboundCallResponse>(
+        pythonUrl,
+        body,
+        { timeout: 60000 }
+      );
+
+      console.log('[SIP Trunk Service] ✅ Twilio outbound call initiated');
+      return response.data;
+    } catch (error: any) {
+      console.error('[SIP Trunk Service] ❌ Twilio outbound call failed:', error.response?.data || error.message);
+      throw new AppError(
+        error.response?.status || 500,
+        'OUTBOUND_CALL_ERROR',
+        error.response?.data?.message || error.response?.data?.detail || 'Failed to initiate Twilio outbound call'
+      );
+    }
+  }
+
+  /**
+   * Initiate outbound call via SIP trunk
+   * Calls Python /api/v1/sip-trunk/outbound-call endpoint
+   */
+  async outboundCall(data: OutboundCallRequest): Promise<OutboundCallResponse> {
+    try {
+      const pythonUrl = `${COMM_API_URL}/api/v1/sip-trunk/outbound-call`;
+      
+      console.log('[SIP Trunk Service] ===== INITIATING SIP TRUNK OUTBOUND CALL =====');
+      console.log('[SIP Trunk Service] Python API URL:', pythonUrl);
+      console.log('[SIP Trunk Service] Request payload:', {
+        agent_id: data.agent_id,
+        agent_phone_number_id: data.agent_phone_number_id,
+        to_number: data.to_number,
+        customer_info: data.customer_info,
+        sender_email: data.sender_email
+      });
+      
+      const response = await axios.post<OutboundCallResponse>(
+        pythonUrl,
+        {
+          agent_id: data.agent_id,
+          agent_phone_number_id: data.agent_phone_number_id,
+          to_number: data.to_number,
+          customer_info: data.customer_info || {},
+          sender_email: data.sender_email
+        },
+        {
+          timeout: 60000 // 60 seconds timeout
+        }
+      );
+
+      console.log('[SIP Trunk Service] ✅ Outbound call initiated successfully');
+      console.log('[SIP Trunk Service] Response status:', response.status);
+      console.log('[SIP Trunk Service] Response body:');
+      console.log(JSON.stringify(response.data, null, 2));
+      
+      return response.data;
+    } catch (error: any) {
+      console.error('[SIP Trunk Service] ❌ Failed to initiate outbound call:', error.response?.data || error.message);
+      
+      // Enhanced error handling for 404 - phone number not found in Python API
+      if (error.response?.status === 404) {
+        const errorMessage = error.response?.data?.message || error.response?.data?.detail || 'Phone number not found in Python API';
+        console.error('[SIP Trunk Service] Phone number not found in Python API database.');
+        console.error('[SIP Trunk Service] This usually means the phone number needs to be registered with Python API first.');
+        console.error('[SIP Trunk Service] Phone numbers created via Generic SIP Trunk are automatically synced.');
+        console.error('[SIP Trunk Service] For other phone numbers, ensure they are registered with Python API.');
+        
+        throw new AppError(
+          404,
+          'OUTBOUND_CALL_ERROR',
+          `Phone number ${data.agent_phone_number_id} not found in Python API. Please ensure the phone number is registered with Python API (e.g., via Generic SIP Trunk creation).`
+        );
+      }
+      
+      throw new AppError(
+        error.response?.status || 500,
+        'OUTBOUND_CALL_ERROR',
+        error.response?.data?.message || error.response?.data?.detail || 'Failed to initiate outbound call'
       );
     }
   }

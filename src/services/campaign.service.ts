@@ -801,7 +801,8 @@ export class CampaignService {
       throw new AppError(404, 'NOT_FOUND', 'Campaign not found');
     }
 
-    const COMM_API = process.env.COMM_API_URL || 'https://keplerov1-python-2.onrender.com';
+    // Use PYTHON_API_URL if available (for elvenlabs-voiceagent), otherwise fall back to COMM_API_URL
+    const COMM_API = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
     const results: any[] = [];
     let successCount = 0;
     let failCount = 0;

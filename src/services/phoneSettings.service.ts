@@ -2,6 +2,7 @@ import PhoneSettings, { IPhoneSettings } from '../models/PhoneSettings';
 import { AppError } from '../middleware/error.middleware';
 import mongoose from 'mongoose';
 import { inboundAgentConfigService } from './inboundAgentConfig.service';
+import PhoneNumber from '../models/PhoneNumber';
 
 export class PhoneSettingsService {
   /**
@@ -140,10 +141,26 @@ export class PhoneSettingsService {
     });
 
     // Check if all required fields are configured
+    // Support both old system (twilioPhoneNumber + livekitSipTrunkId) and new system (PhoneNumber collection)
+    const userIdObjId = settings.userId instanceof mongoose.Types.ObjectId 
+      ? settings.userId 
+      : new mongoose.Types.ObjectId(String(settings.userId));
+    
+    // Check if user has any phone numbers in the new PhoneNumber collection
+    const phoneNumbersCount = await PhoneNumber.countDocuments({
+      $or: [
+        { organizationId: userIdObjId },
+        { organizationId: settings.userId }
+      ]
+    });
+    
+    // Configured if: (old system has twilioPhoneNumber + livekitSipTrunkId) OR (new system has phone numbers)
+    const hasOldSystem = !!(settings.twilioPhoneNumber && settings.livekitSipTrunkId);
+    const hasNewSystem = phoneNumbersCount > 0;
+    
     settings.isConfigured = !!(
       settings.selectedVoice &&
-      settings.twilioPhoneNumber &&
-      settings.livekitSipTrunkId
+      (hasOldSystem || hasNewSystem)
     );
 
     await settings.save();

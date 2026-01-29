@@ -104,9 +104,11 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
     if (collectionNames.length === 0) {
       const aiBehavior = await aiBehaviorService.get(userId);
       if (aiBehavior.knowledgeBaseId) {
-        if (aiBehavior.knowledgeBaseId.startsWith('KBDoc_')) {
+        // Convert ObjectId to string for comparison
+        const kbIdString = aiBehavior.knowledgeBaseId.toString();
+        if (kbIdString.startsWith('KBDoc_')) {
           const kbDoc = await KnowledgeBaseDocument.findOne({ 
-            document_id: aiBehavior.knowledgeBaseId,
+            document_id: kbIdString,
             userId: userObjectId 
           }).lean();
           if (kbDoc) {

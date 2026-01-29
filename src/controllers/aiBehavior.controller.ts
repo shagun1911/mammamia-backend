@@ -179,7 +179,22 @@ export class AIBehaviorController {
       const { phoneSettingsService } = await import('../services/phoneSettings.service');
       const phoneSettings = await phoneSettingsService.get(userId);
       
-      if (!phoneSettings || !phoneSettings.isConfigured) {
+      // Also check if user has phone numbers in the new PhoneNumber collection
+      const mongoose = (await import('mongoose')).default;
+      const PhoneNumber = (await import('../models/PhoneNumber')).default;
+      const organizationId = req.user?.organizationId || req.user?._id;
+      const phoneNumbersCount = organizationId ? await PhoneNumber.countDocuments({
+        $or: [
+          { organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString()) },
+          { organizationId: req.user?._id }
+        ]
+      }) : 0;
+      
+      // Check if configured via old system OR new system
+      const isConfiguredOldSystem = phoneSettings?.isConfigured;
+      const isConfiguredNewSystem = phoneNumbersCount > 0 && phoneSettings?.selectedVoice;
+      
+      if (!phoneSettings || (!isConfiguredOldSystem && !isConfiguredNewSystem)) {
         return res.status(400).json({
           success: false,
           error: {
@@ -297,7 +312,8 @@ export class AIBehaviorController {
       const ecommerceCredentials = await getEcommerceCredentials(req.user!.id);
 
       // Prepare call request
-      const COMM_API = process.env.COMM_API_URL || 'https://keplerov1-python-2.onrender.com';
+      // Use PYTHON_API_URL if available (for elvenlabs-voiceagent), otherwise fall back to COMM_API_URL
+      const COMM_API = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
       const callRequestBody: any = {
         phone_number: normalizedPhone,
         name: 'Test User',

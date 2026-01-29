@@ -13,6 +13,7 @@ router.use(authenticate);
 router.get('/', knowledgeBaseController.listDocuments);
 
 // Create routes
+// IMPORTANT: /ingest must come before any parameterized routes like /:document_id
 router.post('/ingest', upload.single('file'), knowledgeBaseController.ingestDocument);
 router.post('/text', knowledgeBaseController.createFromText);
 router.post('/url', knowledgeBaseController.createFromUrl);

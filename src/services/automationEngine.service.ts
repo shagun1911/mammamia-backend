@@ -17,7 +17,8 @@ import { emailService } from './email.service';
 import GoogleIntegration from '../models/GoogleIntegration';
 import SocialIntegration from '../models/SocialIntegration';
 
-const COMM_API = process.env.COMM_API_URL || 'https://keplerov1-python-2.onrender.com';
+// Use PYTHON_API_URL if available (for elvenlabs-voiceagent), otherwise fall back to COMM_API_URL
+const COMM_API = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
 
 // Voice ID mapping from voice name to ElevenLabs voice ID
 const VOICE_ID_MAP: Record<string, string> = {

@@ -3,6 +3,8 @@ import { AuthRequest } from '../middleware/auth.middleware';
 import { sipTrunkService } from '../services/sipTrunk.service';
 import { phoneSettingsService } from '../services/phoneSettings.service';
 import { successResponse } from '../utils/response.util';
+import mongoose from 'mongoose';
+import PhoneNumber from '../models/PhoneNumber';
 
 export class SipTrunkController {
   /**
@@ -275,6 +277,315 @@ export class SipTrunkController {
 
       console.log('[SIP Trunk Controller] Sending response to frontend...');
       res.json(successResponse(combinedResult, 'Inbound trunk and dispatch rule created successfully'));
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Initiate outbound call via SIP trunk
+   * POST /api/v1/sip-trunk/outbound-call
+   */
+  async outboundCall(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const {
+        agent_id,
+        agent_phone_number_id,
+        to_number,
+        customer_info,
+        sender_email: requestSenderEmail
+      } = req.body;
+
+      // Get sender email from request, or automatically fetch from connected Gmail
+      let sender_email = requestSenderEmail;
+      
+      if (!sender_email) {
+        console.log('[SIP Trunk Controller] No sender_email provided, fetching from connected Gmail...');
+        const organizationId = req.user?.organizationId || req.user?._id;
+        
+        if (organizationId) {
+          try {
+            // Try GoogleIntegration first (for Gmail OAuth)
+            const GoogleIntegration = (await import('../models/GoogleIntegration')).default;
+            const googleIntegration = await GoogleIntegration.findOne({
+              organizationId: organizationId instanceof mongoose.Types.ObjectId 
+                ? organizationId 
+                : new mongoose.Types.ObjectId(organizationId.toString()),
+              'services.gmail': true,
+              status: 'active'
+            }).lean();
+
+            if (googleIntegration?.googleProfile?.email) {
+              sender_email = googleIntegration.googleProfile.email;
+              console.log('[SIP Trunk Controller] ✅ Found Gmail email from GoogleIntegration:', sender_email);
+            } else {
+              // Fallback: Try SocialIntegration (for Gmail via Dialog360 or other)
+              const SocialIntegration = (await import('../models/SocialIntegration')).default;
+              const socialIntegration = await SocialIntegration.findOne({
+                organizationId: organizationId instanceof mongoose.Types.ObjectId 
+                  ? organizationId 
+                  : new mongoose.Types.ObjectId(organizationId.toString()),
+                platform: 'gmail',
+                status: 'connected'
+              }).lean();
+
+              if (socialIntegration) {
+                // Check credentials.email or metadata.email
+                sender_email = socialIntegration.credentials?.email || socialIntegration.metadata?.email;
+                if (sender_email) {
+                  console.log('[SIP Trunk Controller] ✅ Found Gmail email from SocialIntegration:', sender_email);
+                }
+              }
+            }
+
+            if (!sender_email) {
+              console.warn('[SIP Trunk Controller] ⚠️ No Gmail email found in connected integrations');
+            }
+          } catch (emailError: any) {
+            console.warn('[SIP Trunk Controller] ⚠️ Error fetching Gmail email:', emailError.message);
+            // Continue without sender_email - it's optional
+          }
+        }
+      }
+
+      console.log('[SIP Trunk Controller] ===== OUTBOUND CALL REQUEST =====');
+      console.log('[SIP Trunk Controller] Endpoint:', req.method, req.originalUrl);
+      console.log('[SIP Trunk Controller] Request body:', {
+        agent_id,
+        agent_phone_number_id,
+        to_number,
+        customer_info,
+        sender_email: sender_email || 'not provided'
+      });
+
+      // Validate required fields
+      if (!agent_id || !agent_phone_number_id || !to_number) {
+        return res.status(422).json({
+          detail: [{
+            loc: ["body"],
+            msg: "agent_id, agent_phone_number_id, and to_number are required",
+            type: "value_error"
+          }]
+        });
+      }
+
+      // Fetch phone number from database to verify it exists and get details
+      const PhoneNumber = (await import('../models/PhoneNumber')).default;
+      const phoneNumber = await PhoneNumber.findOne({ 
+        phone_number_id: agent_phone_number_id 
+      });
+
+      if (!phoneNumber) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'PHONE_NUMBER_NOT_FOUND',
+            message: `Phone number with id ${agent_phone_number_id} not found in database`
+          }
+        });
+      }
+
+      console.log('[SIP Trunk Controller] Phone number found:', {
+        phone_number_id: phoneNumber.phone_number_id,
+        phone_number: phoneNumber.phone_number,
+        provider: phoneNumber.provider,
+        label: phoneNumber.label,
+        supports_outbound: phoneNumber.supports_outbound,
+        has_outbound_config: !!phoneNumber.outbound_trunk_config
+      });
+
+      // Validate phone number supports outbound calls
+      if (!phoneNumber.supports_outbound) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'PHONE_NUMBER_NOT_OUTBOUND',
+            message: `Phone number ${agent_phone_number_id} does not support outbound calls`
+          }
+        });
+      }
+
+      // Route by provider: Twilio uses a different Python API endpoint than SIP trunk
+      let result;
+      if (phoneNumber.provider === 'twilio') {
+        // Twilio outbound: must use ElevenLabs phone_number_id
+        // Auto-register if missing (for backward compatibility with existing numbers)
+        if (!phoneNumber.elevenlabs_phone_number_id) {
+          // Validate required fields for registration
+          if (!phoneNumber.sid || !phoneNumber.token) {
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'MISSING_CREDENTIALS',
+                message: `Twilio phone number ${agent_phone_number_id} is missing sid or token. Cannot register with ElevenLabs.`
+              }
+            });
+          }
+
+          console.log('[SIP Trunk Controller] Twilio number not registered, attempting auto-registration with ElevenLabs...');
+          try {
+            const elevenLabsResponse = await sipTrunkService.registerTwilioPhoneNumberWithElevenLabs({
+              label: phoneNumber.label,
+              phone_number: phoneNumber.phone_number,
+              sid: phoneNumber.sid,
+              token: phoneNumber.token,
+              supports_inbound: phoneNumber.supports_inbound || false,
+              supports_outbound: phoneNumber.supports_outbound || false
+            });
+
+            // Update phone number with ElevenLabs ID
+            await PhoneNumber.updateOne(
+              { phone_number_id: agent_phone_number_id },
+              { $set: { elevenlabs_phone_number_id: elevenLabsResponse.phone_number_id } }
+            );
+
+            phoneNumber.elevenlabs_phone_number_id = elevenLabsResponse.phone_number_id;
+            console.log('[SIP Trunk Controller] ✅ Twilio number auto-registered with ElevenLabs:', elevenLabsResponse.phone_number_id);
+          } catch (registerError: any) {
+            // Registration failed - log full error details
+            console.error('[SIP Trunk Controller] ❌ Auto-registration failed:', registerError.message);
+            console.error('[SIP Trunk Controller] ❌ Error status:', registerError.statusCode);
+            console.error('[SIP Trunk Controller] ❌ Error code:', registerError.code);
+            console.error('[SIP Trunk Controller] ❌ Error response:', JSON.stringify(registerError.response?.data || {}, null, 2));
+            
+            // Don't fall back to phone number - registration is required
+            return res.status(registerError.statusCode || 500).json({
+              success: false,
+              error: {
+                code: registerError.code || 'REGISTRATION_ERROR',
+                message: `Failed to register Twilio phone number with ElevenLabs: ${registerError.message}. Please try registering manually via POST /api/v1/phone-numbers/${agent_phone_number_id}/register`
+              }
+            });
+          }
+        }
+        console.log('[SIP Trunk Controller] Using Twilio outbound endpoint; agent_phone_number_id:', phoneNumber.elevenlabs_phone_number_id, 'from_number:', phoneNumber.phone_number);
+        result = await sipTrunkService.twilioOutboundCall({
+          agent_id,
+          agent_phone_number_id: phoneNumber.elevenlabs_phone_number_id,
+          to_number,
+          customer_info,
+          sender_email,
+          // Include credentials if using phone number as ID (not a registered ElevenLabs ID)
+          ...(phoneNumber.elevenlabs_phone_number_id?.startsWith('+') && {
+            phone_number: phoneNumber.phone_number,
+            sid: phoneNumber.sid,
+            token: phoneNumber.token
+          })
+        });
+      } else {
+        // SIP trunk: must use ElevenLabs phone_number_id
+        if (!phoneNumber.elevenlabs_phone_number_id) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'PHONE_NUMBER_NOT_REGISTERED',
+              message: `Phone number ${agent_phone_number_id} is not registered with ElevenLabs. Please register it first via POST /api/v1/phone-numbers/${agent_phone_number_id}/register`
+            }
+          });
+        }
+        console.log('[SIP Trunk Controller] Using SIP trunk endpoint with ElevenLabs phone_number_id:', phoneNumber.elevenlabs_phone_number_id);
+        result = await sipTrunkService.outboundCall({
+          agent_id,
+          agent_phone_number_id: phoneNumber.elevenlabs_phone_number_id,
+          to_number,
+          customer_info,
+          sender_email
+        });
+      }
+
+      console.log('[SIP Trunk Controller] ✅ Outbound call initiated:');
+      console.log(JSON.stringify(result, null, 2));
+
+      // Create conversation for the outbound call so it appears in conversations tab
+      if (result.success && result.conversation_id) {
+        try {
+          const Conversation = (await import('../models/Conversation')).default;
+          const Customer = (await import('../models/Customer')).default;
+          const Message = (await import('../models/Message')).default;
+          const organizationId = req.user?.organizationId || req.user?._id;
+          
+          if (!organizationId) {
+            console.warn('[SIP Trunk Controller] ⚠️ No organizationId found, skipping conversation creation');
+          } else {
+            // Find or create customer
+            const customerPhone = to_number;
+            const customerName = customer_info?.name || 'Unknown';
+            const customerEmail = customer_info?.email;
+            
+            let customer = await Customer.findOne({
+              phone: customerPhone,
+              organizationId: organizationId instanceof mongoose.Types.ObjectId 
+                ? organizationId 
+                : new mongoose.Types.ObjectId(organizationId.toString())
+            });
+            
+            if (!customer) {
+              customer = await Customer.create({
+                organizationId: organizationId instanceof mongoose.Types.ObjectId 
+                  ? organizationId 
+                  : new mongoose.Types.ObjectId(organizationId.toString()),
+                name: customerName,
+                phone: customerPhone,
+                ...(customerEmail && { email: customerEmail }),
+                source: 'phone'
+              });
+              console.log('[SIP Trunk Controller] ✅ Created customer:', customer._id);
+            } else {
+              // Update customer info if provided
+              if (customerName !== 'Unknown' && customer.name !== customerName) {
+                customer.name = customerName;
+              }
+              if (customerEmail && customer.email !== customerEmail) {
+                customer.email = customerEmail;
+              }
+              await customer.save();
+            }
+
+            // Create conversation
+            const conversation = await Conversation.create({
+              organizationId: organizationId instanceof mongoose.Types.ObjectId 
+                ? organizationId 
+                : new mongoose.Types.ObjectId(organizationId.toString()),
+              customerId: customer._id,
+              channel: 'phone',
+              status: 'open',
+              isAiManaging: true,
+              unread: true,
+              metadata: {
+                conversation_id: result.conversation_id, // Store Python API conversation_id - used to fetch transcript/recording
+                callerId: result.conversation_id, // Also store as callerId for transcript polling compatibility
+                callSid: (result as any).callSid || result.sip_call_id,
+                phone_number_id: agent_phone_number_id,
+                from_number: phoneNumber.phone_number,
+                to_number: to_number,
+                callInitiated: new Date(),
+                provider: phoneNumber.provider
+              }
+            });
+
+            // Add initial message indicating outbound call was initiated
+            await Message.create({
+              conversationId: conversation._id,
+              type: 'internal_note',
+              text: `Outbound call initiated to ${customerName} (${customerPhone})`,
+              sender: 'ai',
+              timestamp: new Date()
+            });
+
+            console.log('[SIP Trunk Controller] ✅ Created conversation:', conversation._id);
+            console.log('[SIP Trunk Controller] Conversation will appear in conversations tab');
+            
+            // Add conversation ID to response so frontend can navigate to it
+            (result as any).conversation_db_id = conversation._id.toString();
+          }
+        } catch (convError: any) {
+          // Don't fail the call if conversation creation fails - log and continue
+          console.error('[SIP Trunk Controller] ❌ Failed to create conversation:', convError.message);
+          console.error('[SIP Trunk Controller] Error stack:', convError.stack);
+        }
+      }
+
+      res.json(result);
     } catch (error) {
       next(error);
     }

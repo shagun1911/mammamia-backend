@@ -24,6 +24,8 @@ export class KnowledgeBaseController {
 
   ingestDocument = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
+      console.log(`[KB Controller] ===== INGEST DOCUMENT REQUEST RECEIVED =====`);
+      console.log(`[KB Controller] Method: ${req.method}, Path: ${req.path}, Original URL: ${req.originalUrl}`);
       const { source_type, name, parent_folder_id, text, url } = req.body;
       // Use _id.toString() to ensure consistency with listDocuments
       const userId = req.user!._id ? req.user!._id.toString() : req.user!.id;
@@ -42,13 +44,18 @@ export class KnowledgeBaseController {
         throw new AppError(500, 'CREATION_ERROR', 'Failed to create knowledge base document');
       }
 
+      // Match Python API response format exactly
+      // folder_path should be array if empty/null, or string if it has a path
+      const folderPath = doc.folder_path 
+        ? (typeof doc.folder_path === 'string' ? doc.folder_path.split('/').filter(Boolean) : doc.folder_path)
+        : [];
+
       res.status(201).json({
         document_id: doc.document_id,
-        id: doc.id,
+        id: doc.document_id, // id should match document_id per API spec
         name: doc.name,
-        folder_path: doc.folder_path,
-        source_type: doc.source_type,
-        status: doc.status
+        folder_path: folderPath, // Return as array to match Python API format
+        source_type: doc.source_type
       });
     } catch (error) {
       next(error);

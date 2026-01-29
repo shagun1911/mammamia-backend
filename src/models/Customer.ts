@@ -43,7 +43,7 @@ const CustomerSchema = new Schema<ICustomer>({
   },
   source: {
     type: String,
-    enum: ['manual', 'widget', 'campaign', 'import', 'api', 'whatsapp', 'instagram', 'facebook'],
+    enum: ['manual', 'widget', 'campaign', 'import', 'api', 'whatsapp', 'instagram', 'facebook', 'phone'],
     default: 'manual'
   },
   metadata: {

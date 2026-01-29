@@ -695,21 +695,117 @@ export class ConversationService {
     }
   }
 
-  // Fetch and update transcript from MongoDB by caller_id
+  // Fetch and update transcript from MongoDB by caller_id or Python API by conversation_id
   async fetchTranscriptByCallerId(callerId: string) {
     try {
-      // Import mongoose to access native driver
-      const db = mongoose.connection.db;
+      // Find conversation by callerId or conversation_id
+      const conversation = await Conversation.findOne({ 
+        $or: [
+          { 'metadata.callerId': callerId },
+          { 'metadata.conversation_id': callerId }
+        ]
+      });
       
-      console.log(`[Conversation Service] Searching for transcript with caller_id: ${callerId}`);
-      
-      // Check what documents exist
-      const allDocs = await db?.collection('transcripts').find({}).limit(5).toArray();
-      console.log(`[Conversation Service] Found ${allDocs?.length || 0} documents in transcripts collection`);
-      if (allDocs && allDocs.length > 0) {
-        console.log(`[Conversation Service] Sample document keys:`, Object.keys(allDocs[0]));
-        console.log(`[Conversation Service] Sample caller_id:`, allDocs[0].caller_id);
+      if (!conversation) {
+        throw new AppError(404, 'NOT_FOUND', 'Conversation not found for this call');
       }
+
+      // Try fetching from Python API first if conversation_id is available
+      const pythonConversationId = conversation.metadata?.conversation_id || callerId;
+      if (pythonConversationId && pythonConversationId.startsWith('conv_')) {
+        try {
+          console.log(`[Conversation Service] Attempting to fetch transcript from Python API for conversation_id: ${pythonConversationId}`);
+          const COMM_API_URL = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
+          const axios = (await import('axios')).default;
+          
+          // Fetch conversation details from Python API
+          const pythonResponse = await axios.get(`${COMM_API_URL}/api/v1/conversations/${pythonConversationId}`, {
+            timeout: 30000
+          });
+          
+          if (pythonResponse.data) {
+            console.log(`[Conversation Service] ✅ Fetched conversation from Python API`);
+            
+            // Update conversation with transcript and metadata from Python API
+            const pythonData = pythonResponse.data;
+            conversation.transcript = pythonData.transcript || conversation.transcript;
+            conversation.metadata = {
+              ...conversation.metadata,
+              ...pythonData.metadata,
+              conversation_id: pythonConversationId,
+              callCompletedAt: pythonData.created_at || new Date(),
+              duration: pythonData.duration,
+              recording_url: pythonData.recording_url || pythonData.audio_url
+            };
+            
+            // Update status if call is completed
+            if (pythonData.status === 'completed' || pythonData.status === 'ended') {
+              conversation.status = 'closed';
+            }
+            
+            await conversation.save();
+            
+            // Convert transcript items to messages if available
+            if (pythonData.transcript?.items) {
+              const Message = (await import('../models/Message')).default;
+              // Delete existing transcript messages to avoid duplicates
+              await Message.deleteMany({ 
+                conversationId: conversation._id, 
+                'metadata.transcriptItemId': { $exists: true } 
+              });
+              
+              for (const item of pythonData.transcript.items) {
+                if (item.type === 'message' || item.role) {
+                  await Message.create({
+                    conversationId: conversation._id,
+                    type: 'message',
+                    text: item.content || item.text || (Array.isArray(item.content) ? item.content.join(' ') : ''),
+                    sender: item.role === 'user' ? 'customer' : 'ai',
+                    timestamp: new Date(item.timestamp || Date.now()),
+                    metadata: {
+                      transcriptItemId: item.id,
+                      interrupted: item.interrupted,
+                      confidence: item.confidence
+                    }
+                  });
+                }
+              }
+            }
+            
+            console.log(`[Conversation Service] Updated conversation ${conversation._id} with transcript from Python API`);
+            
+            // Emit WebSocket event
+            try {
+              const { emitToOrganization } = await import('../config/socket');
+              emitToOrganization(
+                conversation.organizationId.toString(),
+                'conversation:transcript-updated',
+                {
+                  conversationId: conversation._id,
+                  callerId: callerId,
+                  hasTranscript: true,
+                  hasRecording: !!conversation.metadata?.recording_url
+                }
+              );
+            } catch (socketError: any) {
+              console.error('[Conversation Service] Failed to emit WebSocket event:', socketError.message);
+            }
+            
+            return {
+              conversation,
+              transcript: conversation.transcript,
+              metadata: conversation.metadata
+            };
+          }
+        } catch (pythonError: any) {
+          console.warn(`[Conversation Service] Failed to fetch from Python API:`, pythonError.message);
+          // Fall through to MongoDB lookup
+        }
+      }
+      
+      // Fallback: Try MongoDB transcripts collection
+      const db = mongoose.connection.db;
+      console.log(`[Conversation Service] Searching for transcript in MongoDB with caller_id: ${callerId}`);
       
       // Fetch the call transcript document from MongoDB
       const callDocument = await db?.collection('transcripts').findOne({ caller_id: callerId });
@@ -721,12 +817,8 @@ export class ConversationService {
       
       console.log(`[Conversation Service] ✅ Found transcript document for caller_id: ${callerId}`);
 
-      // Find conversation by callerId
-      const conversation = await Conversation.findOne({ 'metadata.callerId': callerId });
-      
-      if (!conversation) {
-        throw new AppError(404, 'NOT_FOUND', 'Conversation not found for this call');
-      }
+      // Conversation was already found at the beginning of the function
+      // If we reach here, conversation exists (it was checked earlier)
 
       // Update conversation with transcript
       conversation.transcript = callDocument.transcript;

@@ -6,8 +6,12 @@ export class GmailOAuthService {
   private pythonApiUrl: string;
 
   constructor() {
-    this.pythonApiUrl = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://keplerov1-python-2.onrender.com';
+    // Gmail OAuth endpoints (/email/authorize) are on keplerov1-python-2 server, not elvenlabs-voiceagent
+    // Priority: EMAIL_API_URL > keplerov1-python-2 (default) > COMM_API_URL > PYTHON_API_URL
+    this.pythonApiUrl = process.env.EMAIL_API_URL || 'https://keplerov1-python-2.onrender.com';
     console.log('[Gmail OAuth Service] Python API URL:', this.pythonApiUrl);
+    console.log('[Gmail OAuth Service] EMAIL_API_URL:', process.env.EMAIL_API_URL || 'not set, using default');
+    console.log('[Gmail OAuth Service] Using email API server for Gmail OAuth endpoints');
   }
 
   /**

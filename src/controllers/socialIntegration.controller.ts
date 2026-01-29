@@ -4,6 +4,7 @@ import socialIntegrationService from '../services/socialIntegration.service';
 import { AppError } from '../middleware/error.middleware';
 import { MetaOAuthService, MetaPage } from '../services/metaOAuth.service';
 import { successResponse } from '../utils/response.util';
+import GoogleIntegration from '../models/GoogleIntegration';
 
 export class SocialIntegrationController {
   /**
@@ -19,6 +20,55 @@ export class SocialIntegrationController {
       }
 
       const integrations = await socialIntegrationService.getIntegrations(organizationId);
+      
+      // Also fetch GoogleIntegration to include Gmail email
+      const googleIntegration = await GoogleIntegration.findOne({
+        organizationId: organizationId
+      }).lean();
+
+      // If GoogleIntegration exists with Gmail enabled, add/update Gmail integration with email
+      if (googleIntegration && googleIntegration.services?.gmail && googleIntegration.googleProfile?.email) {
+        const gmailIntegrationIndex = integrations.findIndex(
+          (integration: any) => integration.platform === 'gmail'
+        );
+
+        const gmailEmail = googleIntegration.googleProfile.email;
+        const gmailStatus = googleIntegration.status === 'active' ? 'connected' : 'disconnected';
+
+        if (gmailIntegrationIndex >= 0) {
+          // Merge with existing Gmail integration
+          const existingIntegration = integrations[gmailIntegrationIndex] as any;
+          (integrations as any)[gmailIntegrationIndex] = {
+            ...existingIntegration,
+            status: gmailStatus,
+            credentials: {
+              ...existingIntegration.credentials,
+              email: gmailEmail
+            },
+            metadata: {
+              ...existingIntegration.metadata,
+              email: gmailEmail,
+              name: googleIntegration.googleProfile.name,
+              picture: googleIntegration.googleProfile.picture
+            }
+          };
+        } else {
+          // Add new Gmail integration entry
+          (integrations as any[]).push({
+            platform: 'gmail',
+            status: gmailStatus,
+            credentials: {
+              email: gmailEmail,
+              apiKey: '***********'
+            },
+            metadata: {
+              email: gmailEmail,
+              name: googleIntegration.googleProfile.name,
+              picture: googleIntegration.googleProfile.picture
+            }
+          });
+        }
+      }
       
       res.json({
         success: true,

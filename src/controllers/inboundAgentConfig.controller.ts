@@ -217,7 +217,8 @@ export class InboundAgentConfigController {
         requestBody.escalation_condition = req.body.escalation_condition;
       }
 
-      const COMM_API = process.env.COMM_API_URL || 'https://keplerov1-python-2.onrender.com';
+      // Use PYTHON_API_URL if available (for elvenlabs-voiceagent), otherwise fall back to COMM_API_URL
+      const COMM_API = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
       const testUrl = `${COMM_API}/calls/inbound`;
 
       console.log('\n========== TEST INBOUND CALL ==========');
