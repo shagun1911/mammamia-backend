@@ -9,6 +9,7 @@ export interface BatchCallRecipient {
   phone_number: string;
   name: string;
   email?: string;
+  dynamic_variables?: Record<string, any>;
 }
 
 export interface BatchCallRequest {
@@ -83,10 +84,39 @@ export class BatchCallingService {
       // Python API requires phone_number_id (ElevenLabs phone number ID)
       const phoneNumberId = String(data.phone_number_id).trim();
       
+      // Format recipients with dynamic_variables structure
+      const formattedRecipients = data.recipients.map(recipient => {
+        const formatted: any = {
+          phone_number: recipient.phone_number,
+          name: recipient.name
+        };
+        
+        if (recipient.email) {
+          formatted.email = recipient.email;
+        }
+        
+        // Extract dynamic_variables from recipient (any fields that aren't phone_number, name, or email)
+        const dynamicVars: Record<string, any> = {};
+        Object.keys(recipient).forEach(key => {
+          if (key !== 'phone_number' && key !== 'name' && key !== 'email' && key !== 'dynamic_variables') {
+            dynamicVars[key] = recipient[key];
+          }
+        });
+        
+        // If dynamic_variables is explicitly provided, use it; otherwise use extracted vars
+        if (recipient.dynamic_variables) {
+          formatted.dynamic_variables = recipient.dynamic_variables;
+        } else if (Object.keys(dynamicVars).length > 0) {
+          formatted.dynamic_variables = dynamicVars;
+        }
+        
+        return formatted;
+      });
+      
       const payload: Record<string, any> = {
         agent_id: data.agent_id,
         call_name: data.call_name,
-        recipients: data.recipients,
+        recipients: formattedRecipients,
         retry_count: data.retry_count || 0,
         phone_number_id: phoneNumberId // Required - must be ElevenLabs phone_number_id
       };
@@ -162,6 +192,81 @@ export class BatchCallingService {
         error.response?.status || 500,
         'BATCH_CALL_ERROR',
         error.response?.data?.message || error.response?.data?.detail || 'Failed to submit batch call'
+      );
+    }
+  }
+
+  /**
+   * Get batch job status
+   * Calls Python /api/v1/batch-calling/{job_id} endpoint
+   */
+  async getBatchJobStatus(jobId: string): Promise<BatchCallResponse> {
+    try {
+      const pythonUrl = `${COMM_API_URL}/api/v1/batch-calling/${jobId}`;
+      
+      console.log('[Batch Calling Service] ===== GETTING BATCH JOB STATUS =====');
+      console.log('[Batch Calling Service] Python API URL:', pythonUrl);
+      console.log('[Batch Calling Service] Job ID:', jobId);
+      
+      const response = await axios.get<BatchCallResponse>(
+        pythonUrl,
+        {
+          timeout: 30000, // 30 seconds timeout
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      console.log('[Batch Calling Service] ✅ Batch job status fetched successfully');
+      console.log('[Batch Calling Service] Response status:', response.status);
+      console.log('[Batch Calling Service] Response body:', JSON.stringify(response.data, null, 2));
+      
+      return response.data;
+    } catch (error: any) {
+      console.error('[Batch Calling Service] ❌ Failed to get batch job status:', error.response?.data || error.message);
+      throw new AppError(
+        error.response?.status || 500,
+        'BATCH_CALL_ERROR',
+        error.response?.data?.message || error.response?.data?.detail || 'Failed to get batch job status'
+      );
+    }
+  }
+
+  /**
+   * Cancel batch job
+   * Calls Python /api/v1/batch-calling/{job_id}/cancel endpoint
+   */
+  async cancelBatchJob(jobId: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const pythonUrl = `${COMM_API_URL}/api/v1/batch-calling/${jobId}/cancel`;
+      
+      console.log('[Batch Calling Service] ===== CANCELLING BATCH JOB =====');
+      console.log('[Batch Calling Service] Python API URL:', pythonUrl);
+      console.log('[Batch Calling Service] Job ID:', jobId);
+      
+      const response = await axios.post<{ success: boolean; message: string }>(
+        pythonUrl,
+        {},
+        {
+          timeout: 30000, // 30 seconds timeout
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      console.log('[Batch Calling Service] ✅ Batch job cancelled successfully');
+      console.log('[Batch Calling Service] Response status:', response.status);
+      console.log('[Batch Calling Service] Response body:', JSON.stringify(response.data, null, 2));
+      
+      return response.data;
+    } catch (error: any) {
+      console.error('[Batch Calling Service] ❌ Failed to cancel batch job:', error.response?.data || error.message);
+      throw new AppError(
+        error.response?.status || 500,
+        'BATCH_CALL_ERROR',
+        error.response?.data?.message || error.response?.data?.detail || 'Failed to cancel batch job'
       );
     }
   }

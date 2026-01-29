@@ -202,7 +202,8 @@ export class BatchCallingController {
         recipients: recipients.map((r: any) => ({
           phone_number: r.phone_number,
           name: r.name,
-          ...(r.email && { email: r.email })
+          ...(r.email && { email: r.email }),
+          ...(r.dynamic_variables && { dynamic_variables: r.dynamic_variables })
         })),
         retry_count: retry_count || 0,
         sender_email,
@@ -213,7 +214,229 @@ export class BatchCallingController {
       console.log('[Batch Calling Controller] ✅ Batch call submitted:');
       console.log(JSON.stringify(result, null, 2));
 
+      // Store batch call response in database
+      try {
+        const BatchCall = (await import('../models/BatchCall')).default;
+        const userId = req.user?._id;
+        
+        if (userId && organizationId) {
+          await BatchCall.create({
+            userId: userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId.toString()),
+            organizationId: organizationId instanceof mongoose.Types.ObjectId 
+              ? organizationId 
+              : new mongoose.Types.ObjectId(organizationId.toString()),
+            batch_call_id: result.id,
+            name: result.name,
+            agent_id: result.agent_id,
+            status: result.status,
+            phone_number_id: result.phone_number_id,
+            phone_provider: result.phone_provider,
+            created_at_unix: result.created_at_unix,
+            scheduled_time_unix: result.scheduled_time_unix,
+            timezone: result.timezone,
+            total_calls_dispatched: result.total_calls_dispatched,
+            total_calls_scheduled: result.total_calls_scheduled,
+            total_calls_finished: result.total_calls_finished,
+            last_updated_at_unix: result.last_updated_at_unix,
+            retry_count: result.retry_count,
+            agent_name: result.agent_name,
+            call_name: call_name,
+            recipients_count: recipients.length,
+            sender_email: sender_email || undefined
+          });
+          
+          console.log('[Batch Calling Controller] ✅ Batch call stored in database with ID:', result.id);
+        } else {
+          console.warn('[Batch Calling Controller] ⚠️ Could not store batch call - userId or organizationId missing');
+        }
+      } catch (dbError: any) {
+        console.error('[Batch Calling Controller] ⚠️ Failed to store batch call in database:', dbError.message);
+        // Don't fail the request if database storage fails - the call was already submitted
+      }
+
       res.status(201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get batch job status
+   * GET /api/v1/batch-calling/:jobId
+   */
+  async getBatchJobStatus(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { jobId } = req.params;
+      
+      if (!jobId) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MISSING_JOB_ID',
+            message: 'Job ID is required'
+          }
+        });
+      }
+
+      // Verify the batch call belongs to the user's organization
+      const BatchCall = (await import('../models/BatchCall')).default;
+      const organizationId = req.user?.organizationId || req.user?._id;
+      
+      if (!organizationId) {
+        return res.status(401).json({
+          success: false,
+          error: "Unauthorized",
+          detail: "Organization ID or User ID not found"
+        });
+      }
+
+      const batchCall = await BatchCall.findOne({
+        batch_call_id: jobId,
+        organizationId: organizationId instanceof mongoose.Types.ObjectId 
+          ? organizationId 
+          : new mongoose.Types.ObjectId(organizationId.toString())
+      }).lean();
+
+      if (!batchCall) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'BATCH_CALL_NOT_FOUND',
+            message: 'Batch call not found or does not belong to your organization'
+          }
+        });
+      }
+
+      // Fetch latest status from Python API
+      const result = await batchCallingService.getBatchJobStatus(jobId);
+
+      // Update database with latest status
+      try {
+        await BatchCall.updateOne(
+          { batch_call_id: jobId },
+          {
+            $set: {
+              status: result.status,
+              total_calls_dispatched: result.total_calls_dispatched,
+              total_calls_scheduled: result.total_calls_scheduled,
+              total_calls_finished: result.total_calls_finished,
+              last_updated_at_unix: result.last_updated_at_unix
+            }
+          }
+        );
+      } catch (dbError: any) {
+        console.warn('[Batch Calling Controller] ⚠️ Failed to update batch call status in database:', dbError.message);
+        // Don't fail the request if database update fails
+      }
+
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Cancel batch job
+   * POST /api/v1/batch-calling/:jobId/cancel
+   */
+  async cancelBatchJob(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { jobId } = req.params;
+      
+      if (!jobId) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MISSING_JOB_ID',
+            message: 'Job ID is required'
+          }
+        });
+      }
+
+      // Verify the batch call belongs to the user's organization
+      const BatchCall = (await import('../models/BatchCall')).default;
+      const organizationId = req.user?.organizationId || req.user?._id;
+      
+      if (!organizationId) {
+        return res.status(401).json({
+          success: false,
+          error: "Unauthorized",
+          detail: "Organization ID or User ID not found"
+        });
+      }
+
+      const batchCall = await BatchCall.findOne({
+        batch_call_id: jobId,
+        organizationId: organizationId instanceof mongoose.Types.ObjectId 
+          ? organizationId 
+          : new mongoose.Types.ObjectId(organizationId.toString())
+      }).lean();
+
+      if (!batchCall) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'BATCH_CALL_NOT_FOUND',
+            message: 'Batch call not found or does not belong to your organization'
+          }
+        });
+      }
+
+      // Cancel the batch job via Python API
+      const result = await batchCallingService.cancelBatchJob(jobId);
+
+      // Update database status
+      try {
+        await BatchCall.updateOne(
+          { batch_call_id: jobId },
+          {
+            $set: {
+              status: 'cancelled',
+              last_updated_at_unix: Math.floor(Date.now() / 1000)
+            }
+          }
+        );
+      } catch (dbError: any) {
+        console.warn('[Batch Calling Controller] ⚠️ Failed to update batch call status in database:', dbError.message);
+        // Don't fail the request if database update fails
+      }
+
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get all batch calls for the user's organization
+   * GET /api/v1/batch-calling
+   */
+  async getBatchCalls(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const organizationId = req.user?.organizationId || req.user?._id;
+      
+      if (!organizationId) {
+        return res.status(401).json({
+          success: false,
+          error: "Unauthorized",
+          detail: "Organization ID or User ID not found"
+        });
+      }
+
+      const BatchCall = (await import('../models/BatchCall')).default;
+      
+      const batchCalls = await BatchCall.find({
+        organizationId: organizationId instanceof mongoose.Types.ObjectId 
+          ? organizationId 
+          : new mongoose.Types.ObjectId(organizationId.toString())
+      })
+      .sort({ createdAt: -1 })
+      .lean();
+
+      res.status(200).json({
+        success: true,
+        data: batchCalls
+      });
     } catch (error) {
       next(error);
     }

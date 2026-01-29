@@ -329,6 +329,33 @@ export class ConversationController {
       next(error);
     }
   };
+
+  fetchAudio = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { conversationId } = req.params;
+      const organizationId = req.user?.organizationId || req.user?._id;
+      
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+
+      const { audioBuffer, contentType } = await this.conversationService.fetchAudioByConversationId(
+        conversationId,
+        organizationId.toString()
+      );
+
+      // Set appropriate headers for audio streaming
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Length', audioBuffer.length);
+      res.setHeader('Content-Disposition', `inline; filename="conversation-${conversationId}.mp3"`);
+      res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
+      
+      // Send the audio buffer
+      res.send(audioBuffer);
+    } catch (error) {
+      next(error);
+    }
+  };
 }
 
 export const conversationController = new ConversationController();

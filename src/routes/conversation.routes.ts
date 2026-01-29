@@ -15,6 +15,7 @@ router.get('/search-messages', conversationController.searchMessages);
 router.post('/bulk', conversationController.bulkCreate);
 router.post('/bulk-delete', conversationController.bulkDelete);
 router.get('/transcript/:callerId', conversationController.fetchTranscript);
+router.get('/:conversationId/audio', conversationController.fetchAudio);
 router.get('/:conversationId', conversationController.getById);
 router.post('/:conversationId/messages', attachmentUpload.array('attachments', 5), conversationController.addMessage);
 router.post('/:conversationId/take-control', conversationController.takeControl);

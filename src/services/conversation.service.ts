@@ -894,6 +894,81 @@ export class ConversationService {
     }
   }
 
+  /**
+   * Fetch audio recording for a conversation from Python API
+   * GET /api/v1/conversations/{conversation_id}/audio
+   */
+  async fetchAudioByConversationId(conversationId: string, organizationId: string): Promise<{ audioBuffer: Buffer; contentType: string }> {
+    try {
+      // Find conversation to get Python API conversation_id
+      const conversation = await Conversation.findOne({
+        _id: conversationId,
+        organizationId: organizationId instanceof mongoose.Types.ObjectId 
+          ? organizationId 
+          : new mongoose.Types.ObjectId(organizationId)
+      });
+
+      if (!conversation) {
+        throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
+      }
+
+      // Get Python API conversation_id from metadata
+      const pythonConversationId = conversation.metadata?.conversation_id;
+      
+      if (!pythonConversationId) {
+        throw new AppError(404, 'NOT_FOUND', 'Conversation ID not found in metadata. This conversation may not have an audio recording.');
+      }
+
+      console.log(`[Conversation Service] Fetching audio from Python API for conversation_id: ${pythonConversationId}`);
+
+      // Call Python API to fetch audio
+      const COMM_API_URL = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
+      const axios = (await import('axios')).default;
+      
+      try {
+        const response = await axios.get(`${COMM_API_URL}/api/v1/conversations/${pythonConversationId}/audio`, {
+          responseType: 'arraybuffer', // Get binary data
+          timeout: 60000, // 60 seconds timeout for audio files
+          headers: {
+            'Accept': 'audio/*'
+          }
+        });
+
+        console.log(`[Conversation Service] ✅ Fetched audio from Python API (${response.data.byteLength} bytes)`);
+
+        // Determine content type from response headers or default to audio/mpeg
+        const contentType = response.headers['content-type'] || 'audio/mpeg';
+        
+        return {
+          audioBuffer: Buffer.from(response.data),
+          contentType
+        };
+      } catch (pythonError: any) {
+        console.error('[Conversation Service] Failed to fetch audio from Python API:', {
+          status: pythonError.response?.status,
+          data: pythonError.response?.data,
+          message: pythonError.message
+        });
+
+        if (pythonError.response?.status === 404) {
+          throw new AppError(404, 'NOT_FOUND', 'Audio recording not found for this conversation');
+        }
+
+        throw new AppError(
+          500,
+          'AUDIO_FETCH_ERROR',
+          pythonError.response?.data?.message || pythonError.message || 'Failed to fetch audio recording'
+        );
+      }
+    } catch (error: any) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+      console.error('[Conversation Service] Failed to fetch audio:', error);
+      throw new AppError(500, 'AUDIO_FETCH_ERROR', 'Failed to fetch audio recording');
+    }
+  }
+
   // Bulk create conversations (for campaign transcripts)
   async bulkCreate(conversationsData: any[], organizationId: string) {
     const created = [];
