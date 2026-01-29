@@ -901,11 +901,13 @@ export class ConversationService {
   async fetchAudioByConversationId(conversationId: string, organizationId: string): Promise<{ audioBuffer: Buffer; contentType: string }> {
     try {
       // Find conversation to get Python API conversation_id
+      const orgObjectId = (organizationId as any) instanceof mongoose.Types.ObjectId 
+        ? organizationId 
+        : new mongoose.Types.ObjectId(organizationId as string);
+      
       const conversation = await Conversation.findOne({
         _id: conversationId,
-        organizationId: organizationId instanceof mongoose.Types.ObjectId 
-          ? organizationId 
-          : new mongoose.Types.ObjectId(organizationId)
+        organizationId: orgObjectId
       });
 
       if (!conversation) {

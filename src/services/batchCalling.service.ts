@@ -99,7 +99,7 @@ export class BatchCallingService {
         const dynamicVars: Record<string, any> = {};
         Object.keys(recipient).forEach(key => {
           if (key !== 'phone_number' && key !== 'name' && key !== 'email' && key !== 'dynamic_variables') {
-            dynamicVars[key] = recipient[key];
+            dynamicVars[key] = (recipient as any)[key];
           }
         });
         
