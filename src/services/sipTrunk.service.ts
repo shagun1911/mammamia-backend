@@ -719,19 +719,43 @@ export class SipTrunkService {
         );
       }
       
+      // Ensure required fields are always present
+      // Python API may require these fields even if not in agent_config
+      if (!body.greeting_message && !body.first_message) {
+        // Use default greeting if neither is provided
+        const { getDefaultGreeting } = await import('../utils/greetingRenderer');
+        const defaultGreeting = getDefaultGreeting(body.language as string || 'en');
+        body.greeting_message = defaultGreeting;
+        body.first_message = defaultGreeting;
+        console.warn('[SIP Trunk Service] ⚠️ No greeting message provided, using default');
+      }
+      
+      if (!body.system_prompt) {
+        // Use default system prompt if not provided
+        const { getDefaultSystemPrompt } = await import('../utils/greetingRenderer');
+        body.system_prompt = getDefaultSystemPrompt(body.language as string || 'en');
+        console.warn('[SIP Trunk Service] ⚠️ No system prompt provided, using default');
+      }
+      
+      if (!body.language) {
+        body.language = 'en';
+        console.warn('[SIP Trunk Service] ⚠️ No language provided, defaulting to en');
+      }
+
       console.log('[SIP Trunk Service] ✅ Final payload validated:', {
         agent_id: body.agent_id,
         agent_phone_number_id: body.agent_phone_number_id,
         to_number: body.to_number,
-        greeting_message: greetingMsg ? `${greetingMsg.substring(0, 80)}...` : 'MISSING',
-        greeting_length: greetingMsg.length,
-        first_message: firstMsg ? `${firstMsg.substring(0, 80)}...` : 'MISSING',
-        system_prompt: systemPrompt ? `${systemPrompt.substring(0, 80)}...` : 'MISSING',
-        system_prompt_length: systemPrompt.length,
-        voice_id: body.voice_id,
-        language: body.language,
+        greeting_message: body.greeting_message ? `${String(body.greeting_message).substring(0, 80)}...` : 'MISSING',
+        first_message: body.first_message ? `${String(body.first_message).substring(0, 80)}...` : 'MISSING',
+        system_prompt: body.system_prompt ? `${String(body.system_prompt).substring(0, 80)}...` : 'MISSING',
+        voice_id: body.voice_id || 'NOT_SET',
+        language: body.language || 'NOT_SET',
         has_variables: false // Should always be false after validation
       });
+      
+      // Log full payload for debugging
+      console.log('[SIP Trunk Service] Full payload being sent:', JSON.stringify(body, null, 2));
 
       const response = await axios.post<OutboundCallResponse>(
         pythonUrl,
@@ -742,11 +766,54 @@ export class SipTrunkService {
       console.log('[SIP Trunk Service] ✅ Twilio outbound call initiated');
       return response.data;
     } catch (error: any) {
+      // Enhanced error logging for validation errors
+      if (error.response?.status === 422) {
+        console.error('[SIP Trunk Service] ❌ Validation error (422):', JSON.stringify(error.response?.data, null, 2));
+        const validationErrors = error.response?.data?.detail || [];
+        if (Array.isArray(validationErrors)) {
+          validationErrors.forEach((err: any) => {
+            console.error('[SIP Trunk Service] ❌ Missing field:', {
+              location: err.loc,
+              message: err.msg,
+              type: err.type,
+              input: err.input
+            });
+          });
+        }
+      }
+      
+      // Check if it's a 404 for phone number not found
+      if (error.response?.status === 404 && 
+          (error.response?.data?.detail?.includes('not found') || 
+           error.response?.data?.message?.includes('not found') ||
+           error.response?.data?.detail?.includes('Document with id') ||
+           error.response?.data?.message?.includes('Document with id'))) {
+        
+        console.warn('[SIP Trunk Service] ⚠️ Phone number ID not found in Python API:', data.agent_phone_number_id);
+        console.warn('[SIP Trunk Service] ⚠️ Error detail:', error.response?.data?.detail || error.response?.data?.message);
+        // Throw a specific error that the controller can catch and handle
+        throw new AppError(
+          404,
+          'PHONE_NUMBER_NOT_FOUND_IN_API',
+          `Phone number ID ${data.agent_phone_number_id} not found in Python API. The phone number may need to be re-registered.`
+        );
+      }
+      
       console.error('[SIP Trunk Service] ❌ Twilio outbound call failed:', error.response?.data || error.message);
+      
+      // Provide more detailed error message for validation errors
+      let errorMessage = error.response?.data?.message || error.response?.data?.detail || 'Failed to initiate Twilio outbound call';
+      if (error.response?.status === 422 && Array.isArray(error.response?.data?.detail)) {
+        const missingFields = error.response.data.detail
+          .map((err: any) => err.loc?.join('.') || 'unknown')
+          .join(', ');
+        errorMessage = `Validation failed. Missing or invalid fields: ${missingFields}`;
+      }
+      
       throw new AppError(
         error.response?.status || 500,
         'OUTBOUND_CALL_ERROR',
-        error.response?.data?.message || error.response?.data?.detail || 'Failed to initiate Twilio outbound call'
+        errorMessage
       );
     }
   }

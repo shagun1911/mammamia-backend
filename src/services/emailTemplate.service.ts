@@ -114,6 +114,17 @@ export class EmailTemplateService {
         created_at: pythonResponse.created_at,
       });
 
+      // 🔑 CRITICAL: Automatically inject tool_id into all existing agents for this user
+      // This ensures email templates are available during outbound calls
+      try {
+        const { agentService } = await import('./agent.service');
+        await agentService.addEmailTemplateToolIdToAllAgents(userId, pythonResponse.tool_id);
+        console.log(`[EmailTemplate Service] ✅ Injected tool_id ${pythonResponse.tool_id} into all agents for user ${userId}`);
+      } catch (error: any) {
+        console.error(`[EmailTemplate Service] ⚠️ Failed to inject tool_id into agents:`, error.message);
+        // Don't throw - template creation succeeded, agent update is a background operation
+      }
+
       return template;
     } catch (error: any) {
       console.error('[EmailTemplate Service] Failed to create email template in Python API:', error);
@@ -166,13 +177,57 @@ export class EmailTemplateService {
 
   async deleteEmailTemplate(userId: string, templateId: string): Promise<void> {
     const userObjectId = new mongoose.Types.ObjectId(userId);
+    
+    // First, try to find the template - handle both MongoDB _id and template_id (Python API ID)
+    // Check if templateId is a valid MongoDB ObjectId
+    let template = null;
+    let query: any = { userId: userObjectId };
+    
+    if (mongoose.Types.ObjectId.isValid(templateId) && templateId.length === 24) {
+      // It's a valid MongoDB ObjectId, try to find by _id
+      query._id = templateId;
+      template = await EmailTemplate.findOne(query).lean();
+    }
+    
+    // If not found by _id, try to find by template_id (Python API ID)
+    if (!template) {
+      query = { userId: userObjectId, template_id: templateId };
+      template = await EmailTemplate.findOne(query).lean();
+    }
+
+    if (!template) {
+      throw new AppError(404, 'NOT_FOUND', 'Email template not found');
+    }
+
+    const toolId = (template as any).tool_id;
+    const mongoId = (template as any)._id;
+
+    // Delete the template from database using the MongoDB _id
+    // We must use _id for deletion, not template_id
+    if (!mongoId) {
+      throw new AppError(500, 'INTERNAL_ERROR', 'Template found but missing MongoDB _id');
+    }
+
     const result = await EmailTemplate.deleteOne({
       userId: userObjectId,
-      _id: templateId,
+      _id: mongoId,
     });
 
     if (result.deletedCount === 0) {
       throw new AppError(404, 'NOT_FOUND', 'Email template not found');
+    }
+
+    // 🔑 CRITICAL: Automatically remove tool_id from all existing agents for this user
+    // This ensures deleted email templates are no longer available during outbound calls
+    if (toolId) {
+      try {
+        const { agentService } = await import('./agent.service');
+        await agentService.removeEmailTemplateToolIdFromAllAgents(userId, toolId);
+        console.log(`[EmailTemplate Service] ✅ Removed tool_id ${toolId} from all agents for user ${userId}`);
+      } catch (error: any) {
+        console.error(`[EmailTemplate Service] ⚠️ Failed to remove tool_id from agents:`, error.message);
+        // Don't throw - template deletion succeeded, agent update is a background operation
+      }
     }
   }
 }

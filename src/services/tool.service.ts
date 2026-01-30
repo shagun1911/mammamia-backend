@@ -118,16 +118,57 @@ export class ToolService {
 
   /**
    * Delete a tool
+   * Also handles deletion of email templates if the tool_id corresponds to one
    */
-  async delete(toolId: string, userId: string): Promise<void> {
+  async delete(toolId: string, userId: string | mongoose.Types.ObjectId): Promise<void> {
     try {
-      const result = await Tool.findOneAndDelete({ tool_id: toolId, userId });
+      // Convert userId to string if it's an ObjectId
+      const userIdString = typeof userId === 'string' ? userId : userId.toString();
+      const userObjectId = typeof userId === 'string' 
+        ? new mongoose.Types.ObjectId(userId) 
+        : userId;
+
+      const result = await Tool.findOneAndDelete({ tool_id: toolId, userId: userIdString });
       
       if (!result) {
         throw new AppError(404, 'TOOL_NOT_FOUND', 'Tool not found');
       }
 
       console.log(`[Tool Service] Deleted tool: ${toolId}`);
+
+      // 🔑 CRITICAL: Check if this tool_id corresponds to an email template
+      // If yes, delete the email template and remove tool_id from all agents
+      try {
+        const EmailTemplate = (await import('../models/EmailTemplate')).default;
+        
+        // Find email template by tool_id
+        const emailTemplate = await EmailTemplate.findOne({
+          userId: userObjectId,
+          tool_id: toolId,
+        }).lean();
+
+        if (emailTemplate) {
+          console.log(`[Tool Service] Found email template for tool_id ${toolId}, deleting template...`);
+          
+          // Delete the email template
+          const templateMongoId = (emailTemplate as any)._id;
+          if (templateMongoId) {
+            await EmailTemplate.deleteOne({
+              userId: userObjectId,
+              _id: templateMongoId,
+            });
+            console.log(`[Tool Service] ✅ Deleted email template for tool_id ${toolId}`);
+          }
+
+          // Remove tool_id from all agents
+          const { agentService } = await import('./agent.service');
+          await agentService.removeEmailTemplateToolIdFromAllAgents(userIdString, toolId);
+          console.log(`[Tool Service] ✅ Removed tool_id ${toolId} from all agents`);
+        }
+      } catch (error: any) {
+        console.error(`[Tool Service] ⚠️ Error handling email template deletion:`, error.message);
+        // Don't throw - tool deletion succeeded, email template cleanup is a background operation
+      }
     } catch (error) {
       if (error instanceof AppError) throw error;
       console.error('[Tool Service] Error deleting tool:', error);

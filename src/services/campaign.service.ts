@@ -940,6 +940,45 @@ export class CampaignService {
                 }
               }
 
+              // 🔑 CRITICAL: Render greeting message with contact data before sending to Python API
+              // This replaces {{name}}, {{email}}, {{phone}} with actual contact values
+              let renderedGreetingMessage = callGreetingMessage || 'Hello! How can I help you today?';
+              if (callGreetingMessage && (callGreetingMessage.includes('{{name}}') || callGreetingMessage.includes('{{email}}') || callGreetingMessage.includes('{{phone}}'))) {
+                try {
+                  const { renderGreeting, getDefaultGreeting } = await import('../utils/greetingRenderer');
+                  
+                  // Prepare contact data from campaign contact
+                  const contactName = contact.name?.trim() || 'there';
+                  const contactData = {
+                    name: contactName,
+                    email: contact.email?.trim() || '',
+                    phone: normalizedPhone || ''
+                  };
+                  
+                  // Render the greeting template with contact data
+                  const renderingResult = renderGreeting(callGreetingMessage, contactData, contactName);
+                  
+                  if (renderingResult.success) {
+                    renderedGreetingMessage = renderingResult.rendered;
+                    console.log(`[Campaign ${campaignId}] ✅ Greeting rendered: "${callGreetingMessage}" -> "${renderedGreetingMessage}"`);
+                    if (renderingResult.warnings.length > 0) {
+                      console.warn(`[Campaign ${campaignId}] ⚠️ Rendering warnings:`, renderingResult.warnings);
+                    }
+                  } else {
+                    console.error(`[Campaign ${campaignId}] ❌ Failed to render greeting:`, renderingResult.errors);
+                    // Use fallback greeting if rendering fails
+                    renderedGreetingMessage = getDefaultGreeting(callLanguage || 'en');
+                    console.warn(`[Campaign ${campaignId}] ⚠️ Using fallback greeting due to rendering failure`);
+                  }
+                } catch (error: any) {
+                  console.error(`[Campaign ${campaignId}] ❌ Error rendering greeting:`, error.message);
+                  // Use fallback greeting if rendering throws an error
+                  const { getDefaultGreeting } = await import('../utils/greetingRenderer');
+                  renderedGreetingMessage = getDefaultGreeting(callLanguage || 'en');
+                  console.warn(`[Campaign ${campaignId}] ⚠️ Using fallback greeting due to error`);
+                }
+              }
+
               // Prepare outbound call request body
               const callRequestBody: any = {
                 phone_number: normalizedPhone,
@@ -951,7 +990,7 @@ export class CampaignService {
                 provider: provider,
                 api_key: apiKey,
                 collection_names: collectionNames, // Updated to support multiple collections
-                greeting_message: callGreetingMessage, // Use per-number greeting message
+                greeting_message: renderedGreetingMessage, // Use rendered greeting message (variables replaced)
                 organisation_id: organizationId.toString(),
                 contact_number: normalizedPhone,
                 email: contact.email || undefined, // Contact's email from campaign row

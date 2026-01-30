@@ -606,27 +606,86 @@ export class SipTrunkController {
           }
         }
         console.log('[SIP Trunk Controller] Using Twilio outbound endpoint; agent_phone_number_id:', phoneNumber.elevenlabs_phone_number_id, 'from_number:', phoneNumber.phone_number);
-        result = await sipTrunkService.twilioOutboundCall({
-          agent_id,
-          agent_phone_number_id: phoneNumber.elevenlabs_phone_number_id,
-          to_number,
-          customer_info,
-          sender_email,
-          // Include agent configuration
-          agent_config: {
-            greeting_message: finalGreeting, // Use final validated greeting with all variables replaced
-            system_prompt: finalSystemPrompt,
-            voice_id: agent.voice_id,
-            language: agent.language || 'en',
-            escalationRules: agent.escalationRules
-          },
-          // Include credentials if using phone number as ID (not a registered ElevenLabs ID)
-          ...(phoneNumber.elevenlabs_phone_number_id?.startsWith('+') && {
-            phone_number: phoneNumber.phone_number,
-            sid: phoneNumber.sid,
-            token: phoneNumber.token
-          })
-        });
+        
+        try {
+          result = await sipTrunkService.twilioOutboundCall({
+            agent_id,
+            agent_phone_number_id: phoneNumber.elevenlabs_phone_number_id,
+            to_number,
+            customer_info,
+            sender_email,
+            // Include agent configuration
+            agent_config: {
+              greeting_message: finalGreeting, // Use final validated greeting with all variables replaced
+              system_prompt: finalSystemPrompt,
+              voice_id: agent.voice_id,
+              language: agent.language || 'en',
+              escalationRules: agent.escalationRules
+            },
+            // Include credentials if using phone number as ID (not a registered ElevenLabs ID)
+            ...(phoneNumber.elevenlabs_phone_number_id?.startsWith('+') && {
+              phone_number: phoneNumber.phone_number,
+              sid: phoneNumber.sid,
+              token: phoneNumber.token
+            })
+          });
+        } catch (callError: any) {
+          // If phone number ID not found in Python API, try to re-register
+          if (callError.code === 'PHONE_NUMBER_NOT_FOUND_IN_API' && phoneNumber.sid && phoneNumber.token) {
+            console.log('[SIP Trunk Controller] ⚠️ Phone number ID not found in Python API, attempting re-registration...');
+            try {
+              const elevenLabsResponse = await sipTrunkService.registerTwilioPhoneNumberWithElevenLabs({
+                label: phoneNumber.label,
+                phone_number: phoneNumber.phone_number,
+                sid: phoneNumber.sid,
+                token: phoneNumber.token,
+                supports_inbound: phoneNumber.supports_inbound || false,
+                supports_outbound: phoneNumber.supports_outbound || false
+              });
+
+              // Update phone number with new ElevenLabs ID
+              await PhoneNumber.updateOne(
+                { phone_number_id: agent_phone_number_id },
+                { $set: { elevenlabs_phone_number_id: elevenLabsResponse.phone_number_id } }
+              );
+
+              phoneNumber.elevenlabs_phone_number_id = elevenLabsResponse.phone_number_id;
+              console.log('[SIP Trunk Controller] ✅ Phone number re-registered with new ID:', elevenLabsResponse.phone_number_id);
+              
+              // Retry the call with the new ID
+              result = await sipTrunkService.twilioOutboundCall({
+                agent_id,
+                agent_phone_number_id: elevenLabsResponse.phone_number_id,
+                to_number,
+                customer_info,
+                sender_email,
+                // Include agent configuration
+                agent_config: {
+                  greeting_message: finalGreeting,
+                  system_prompt: finalSystemPrompt,
+                  voice_id: agent.voice_id,
+                  language: agent.language || 'en',
+                  escalationRules: agent.escalationRules
+                }
+              });
+              
+              console.log('[SIP Trunk Controller] ✅ Outbound call succeeded after re-registration');
+            } catch (registerError: any) {
+              // Re-registration failed, return error
+              console.error('[SIP Trunk Controller] ❌ Re-registration failed:', registerError.message);
+              return res.status(registerError.statusCode || 500).json({
+                success: false,
+                error: {
+                  code: registerError.code || 'REGISTRATION_ERROR',
+                  message: `Phone number ID not found in Python API and re-registration failed: ${registerError.message}. Please try registering manually via POST /api/v1/phone-numbers/${agent_phone_number_id}/register`
+                }
+              });
+            }
+          } else {
+            // Re-throw other errors
+            throw callError;
+          }
+        }
       } else {
         // SIP trunk: must use ElevenLabs phone_number_id
         if (!phoneNumber.elevenlabs_phone_number_id) {

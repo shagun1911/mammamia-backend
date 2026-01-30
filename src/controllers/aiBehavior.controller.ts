@@ -311,6 +311,45 @@ export class AIBehaviorController {
       const { getEcommerceCredentials } = await import('../utils/ecommerce.util');
       const ecommerceCredentials = await getEcommerceCredentials(req.user!.id);
 
+      // 🔑 CRITICAL: Render greeting message with test contact data before sending to Python API
+      // This replaces {{name}}, {{email}}, {{phone}} with actual values (test data for test calls)
+      const testGreetingMessage = phoneSettings.greetingMessage || 'Hello! How can I help you today?';
+      let renderedGreetingMessage = testGreetingMessage;
+      if (testGreetingMessage && (testGreetingMessage.includes('{{name}}') || testGreetingMessage.includes('{{email}}') || testGreetingMessage.includes('{{phone}}'))) {
+        try {
+          const { renderGreeting, getDefaultGreeting } = await import('../utils/greetingRenderer');
+          
+          // Prepare test contact data
+          const testContactData = {
+            name: 'Test User',
+            email: 'test@example.com',
+            phone: normalizedPhone || ''
+          };
+          
+          // Render the greeting template with test contact data
+          const renderingResult = renderGreeting(testGreetingMessage, testContactData, 'Test User');
+          
+          if (renderingResult.success) {
+            renderedGreetingMessage = renderingResult.rendered;
+            console.log(`[Test Call] ✅ Greeting rendered: "${testGreetingMessage}" -> "${renderedGreetingMessage}"`);
+            if (renderingResult.warnings.length > 0) {
+              console.warn(`[Test Call] ⚠️ Rendering warnings:`, renderingResult.warnings);
+            }
+          } else {
+            console.error(`[Test Call] ❌ Failed to render greeting:`, renderingResult.errors);
+            // Use fallback greeting if rendering fails
+            renderedGreetingMessage = getDefaultGreeting(voiceLanguage || 'en');
+            console.warn(`[Test Call] ⚠️ Using fallback greeting due to rendering failure`);
+          }
+        } catch (error: any) {
+          console.error(`[Test Call] ❌ Error rendering greeting:`, error.message);
+          // Use fallback greeting if rendering throws an error
+          const { getDefaultGreeting } = await import('../utils/greetingRenderer');
+          renderedGreetingMessage = getDefaultGreeting(voiceLanguage || 'en');
+          console.warn(`[Test Call] ⚠️ Using fallback greeting due to error`);
+        }
+      }
+
       // Prepare call request
       // Use PYTHON_API_URL if available (for elvenlabs-voiceagent), otherwise fall back to COMM_API_URL
       const COMM_API = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
@@ -324,7 +363,7 @@ export class AIBehaviorController {
         provider: apiKeys.llmProvider,
         api_key: apiKeys.apiKey,
         collection_names: collectionNames, // Updated to support multiple collections
-        greeting_message: phoneSettings.greetingMessage || 'Hello! How can I help you today?' // Greeting message from settings
+        greeting_message: renderedGreetingMessage // Use rendered greeting message (variables replaced)
       };
 
       // Add e-commerce credentials if available

@@ -42,19 +42,96 @@ export interface UpdateAgentPromptResponse {
 
 export class AgentService {
   /**
+   * Get all email template tool_ids for a user
+   * These are automatically included in all agents
+   */
+  private async getEmailTemplateToolIds(userId: string): Promise<string[]> {
+    try {
+      const EmailTemplate = (await import('../models/EmailTemplate')).default;
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      
+      const templates = await EmailTemplate.find({ userId: userObjectId })
+        .select('tool_id')
+        .lean();
+      
+      const toolIds = templates
+        .map(t => (t as any).tool_id)
+        .filter((id): id is string => !!id && typeof id === 'string');
+      
+      console.log(`[Agent Service] Found ${toolIds.length} email template tool_ids for user ${userId}`);
+      return toolIds;
+    } catch (error: any) {
+      console.warn('[Agent Service] Failed to fetch email template tool_ids:', error.message);
+      return []; // Return empty array on error to not block agent creation
+    }
+  }
+
+  /**
+   * Build complete tool_ids array including static env tools and email template tools
+   */
+  private async buildToolIds(userId: string): Promise<string[]> {
+    // Get static tool IDs from environment variables
+    const productsToolId = process.env.PRODUCTS_TOOL_ID;
+    const ordersToolId = process.env.ORDERS_TOOL_ID;
+    
+    // Build tool_ids array from env variables (filter out undefined values)
+    const toolIds: string[] = [];
+    if (productsToolId) toolIds.push(productsToolId);
+    if (ordersToolId) toolIds.push(ordersToolId);
+    
+    // Add email template tool_ids
+    const emailTemplateToolIds = await this.getEmailTemplateToolIds(userId);
+    toolIds.push(...emailTemplateToolIds);
+    
+    // Remove duplicates
+    return [...new Set(toolIds)];
+  }
+
+  /**
+   * Update agent tool_ids in Python API
+   */
+  private async updateAgentToolIdsInPython(agentId: string, toolIds: string[]): Promise<void> {
+    try {
+      const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${agentId}/prompt`;
+      
+      // Get the current agent to preserve other settings
+      const agent = await Agent.findOne({ agent_id: agentId }).lean();
+      
+      if (!agent) {
+        console.warn(`[Agent Service] Agent ${agentId} not found, skipping Python API update`);
+        return;
+      }
+      
+      const requestBody = {
+        first_message: (agent as any).first_message || '',
+        system_prompt: (agent as any).system_prompt || '',
+        language: (agent as any).language || 'en',
+        knowledge_base_ids: (agent as any).knowledge_base_ids || [],
+        tool_ids: toolIds,
+        ...((agent as any).voice_id && { voice_id: (agent as any).voice_id }),
+        ...((agent as any).greeting_message && { greeting_message: (agent as any).greeting_message })
+      };
+      
+      await axios.patch(pythonUrl, requestBody, {
+        timeout: 30000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      console.log(`[Agent Service] ✅ Updated agent ${agentId} tool_ids in Python API`);
+    } catch (error: any) {
+      console.error(`[Agent Service] ⚠️ Failed to update agent ${agentId} tool_ids in Python API:`, error.message);
+      // Don't throw - this is a background update, shouldn't block the main operation
+    }
+  }
+
+  /**
    * Create a new agent by calling external Python API
    * Then store the agent configuration in the database
    */
   async createAgent(userId: string, data: CreateAgentRequest): Promise<IAgent> {
     try {
-      // Get static tool IDs from environment variables
-      const productsToolId = process.env.PRODUCTS_TOOL_ID;
-      const ordersToolId = process.env.ORDERS_TOOL_ID;
-      
-      // Build tool_ids array from env variables (filter out undefined values)
-      const toolIds: string[] = [];
-      if (productsToolId) toolIds.push(productsToolId);
-      if (ordersToolId) toolIds.push(ordersToolId);
+      // Build complete tool_ids array (env tools + email template tools)
+      const toolIds = await this.buildToolIds(userId);
 
       console.log(`[Agent Service] Creating agent for userId: ${userId}`);
       console.log(`[Agent Service] Agent data:`, {
@@ -209,14 +286,8 @@ export class AgentService {
    */
   async updateAgentPrompt(agentId: string, userId: string, data: UpdateAgentPromptRequest): Promise<IAgent> {
     try {
-      // Get static tool IDs from environment variables
-      const productsToolId = process.env.PRODUCTS_TOOL_ID;
-      const ordersToolId = process.env.ORDERS_TOOL_ID;
-      
-      // Build tool_ids array from env variables (filter out undefined values)
-      const toolIds: string[] = [];
-      if (productsToolId) toolIds.push(productsToolId);
-      if (ordersToolId) toolIds.push(ordersToolId);
+      // Build complete tool_ids array (env tools + email template tools)
+      const toolIds = await this.buildToolIds(userId);
 
       const userObjectId = new mongoose.Types.ObjectId(userId);
       
@@ -382,6 +453,82 @@ export class AgentService {
       }
       console.error('[Agent Service] Failed to delete agent:', error);
       throw new AppError(500, 'AGENT_DELETE_ERROR', 'Failed to delete agent');
+    }
+  }
+
+  /**
+   * Add email template tool_id to all existing agents for a user
+   * This is called when a new email template is created
+   */
+  async addEmailTemplateToolIdToAllAgents(userId: string, toolId: string): Promise<void> {
+    try {
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      
+      // Find all agents for this user
+      const agents = await Agent.find({ userId: userObjectId });
+      
+      console.log(`[Agent Service] Adding tool_id ${toolId} to ${agents.length} agents for user ${userId}`);
+      
+      // Update each agent
+      for (const agent of agents) {
+        // Check if tool_id already exists
+        if (agent.tool_ids.includes(toolId)) {
+          console.log(`[Agent Service] Agent ${agent.agent_id} already has tool_id ${toolId}, skipping`);
+          continue;
+        }
+        
+        // Add tool_id to the array
+        agent.tool_ids.push(toolId);
+        await agent.save();
+        
+        // Update in Python API
+        await this.updateAgentToolIdsInPython(agent.agent_id, agent.tool_ids);
+        
+        console.log(`[Agent Service] ✅ Added tool_id ${toolId} to agent ${agent.agent_id}`);
+      }
+      
+      console.log(`[Agent Service] ✅ Successfully added tool_id ${toolId} to all agents for user ${userId}`);
+    } catch (error: any) {
+      console.error('[Agent Service] Failed to add email template tool_id to agents:', error);
+      // Don't throw - this is a background operation
+    }
+  }
+
+  /**
+   * Remove email template tool_id from all existing agents for a user
+   * This is called when an email template is deleted
+   */
+  async removeEmailTemplateToolIdFromAllAgents(userId: string, toolId: string): Promise<void> {
+    try {
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      
+      // Find all agents for this user
+      const agents = await Agent.find({ userId: userObjectId });
+      
+      console.log(`[Agent Service] Removing tool_id ${toolId} from ${agents.length} agents for user ${userId}`);
+      
+      // Update each agent
+      for (const agent of agents) {
+        // Check if tool_id exists
+        if (!agent.tool_ids.includes(toolId)) {
+          console.log(`[Agent Service] Agent ${agent.agent_id} doesn't have tool_id ${toolId}, skipping`);
+          continue;
+        }
+        
+        // Remove tool_id from the array
+        agent.tool_ids = agent.tool_ids.filter(id => id !== toolId);
+        await agent.save();
+        
+        // Update in Python API
+        await this.updateAgentToolIdsInPython(agent.agent_id, agent.tool_ids);
+        
+        console.log(`[Agent Service] ✅ Removed tool_id ${toolId} from agent ${agent.agent_id}`);
+      }
+      
+      console.log(`[Agent Service] ✅ Successfully removed tool_id ${toolId} from all agents for user ${userId}`);
+    } catch (error: any) {
+      console.error('[Agent Service] Failed to remove email template tool_id from agents:', error);
+      // Don't throw - this is a background operation
     }
   }
 }

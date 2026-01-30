@@ -499,6 +499,45 @@ export class AutomationEngine {
           }
         }
 
+        // 🔑 CRITICAL: Render greeting message with contact data before sending to Python API
+        // This replaces {{name}}, {{email}}, {{phone}} with actual contact values
+        let renderedGreetingMessage = greetingMessage || 'Hello! How can I help you today?';
+        if (greetingMessage && (greetingMessage.includes('{{name}}') || greetingMessage.includes('{{email}}') || greetingMessage.includes('{{phone}}'))) {
+          try {
+            const { renderGreeting, getDefaultGreeting } = await import('../utils/greetingRenderer');
+            
+            // Prepare contact data from automation contact
+            const contactName = contact.name?.trim() || 'there';
+            const contactData = {
+              name: contactName,
+              email: contact.email?.trim() || '',
+              phone: normalizedPhone || ''
+            };
+            
+            // Render the greeting template with contact data
+            const renderingResult = renderGreeting(greetingMessage, contactData, contactName);
+            
+            if (renderingResult.success) {
+              renderedGreetingMessage = renderingResult.rendered;
+              console.log(`[Automation] ✅ Greeting rendered: "${greetingMessage}" -> "${renderedGreetingMessage}"`);
+              if (renderingResult.warnings.length > 0) {
+                console.warn(`[Automation] ⚠️ Rendering warnings:`, renderingResult.warnings);
+              }
+            } else {
+              console.error(`[Automation] ❌ Failed to render greeting:`, renderingResult.errors);
+              // Use fallback greeting if rendering fails
+              renderedGreetingMessage = getDefaultGreeting(voiceLanguage || 'en');
+              console.warn(`[Automation] ⚠️ Using fallback greeting due to rendering failure`);
+            }
+          } catch (error: any) {
+            console.error(`[Automation] ❌ Error rendering greeting:`, error.message);
+            // Use fallback greeting if rendering throws an error
+            const { getDefaultGreeting } = await import('../utils/greetingRenderer');
+            renderedGreetingMessage = getDefaultGreeting(voiceLanguage || 'en');
+            console.warn(`[Automation] ⚠️ Using fallback greeting due to error`);
+          }
+        }
+
         // Prepare call request
         const callRequestBody: any = {
           phone_number: normalizedPhone,
@@ -510,7 +549,7 @@ export class AutomationEngine {
           provider: provider,
           api_key: apiKey,
           collection_names: collectionNames, // Updated to support multiple collections
-          greeting_message: greetingMessage // Use per-number greeting message
+          greeting_message: renderedGreetingMessage // Use rendered greeting message (variables replaced)
         };
 
         console.log('📝 [Automation] Using greeting message:', callRequestBody.greeting_message);

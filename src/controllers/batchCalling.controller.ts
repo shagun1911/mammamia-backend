@@ -305,7 +305,7 @@ export class BatchCallingController {
             phone_provider: result.phone_provider,
             created_at_unix: result.created_at_unix,
             scheduled_time_unix: result.scheduled_time_unix,
-            timezone: result.timezone,
+            timezone: result.timezone || 'UTC', // Default to UTC if not provided by Python API
             total_calls_dispatched: result.total_calls_dispatched,
             total_calls_scheduled: result.total_calls_scheduled,
             total_calls_finished: result.total_calls_finished,
@@ -482,6 +482,7 @@ export class BatchCallingController {
   /**
    * Get all batch calls for the user's organization
    * GET /api/v1/batch-calling
+   * Syncs status from Python API for each batch call
    */
   async getBatchCalls(req: AuthRequest, res: Response, next: NextFunction) {
     try {
@@ -505,9 +506,121 @@ export class BatchCallingController {
       .sort({ createdAt: -1 })
       .lean();
 
+      // Sync status from Python API for each batch call
+      const syncedBatchCalls = await Promise.all(
+        batchCalls.map(async (batchCall) => {
+          try {
+            // Fetch latest status from Python API
+            const latestStatus = await batchCallingService.getBatchJobStatus(batchCall.batch_call_id);
+            
+            // Update database with latest status if it changed
+            const statusChanged = 
+              batchCall.status !== latestStatus.status ||
+              batchCall.total_calls_dispatched !== latestStatus.total_calls_dispatched ||
+              batchCall.total_calls_scheduled !== latestStatus.total_calls_scheduled ||
+              batchCall.total_calls_finished !== latestStatus.total_calls_finished;
+            
+            if (statusChanged) {
+              await BatchCall.updateOne(
+                { batch_call_id: batchCall.batch_call_id },
+                {
+                  $set: {
+                    status: latestStatus.status,
+                    total_calls_dispatched: latestStatus.total_calls_dispatched,
+                    total_calls_scheduled: latestStatus.total_calls_scheduled,
+                    total_calls_finished: latestStatus.total_calls_finished,
+                    last_updated_at_unix: latestStatus.last_updated_at_unix
+                  }
+                }
+              );
+              
+              // Return updated data
+              return {
+                ...batchCall,
+                status: latestStatus.status,
+                total_calls_dispatched: latestStatus.total_calls_dispatched,
+                total_calls_scheduled: latestStatus.total_calls_scheduled,
+                total_calls_finished: latestStatus.total_calls_finished,
+                last_updated_at_unix: latestStatus.last_updated_at_unix
+              };
+            }
+            
+            return batchCall;
+          } catch (error: any) {
+            // If Python API call fails, return the database record as-is
+            console.warn(`[Batch Calling Controller] ⚠️ Failed to sync status for batch call ${batchCall.batch_call_id}:`, error.message);
+            return batchCall;
+          }
+        })
+      );
+
       res.status(200).json({
         success: true,
-        data: batchCalls
+        data: syncedBatchCalls
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get batch job calls (individual call results)
+   * GET /api/v1/batch-calling/:jobId/calls
+   */
+  async getBatchJobCalls(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { jobId } = req.params;
+      const { status, cursor, page_size } = req.query;
+      
+      if (!jobId) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MISSING_JOB_ID',
+            message: 'Job ID is required'
+          }
+        });
+      }
+
+      // Verify the batch call belongs to the user's organization
+      const BatchCall = (await import('../models/BatchCall')).default;
+      const organizationId = req.user?.organizationId || req.user?._id;
+      
+      if (!organizationId) {
+        return res.status(401).json({
+          success: false,
+          error: "Unauthorized",
+          detail: "Organization ID or User ID not found"
+        });
+      }
+
+      const batchCall = await BatchCall.findOne({
+        batch_call_id: jobId,
+        organizationId: organizationId instanceof mongoose.Types.ObjectId 
+          ? organizationId 
+          : new mongoose.Types.ObjectId(organizationId.toString())
+      }).lean();
+
+      if (!batchCall) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'BATCH_CALL_NOT_FOUND',
+            message: 'Batch call not found or does not belong to your organization'
+          }
+        });
+      }
+
+      // Fetch calls from Python API
+      const result = await batchCallingService.getBatchJobCalls(jobId, {
+        status: status as string | undefined,
+        cursor: cursor as string | undefined,
+        page_size: page_size ? parseInt(page_size as string, 10) : undefined
+      });
+
+      res.status(200).json({
+        success: true,
+        data: result
       });
     } catch (error) {
       next(error);

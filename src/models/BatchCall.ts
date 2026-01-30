@@ -11,7 +11,7 @@ export interface IBatchCall extends Document {
   phone_provider: string;
   created_at_unix: number;
   scheduled_time_unix: number;
-  timezone: string;
+  timezone?: string;
   total_calls_dispatched: number;
   total_calls_scheduled: number;
   total_calls_finished: number;
@@ -42,8 +42,7 @@ const BatchCallSchema = new Schema<IBatchCall>({
   batch_call_id: {
     type: String,
     required: true,
-    unique: true,
-    index: true
+    unique: true
   },
   name: {
     type: String,
@@ -76,7 +75,8 @@ const BatchCallSchema = new Schema<IBatchCall>({
   },
   timezone: {
     type: String,
-    required: true
+    required: false,
+    default: 'UTC'
   },
   total_calls_dispatched: {
     type: Number,

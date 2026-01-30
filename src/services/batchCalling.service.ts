@@ -46,6 +46,15 @@ export interface BatchCallResponse {
   agent_name: string;
 }
 
+export interface BatchCallResult {
+  [key: string]: any;
+}
+
+export interface BatchJobCallsResponse {
+  calls: BatchCallResult[];
+  cursor?: string;
+}
+
 export class BatchCallingService {
   /**
    * Submit batch calling job
@@ -269,6 +278,57 @@ export class BatchCallingService {
         error.response?.status || 500,
         'BATCH_CALL_ERROR',
         error.response?.data?.message || error.response?.data?.detail || 'Failed to cancel batch job'
+      );
+    }
+  }
+
+  /**
+   * Get batch job calls (individual call results)
+   * Calls Python /api/v1/batch-calling/{job_id}/calls endpoint
+   */
+  async getBatchJobCalls(
+    jobId: string,
+    options?: {
+      status?: string;
+      cursor?: string;
+      page_size?: number;
+    }
+  ): Promise<BatchJobCallsResponse> {
+    try {
+      const pythonUrl = `${COMM_API_URL}/api/v1/batch-calling/${jobId}/calls`;
+      
+      console.log('[Batch Calling Service] ===== GETTING BATCH JOB CALLS =====');
+      console.log('[Batch Calling Service] Python API URL:', pythonUrl);
+      console.log('[Batch Calling Service] Job ID:', jobId);
+      console.log('[Batch Calling Service] Options:', options);
+      
+      const params: Record<string, any> = {};
+      if (options?.status) params.status = options.status;
+      if (options?.cursor) params.cursor = options.cursor;
+      if (options?.page_size) params.page_size = options.page_size;
+      
+      const response = await axios.get<BatchJobCallsResponse>(
+        pythonUrl,
+        {
+          params,
+          timeout: 30000, // 30 seconds timeout
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      console.log('[Batch Calling Service] ✅ Batch job calls fetched successfully');
+      console.log('[Batch Calling Service] Response status:', response.status);
+      console.log('[Batch Calling Service] Calls count:', response.data.calls?.length || 0);
+      
+      return response.data;
+    } catch (error: any) {
+      console.error('[Batch Calling Service] ❌ Failed to get batch job calls:', error.response?.data || error.message);
+      throw new AppError(
+        error.response?.status || 500,
+        'BATCH_CALL_ERROR',
+        error.response?.data?.message || error.response?.data?.detail || 'Failed to get batch job calls'
       );
     }
   }
