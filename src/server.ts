@@ -43,6 +43,7 @@ import whatsappRoutes from './routes/whatsapp.routes';
 import phoneNumberRoutes from './routes/phoneNumber.routes';
 import sipTrunkRoutes from './routes/sipTrunk.routes';
 import batchCallingRoutes from './routes/batchCalling.routes';
+import emailWebhookRoutes from './routes/emailWebhook.routes';
 
 import instagramWebhookRoutes from './routes/instagramWebhook.routes';
 import adminRoutes from './routes/admin.routes';
@@ -203,6 +204,7 @@ app.use('/api/v1/inbound-numbers', inboundNumbersRoutes);
 app.use('/api/v1/phone-numbers', phoneNumberRoutes);
 app.use('/api/v1/sip-trunk', sipTrunkRoutes);
 app.use('/api/v1/batch-calling', batchCallingRoutes);
+app.use('/api/v1/webhook', emailWebhookRoutes); // Email webhook for Python API (agent email tool)
 app.use('/api/v1/whatsapp', whatsappRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/plans', planRoutes);

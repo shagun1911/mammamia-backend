@@ -35,7 +35,28 @@ export class EmailTemplateController {
         parameters: parameters || [],
       });
 
-      res.status(201).json(successResponse(template, 'Email template created successfully'));
+      // Include suggested prompts for appointment templates (Fix #1 + #2 from batch call guide)
+      const isAppointment = name.toLowerCase().includes('appointment') || name.toLowerCase().includes('confirm');
+      const suggestions = isAppointment
+        ? {
+            suggested_first_message:
+              "Hello! I'm calling to help you with appointments. How can I assist?",
+            suggested_system_prompt: `You are a voice assistant that can book appointments.
+
+IMPORTANT RULES:
+1. If the user asks to book, schedule, confirm, or fix an appointment:
+   - You MUST collect: customer name, appointment date, appointment time
+2. After collecting these details: You MUST call the \`${name}\` tool.
+3. Do NOT just reply verbally once details are known.
+4. If any detail is missing, ask a follow-up question.
+5. Never end the call without either booking the appointment or clearly explaining what information is missing.`
+          }
+        : undefined;
+
+      const responseData = suggestions
+        ? { ...(typeof template.toObject === 'function' ? template.toObject() : template), _suggestions: suggestions }
+        : template;
+      res.status(201).json(successResponse(responseData, 'Email template created successfully'));
     } catch (error) {
       next(error);
     }

@@ -94,6 +94,8 @@ export class BatchCallingService {
       const phoneNumberId = String(data.phone_number_id).trim();
       
       // Format recipients with dynamic_variables structure
+      // CRITICAL: first_message uses {{name}} - ElevenLabs requires name in dynamic_variables
+      // or the call terminates with "Missing required dynamic variables"
       const formattedRecipients = data.recipients.map(recipient => {
         const formatted: any = {
           phone_number: recipient.phone_number,
@@ -104,20 +106,22 @@ export class BatchCallingService {
           formatted.email = recipient.email;
         }
         
-        // Extract dynamic_variables from recipient (any fields that aren't phone_number, name, or email)
-        const dynamicVars: Record<string, any> = {};
+        // Build dynamic_variables: ALWAYS include name (and customer_name alias) so {{name}} in first_message works
+        const dynamicVars: Record<string, any> = { ...(recipient.dynamic_variables || {}) };
+        if (recipient.name) {
+          dynamicVars.name = recipient.name;
+          dynamicVars.customer_name = recipient.name; // alias for email template confirm_appointment
+        }
+        if (recipient.email) {
+          dynamicVars.email = recipient.email;
+        }
+        // Include any extra recipient fields
         Object.keys(recipient).forEach(key => {
           if (key !== 'phone_number' && key !== 'name' && key !== 'email' && key !== 'dynamic_variables') {
             dynamicVars[key] = (recipient as any)[key];
           }
         });
-        
-        // If dynamic_variables is explicitly provided, use it; otherwise use extracted vars
-        if (recipient.dynamic_variables) {
-          formatted.dynamic_variables = recipient.dynamic_variables;
-        } else if (Object.keys(dynamicVars).length > 0) {
-          formatted.dynamic_variables = dynamicVars;
-        }
+        formatted.dynamic_variables = dynamicVars;
         
         return formatted;
       });

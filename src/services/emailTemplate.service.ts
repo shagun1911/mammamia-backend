@@ -4,7 +4,22 @@ import EmailTemplate, { IEmailTemplate, IEmailTemplateParameter } from '../model
 import mongoose from 'mongoose';
 
 const PYTHON_API_BASE_URL = process.env.PYTHON_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
-const TEMPLATE_WEBHOOK_ENDPOINT = process.env.TEMPLATE_WEBHOOK_ENDPOINT || '';
+
+/**
+ * Base URL for the email webhook - the Python API calls this when the agent invokes the email tool.
+ * Priority: TEMPLATE_WEBHOOK_ENDPOINT > NGROK_BASE_URL > BACKEND_URL > localhost
+ * For local dev: use NGROK_BASE_URL (e.g. https://xxx.ngrok-free.app) so the Python API on Render can reach your backend.
+ */
+function getTemplateWebhookEndpoint(): string {
+  const explicit = process.env.TEMPLATE_WEBHOOK_ENDPOINT?.trim();
+  if (explicit) return explicit.endsWith('/api/v1') ? explicit : `${explicit.replace(/\/$/, '')}/api/v1`;
+  const ngrok = process.env.NGROK_BASE_URL?.trim();
+  if (ngrok) return ngrok.endsWith('/api/v1') ? ngrok : `${ngrok.replace(/\/$/, '')}/api/v1`;
+  const backend = process.env.BACKEND_URL?.trim();
+  if (backend) return backend.endsWith('/api/v1') ? backend : `${backend.replace(/\/$/, '')}/api/v1`;
+  const port = process.env.PORT || '5001';
+  return `http://localhost:${port}/api/v1`;
+}
 
 export interface CreateEmailTemplateRequest {
   name: string;
@@ -40,8 +55,9 @@ export class EmailTemplateService {
     if (!data.body_template || !data.body_template.trim()) {
       throw new AppError(422, 'VALIDATION_ERROR', 'body_template is required');
     }
-    if (!TEMPLATE_WEBHOOK_ENDPOINT || !TEMPLATE_WEBHOOK_ENDPOINT.trim()) {
-      throw new AppError(500, 'CONFIGURATION_ERROR', 'TEMPLATE_WEBHOOK_ENDPOINT is not configured in environment variables');
+    const webhookBaseUrl = getTemplateWebhookEndpoint();
+    if (!webhookBaseUrl) {
+      throw new AppError(500, 'CONFIGURATION_ERROR', 'Could not determine webhook URL. Set TEMPLATE_WEBHOOK_ENDPOINT, NGROK_BASE_URL, or BACKEND_URL in environment variables');
     }
     if (!Array.isArray(data.parameters)) {
       throw new AppError(422, 'VALIDATION_ERROR', 'parameters must be an array');
@@ -82,7 +98,7 @@ export class EmailTemplateService {
         description: p.description.trim(),
         required: p.required || false,
       })),
-      webhook_base_url: TEMPLATE_WEBHOOK_ENDPOINT.trim(),
+      webhook_base_url: webhookBaseUrl,
     };
 
     console.log('\n========== EMAIL TEMPLATE CREATION ==========');
@@ -110,7 +126,7 @@ export class EmailTemplateService {
         body_template: pythonResponse.body_template,
         parameters: pythonResponse.parameters,
         tool_id: pythonResponse.tool_id,
-        webhook_base_url: TEMPLATE_WEBHOOK_ENDPOINT.trim(),
+        webhook_base_url: webhookBaseUrl,
         created_at: pythonResponse.created_at,
       });
 
