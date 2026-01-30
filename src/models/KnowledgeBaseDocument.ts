@@ -3,6 +3,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IKnowledgeBaseDocument extends Document {
   id: string;                    // KBDoc_xxx
   document_id: string;            // SAME as id
+  linked_chatbot_kb_id: string | null;  // Links to ChatbotKnowledgeBase.kb_id (if exists)
 
   userId: mongoose.Types.ObjectId;
   name: string;                   // Human readable name
@@ -36,6 +37,11 @@ export interface IKnowledgeBaseDocument extends Document {
 const KnowledgeBaseDocumentSchema = new Schema<IKnowledgeBaseDocument>({
   id: { type: String, required: true, unique: true },
   document_id: { type: String, required: true, unique: true },
+  linked_chatbot_kb_id: { 
+    type: String, 
+    default: null,
+    index: true
+  },
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   name: { type: String, required: true },
   source_type: { 
@@ -75,5 +81,6 @@ const KnowledgeBaseDocumentSchema = new Schema<IKnowledgeBaseDocument>({
 KnowledgeBaseDocumentSchema.index({ userId: 1 });
 KnowledgeBaseDocumentSchema.index({ document_id: 1 });
 KnowledgeBaseDocumentSchema.index({ status: 1 });
+KnowledgeBaseDocumentSchema.index({ linked_chatbot_kb_id: 1 });
 
 export default mongoose.model<IKnowledgeBaseDocument>('KnowledgeBaseDocument', KnowledgeBaseDocumentSchema);

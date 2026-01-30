@@ -94,7 +94,7 @@ export class BatchCallingService {
       const phoneNumberId = String(data.phone_number_id).trim();
       
       // Format recipients with dynamic_variables structure
-      const formattedRecipients = data.recipients.map(recipient => {
+      const formattedRecipients = data.recipients.map((recipient, index) => {
         const formatted: any = {
           phone_number: recipient.phone_number,
           name: recipient.name
@@ -104,22 +104,40 @@ export class BatchCallingService {
           formatted.email = recipient.email;
         }
         
-        // Extract dynamic_variables from recipient (any fields that aren't phone_number, name, or email)
-        const dynamicVars: Record<string, any> = {};
-        Object.keys(recipient).forEach(key => {
-          if (key !== 'phone_number' && key !== 'name' && key !== 'email' && key !== 'dynamic_variables') {
-            dynamicVars[key] = (recipient as any)[key];
-          }
-        });
-        
-        // If dynamic_variables is explicitly provided, use it; otherwise use extracted vars
-        if (recipient.dynamic_variables) {
+        // PRIORITY: If dynamic_variables is explicitly provided from frontend, use it
+        if (recipient.dynamic_variables && typeof recipient.dynamic_variables === 'object') {
           formatted.dynamic_variables = recipient.dynamic_variables;
-        } else if (Object.keys(dynamicVars).length > 0) {
-          formatted.dynamic_variables = dynamicVars;
+          console.log(`[Batch Calling Service] ✅ Using explicit dynamic_variables for recipient ${index + 1}:`, formatted.dynamic_variables);
+        } else {
+          // Fallback: Extract dynamic_variables from recipient (any fields that aren't phone_number, name, or email)
+          const dynamicVars: Record<string, any> = {};
+          Object.keys(recipient).forEach(key => {
+            if (key !== 'phone_number' && key !== 'name' && key !== 'email' && key !== 'dynamic_variables') {
+              dynamicVars[key] = (recipient as any)[key];
+            }
+          });
+          
+          if (Object.keys(dynamicVars).length > 0) {
+            formatted.dynamic_variables = dynamicVars;
+            console.log(`[Batch Calling Service] ✅ Extracted dynamic_variables for recipient ${index + 1}:`, formatted.dynamic_variables);
+          } else {
+            console.log(`[Batch Calling Service] ⚠️  No dynamic_variables found for recipient ${index + 1}. Available keys:`, Object.keys(recipient));
+          }
         }
         
         return formatted;
+      });
+      
+      // Log formatted recipients to verify dynamic_variables are included
+      console.log('[Batch Calling Service] 📋 Formatted recipients with dynamic_variables:');
+      formattedRecipients.forEach((recipient, idx) => {
+        console.log(`  Recipient ${idx + 1}:`, {
+          name: recipient.name,
+          phone: recipient.phone_number,
+          email: recipient.email || 'N/A',
+          has_dynamic_variables: !!recipient.dynamic_variables,
+          dynamic_variables: recipient.dynamic_variables || {}
+        });
       });
       
       // Python/ElevenLabs API expects agent_phone_number_id (official API uses this key)
@@ -141,6 +159,34 @@ export class BatchCallingService {
         payload.ecommerce_credentials = data.ecommerce_credentials;
       }
       
+      // 🔥 COMPLETE PAYLOAD LOGGING - FULL DETAILS
+      console.log('\n========================================');
+      console.log('[Batch Calling Service] 🚀 COMPLETE BATCH CALL PAYLOAD:');
+      console.log('========================================');
+      console.log(JSON.stringify(payload, null, 2));
+      console.log('========================================');
+      console.log('[Batch Calling Service] Payload Summary:');
+      console.log(`  - Agent ID: ${payload.agent_id}`);
+      console.log(`  - Call Name: ${payload.call_name}`);
+      console.log(`  - Recipients Count: ${payload.recipients.length}`);
+      console.log(`  - Phone Number ID: ${payload.phone_number_id}`);
+      console.log(`  - Retry Count: ${payload.retry_count}`);
+      console.log(`  - Sender Email: ${payload.sender_email || 'N/A'}`);
+      console.log(`  - Has Ecommerce: ${!!payload.ecommerce_credentials}`);
+      console.log('\n[Batch Calling Service] Recipients Details:');
+      payload.recipients.forEach((recipient: any, idx: number) => {
+        console.log(`  Recipient ${idx + 1}:`);
+        console.log(`    - Name: ${recipient.name}`);
+        console.log(`    - Phone: ${recipient.phone_number}`);
+        console.log(`    - Email: ${recipient.email || 'N/A'}`);
+        if (recipient.dynamic_variables) {
+          console.log(`    - Dynamic Variables:`, JSON.stringify(recipient.dynamic_variables, null, 6));
+        } else {
+          console.log(`    - Dynamic Variables: NONE`);
+        }
+      });
+      console.log('========================================\n');
+      
       // Ensure phone_number_id is at the top level and is a valid string
       if (!payload.phone_number_id || payload.phone_number_id === 'undefined' || payload.phone_number_id === 'null') {
         console.error('[Batch Calling Service] ❌ phone_number_id is invalid:', payload.phone_number_id);
@@ -160,19 +206,6 @@ export class BatchCallingService {
           'Internal error: phone_number_id was not included in payload'
         );
       }
-
-      console.log('[Batch Calling Service] Request payload:', {
-        agent_id: payload.agent_id,
-        call_name: payload.call_name,
-        recipients_count: payload.recipients.length,
-        retry_count: payload.retry_count,
-        sender_email: payload.sender_email,
-        phone_number_id: payload.phone_number_id,
-        has_ecommerce: !!payload.ecommerce_credentials
-      });
-      
-      // Log the exact payload being sent
-      console.log('[Batch Calling Service] Full payload being sent to Python API:', JSON.stringify(payload, null, 2));
 
       // Make the request - ensure phone_number_id is definitely in the payload
       console.log('[Batch Calling Service] Making POST request to:', pythonUrl);
@@ -285,6 +318,7 @@ export class BatchCallingService {
   /**
    * Get batch job calls (individual call results)
    * Calls Python /api/v1/batch-calling/{job_id}/calls endpoint
+   * If endpoint doesn't exist (404), returns empty result gracefully
    */
   async getBatchJobCalls(
     jobId: string,
@@ -324,6 +358,18 @@ export class BatchCallingService {
       
       return response.data;
     } catch (error: any) {
+      // Handle 404 gracefully - endpoint might not be implemented yet
+      if (error.response?.status === 404) {
+        console.warn('[Batch Calling Service] ⚠️  Batch job calls endpoint not found (404). This endpoint may not be implemented in the Python API yet.');
+        console.warn('[Batch Calling Service] Returning empty result. Endpoint:', `${COMM_API_URL}/api/v1/batch-calling/${jobId}/calls`);
+        
+        // Return empty result instead of throwing error
+        return {
+          calls: [],
+          cursor: undefined
+        };
+      }
+      
       console.error('[Batch Calling Service] ❌ Failed to get batch job calls:', error.response?.data || error.message);
       throw new AppError(
         error.response?.status || 500,

@@ -54,10 +54,61 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
     }
     // Priority 2: Resolve knowledge base IDs from Settings to collection names
     else if (settings.defaultKnowledgeBaseIds && settings.defaultKnowledgeBaseIds.length > 0) {
-      const knowledgeBases = await KnowledgeBase.find({ 
-        _id: { $in: settings.defaultKnowledgeBaseIds } 
-      }).select('collectionName').lean();
-      collectionNames = knowledgeBases.map((kb: any) => kb.collectionName).filter(Boolean);
+      const ChatbotKnowledgeBase = (await import('../models/ChatbotKnowledgeBase')).default;
+      const resolvedNames: string[] = [];
+      
+      // Separate IDs by type
+      const chatbotKbIds = settings.defaultKnowledgeBaseIds.filter((id: string) => id.startsWith('kb_'));
+      const voiceAgentKbIds = settings.defaultKnowledgeBaseIds.filter((id: string) => id.startsWith('KBDoc_'));
+      const legacyKbIds = settings.defaultKnowledgeBaseIds.filter((id: string) => 
+        !id.startsWith('kb_') && !id.startsWith('KBDoc_')
+      );
+      
+      // Resolve ChatbotKnowledgeBase IDs
+      if (chatbotKbIds.length > 0) {
+        const chatbotKBs = await ChatbotKnowledgeBase.find({ 
+          kb_id: { $in: chatbotKbIds },
+          userId: userIdObjectId 
+        }).select('collection_name').lean();
+        resolvedNames.push(...chatbotKBs.map((kb: any) => kb.collection_name).filter(Boolean));
+      }
+      
+      // Resolve Voice Agent KB IDs (find linked ChatbotKnowledgeBase)
+      if (voiceAgentKbIds.length > 0) {
+        const KnowledgeBaseDocument = (await import('../models/KnowledgeBaseDocument')).default;
+        const voiceAgentKBs = await KnowledgeBaseDocument.find({ 
+          document_id: { $in: voiceAgentKbIds },
+          userId: userIdObjectId 
+        }).select('linked_chatbot_kb_id').lean();
+        
+        const linkedChatbotKbIds = voiceAgentKBs
+          .map((kb: any) => kb.linked_chatbot_kb_id)
+          .filter(Boolean);
+        
+        if (linkedChatbotKbIds.length > 0) {
+          const chatbotKBs = await ChatbotKnowledgeBase.find({ 
+            kb_id: { $in: linkedChatbotKbIds },
+            userId: userIdObjectId 
+          }).select('collection_name').lean();
+          resolvedNames.push(...chatbotKBs.map((kb: any) => kb.collection_name).filter(Boolean));
+        }
+      }
+      
+      // Resolve legacy KnowledgeBase IDs
+      if (legacyKbIds.length > 0) {
+        const objectIds = legacyKbIds
+          .filter((id: string) => mongoose.Types.ObjectId.isValid(id))
+          .map((id: string) => new mongoose.Types.ObjectId(id));
+        
+        if (objectIds.length > 0) {
+          const knowledgeBases = await KnowledgeBase.find({ 
+            _id: { $in: objectIds } 
+          }).select('collectionName').lean();
+          resolvedNames.push(...knowledgeBases.map((kb: any) => kb.collectionName).filter(Boolean));
+        }
+      }
+      
+      collectionNames = resolvedNames;
       console.log('[Social Webhook] ✅ Resolved knowledge base IDs to collection names:', collectionNames);
     }
     // Priority 3: Use single knowledge base name from Settings (legacy format)

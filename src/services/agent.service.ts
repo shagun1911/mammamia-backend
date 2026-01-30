@@ -147,8 +147,8 @@ export class AgentService {
       
       console.log(`[Agent Service] Calling Python API: ${pythonUrl}`);
       
-      // Use greeting_message as first_message if provided, otherwise use first_message
-      const firstMessageToSend = data.greeting_message || data.first_message;
+      // Python API only accepts first_message, not greeting_message
+      const firstMessageToSend = data.first_message || 'Hello! How can I help you today?';
       
       const requestBody = {
         name: data.name,
@@ -157,8 +157,7 @@ export class AgentService {
         language: data.language,
         knowledge_base_ids: data.knowledge_base_ids,
         tool_ids: toolIds,
-        ...(data.voice_id && { voice_id: data.voice_id }),
-        ...(data.greeting_message && { greeting_message: data.greeting_message })
+        ...(data.voice_id && { voice_id: data.voice_id })
       };
 
       console.log(`[Agent Service] Request body:`, JSON.stringify(requestBody, null, 2));
@@ -184,13 +183,14 @@ export class AgentService {
       const userObjectId = new mongoose.Types.ObjectId(userId);
 
       // Store agent configuration in database
+      // Store first_message as both first_message and greeting_message (for backward compatibility)
       const agent = await Agent.create({
         userId: userObjectId,
         agent_id: response.data.agent_id,
         name: data.name,
-        first_message: data.first_message,
+        first_message: firstMessageToSend,
         system_prompt: data.system_prompt,
-        greeting_message: data.greeting_message || '',
+        greeting_message: firstMessageToSend, // Store same as first_message for backward compatibility
         language: data.language,
         voice_id: data.voice_id,
         escalationRules: data.escalationRules || [],
@@ -314,8 +314,8 @@ export class AgentService {
       
       console.log(`[Agent Service] Calling Python API: ${pythonUrl}`);
       
-      // Use greeting_message as first_message if provided, otherwise use first_message
-      const firstMessageToSend = data.greeting_message || data.first_message;
+      // Python API only accepts first_message, not greeting_message
+      const firstMessageToSend = data.first_message || agent.first_message || 'Hello! How can I help you today?';
       
       const requestBody = {
         first_message: firstMessageToSend,
@@ -323,8 +323,7 @@ export class AgentService {
         language: data.language,
         knowledge_base_ids: data.knowledge_base_ids,
         tool_ids: toolIds, // Static tool IDs from env
-        ...(data.voice_id && { voice_id: data.voice_id }),
-        ...(data.greeting_message && { greeting_message: data.greeting_message })
+        ...(data.voice_id && { voice_id: data.voice_id })
       };
 
       console.log(`[Agent Service] Request body:`, JSON.stringify(requestBody, null, 2));
@@ -347,16 +346,17 @@ export class AgentService {
       }
 
       // Update agent configuration in database
-      agent.first_message = data.first_message;
+      // Update first_message and also set greeting_message to same value (for backward compatibility)
+      if (data.first_message !== undefined) {
+        agent.first_message = data.first_message;
+        agent.greeting_message = data.first_message; // Keep in sync for backward compatibility
+      }
       agent.system_prompt = data.system_prompt;
       agent.language = data.language;
       agent.knowledge_base_ids = data.knowledge_base_ids;
       agent.tool_ids = toolIds; // Update with static tool IDs from env
       if (data.voice_id !== undefined) {
         agent.voice_id = data.voice_id;
-      }
-      if (data.greeting_message !== undefined) {
-        agent.greeting_message = data.greeting_message;
       }
       if (data.escalationRules !== undefined) {
         agent.escalationRules = data.escalationRules;

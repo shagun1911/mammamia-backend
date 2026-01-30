@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import axios from 'axios';
 import KnowledgeBase from '../models/KnowledgeBase';
 import KnowledgeBaseDocument from '../models/KnowledgeBaseDocument';
+import ChatbotKnowledgeBase from '../models/ChatbotKnowledgeBase';
 import FAQ from '../models/FAQ';
 import Website from '../models/Website';
 import File from '../models/File';
@@ -46,9 +47,16 @@ export class KnowledgeBaseService {
     // Prepare KB name
     const kbName = name || (source_type === 'file' ? file?.originalname : (source_type === 'url' ? url : 'Untitled Document'));
     
-    // Generate collection name for RAG API (use user's default collection or create one)
-    // For RAG API, we need a collection name - use a default collection per user
-    const collectionName = `user_${userId}_kb`;
+    // Generate collection name from KB name (sanitize for Python/Chroma) - same logic as legacy create method
+    // This ensures the collection name matches what's actually used in the RAG API
+    const collectionName = kbName.trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+    
+    // Determine if we should create ChatbotKnowledgeBase (before API calls)
+    const shouldCreateChatbotKB = (source_type === 'url' && url) || 
+                                    (source_type === 'file' && file && 
+                                     (file.mimetype === 'application/pdf' || 
+                                      file.mimetype?.includes('spreadsheet') || 
+                                      file.mimetype?.includes('excel')));
     
     // 2. Call both APIs simultaneously
     const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/knowledge-base/ingest`;
@@ -143,7 +151,7 @@ export class KnowledgeBaseService {
       console.log('================================================\n');
 
       // Execute both API calls in parallel
-      const [pythonResponse, _] = await Promise.allSettled([
+      const [pythonResponse, ragResponse] = await Promise.allSettled([
         axios.post(pythonUrl, pythonFormData, {
           headers: pythonFormData.getHeaders(),
           timeout: source_type === 'file' ? 300000 : 30000, // 5 minutes for file upload, 30s for others
@@ -159,22 +167,32 @@ export class KnowledgeBaseService {
       const pythonResponseData = pythonResponse.value.data;
       console.log(`[KB Service] Python API response:`, pythonResponseData);
 
-      // Store in database using document_id from Python API response
+      // Check if RAG API succeeded
+      const ragApiSucceeded = ragResponse.status === 'fulfilled';
+      if (!ragApiSucceeded && shouldCreateChatbotKB) {
+        console.warn(`[KB Service] ⚠️  RAG API ingestion failed, but will still create ChatbotKnowledgeBase record`);
+      }
+
+      // Generate unique IDs for linking
+      const documentId = pythonResponseData.document_id || pythonResponseData.id;
+      const chatbotKbId = `kb_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
       // Handle folder_path - Python API returns it as array, keep as array or convert to string for storage
-      // For storage, we'll keep it flexible - store as string if it's a path, or null if empty array
       const folderPath = Array.isArray(pythonResponseData.folder_path) 
         ? (pythonResponseData.folder_path.length > 0 ? pythonResponseData.folder_path.join('/') : null)
         : (pythonResponseData.folder_path || null);
 
-      const doc = await KnowledgeBaseDocument.create({
-        id: pythonResponseData.document_id || pythonResponseData.id,
-        document_id: pythonResponseData.document_id || pythonResponseData.id, // Use document_id from Python API
+      // Store Python API response in KnowledgeBaseDocument (for voice agents)
+      const voiceAgentDoc = await KnowledgeBaseDocument.create({
+        id: documentId,
+        document_id: documentId,
+        linked_chatbot_kb_id: shouldCreateChatbotKB ? chatbotKbId : null,
         userId: userIdObjectId,
         name: pythonResponseData.name || kbName,
         source_type: pythonResponseData.source_type || source_type,
-        folder_id: parent_folder_id || null, // Keep parent_folder_id in DB for reference, but don't send to Python API
+        folder_id: parent_folder_id || null,
         folder_path: folderPath,
-        status: 'ready', // Python API creates it as ready
+        status: 'ready',
         source_payload: {
           text: source_type === 'text' ? text : undefined,
           url: source_type === 'url' ? url : undefined,
@@ -187,17 +205,62 @@ export class KnowledgeBaseService {
           embedding_model: 'text-embedding-3-small',
           vector_store: 'chroma',
         },
-        metadata: {
-          rag_collection_name: collectionName, // Store RAG collection name for reference
-        },
+        metadata: {},
         created_at_unix: nowUnix,
         updated_at_unix: nowUnix,
       });
 
-      console.log(`[KB Service] ✅ Document created in both RAG API and Python API`);
-      console.log(`[KB Service] ✅ Document saved to database: ${doc.document_id}`);
+      console.log(`[KB Service] ✅ Voice Agent KB saved: ${voiceAgentDoc.document_id}`);
 
-      return doc;
+      // Store RAG API response in ChatbotKnowledgeBase (for chatbot usage)
+      let chatbotDoc = null;
+      if (shouldCreateChatbotKB) {
+        try {
+          chatbotDoc = await ChatbotKnowledgeBase.create({
+            kb_id: chatbotKbId,
+            linked_kb_id: documentId,
+            userId: userIdObjectId,
+            name: kbName,
+            collection_name: collectionName,
+            source_type: source_type,
+            source_payload: {
+              text: source_type === 'text' ? text : undefined,
+              url: source_type === 'url' ? url : undefined,
+              file_name: source_type === 'file' ? file?.originalname : undefined,
+              file_type: source_type === 'file' ? file?.mimetype : undefined,
+              file_size_bytes: source_type === 'file' ? file?.size : undefined,
+            },
+            status: ragApiSucceeded ? 'ready' : 'failed',
+            metadata: {},
+            created_at_unix: nowUnix,
+            updated_at_unix: nowUnix,
+          });
+          console.log(`[KB Service] ✅ Chatbot KB saved: ${chatbotDoc.kb_id} (collection: ${collectionName})`);
+        } catch (chatbotError: any) {
+          console.error(`[KB Service] ⚠️  Failed to create ChatbotKnowledgeBase:`, chatbotError.message);
+          // Don't throw - voice agent KB was created successfully
+        }
+      } else {
+        console.log(`[KB Service] ⚠️  Skipping ChatbotKnowledgeBase creation (source_type: ${source_type} not supported by RAG API)`);
+      }
+
+      console.log(`[KB Service] ✅ Document created in both RAG API and Python API`);
+      console.log(`[KB Service] ✅ Voice Agent KB: ${voiceAgentDoc.document_id}`);
+      console.log(`[KB Service] ✅ Chatbot KB: ${chatbotDoc ? chatbotDoc.kb_id : 'N/A (not created)'}`);
+
+      // Link ChatbotKnowledgeBase to Settings if it was created
+      if (chatbotDoc) {
+        try {
+          await this.linkChatbotKBToSettings(userId, chatbotDoc.kb_id, collectionName);
+          console.log(`[KB Service] ✅ Linked ChatbotKnowledgeBase to Settings`);
+        } catch (linkError: any) {
+          console.error(`[KB Service] ⚠️  Failed to link ChatbotKnowledgeBase to Settings:`, linkError.message);
+          // Don't throw - KB creation succeeded
+        }
+      }
+
+      // Return voice agent document (for backward compatibility)
+      return voiceAgentDoc;
     } catch (error: any) {
       console.error('[KB Service] Failed to create knowledge base in Python API:', error);
       console.error('[KB Service] Python API URL attempted:', pythonUrl);
@@ -472,12 +535,52 @@ export class KnowledgeBaseService {
     let doc = await KnowledgeBaseDocument.findOne({ document_id });
 
     if (doc) {
-      // 1. Remove DB record
+      // 1. Delete linked ChatbotKnowledgeBase if exists
+      if (doc.linked_chatbot_kb_id) {
+        try {
+          await ChatbotKnowledgeBase.deleteOne({ kb_id: doc.linked_chatbot_kb_id });
+          console.log(`[KB Service] ✅ Deleted linked ChatbotKnowledgeBase: ${doc.linked_chatbot_kb_id}`);
+        } catch (error: any) {
+          console.error(`[KB Service] ⚠️  Failed to delete linked ChatbotKnowledgeBase:`, error.message);
+        }
+      }
+
+      // 2. Remove DB record
       await KnowledgeBaseDocument.deleteOne({ document_id });
 
-      // TODO: 2. Delete vectors from vector store (needs implementation)
-      // TODO: 3. Remove file from storage (if file)
-      // TODO: 4. Detach from all agents (needs implementation)
+      // 3. Clean up Settings references
+      try {
+        const Settings = (await import('../models/Settings')).default;
+        const settings = await Settings.findOne({ userId: doc.userId });
+        if (settings) {
+          // Remove from defaultKnowledgeBaseIds if present
+          if (settings.defaultKnowledgeBaseIds) {
+            const updatedIds = settings.defaultKnowledgeBaseIds.filter(
+              (id: string) => id !== document_id && id !== doc.linked_chatbot_kb_id
+            );
+            await Settings.updateOne(
+              { userId: doc.userId },
+              { $set: { defaultKnowledgeBaseIds: updatedIds } }
+            );
+          }
+          // Remove from knowledge_base_ids if present
+          if (settings.knowledge_base_ids) {
+            const updatedKbIds = settings.knowledge_base_ids.filter(
+              (id: string) => id !== document_id && id !== doc.linked_chatbot_kb_id
+            );
+            await Settings.updateOne(
+              { userId: doc.userId },
+              { $set: { knowledge_base_ids: updatedKbIds } }
+            );
+          }
+        }
+      } catch (error: any) {
+        console.error(`[KB Service] ⚠️  Failed to clean up Settings references:`, error.message);
+      }
+
+      // TODO: 4. Delete vectors from vector store (needs implementation)
+      // TODO: 5. Remove file from storage (if file)
+      // TODO: 6. Detach from all agents (needs implementation)
 
       return { success: true, message: `Document ${document_id} deleted successfully` };
     } else {
@@ -719,7 +822,14 @@ export class KnowledgeBaseService {
         console.log(`[KB Service] ✅ Empty collection created in Python RAG`);
       }
       
-      // Step 2: Save KB record to MongoDB
+      // Step 2: Save KB records to MongoDB (both collections)
+      const nowUnix = Math.floor(Date.now() / 1000);
+      const userIdObjectId = new mongoose.Types.ObjectId(userId);
+      
+      // Generate unique IDs for linking
+      const chatbotKbId = `kb_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Save legacy KnowledgeBase (for backward compatibility)
       const kb = await KnowledgeBase.create({ 
         userId,
         name,
@@ -727,7 +837,36 @@ export class KnowledgeBaseService {
         isDefault: false // Will be updated below if first KB
       });
       
-      console.log(`[KB Service] ✅ KB record saved to MongoDB: ${kb._id}`);
+      console.log(`[KB Service] ✅ Legacy KB record saved to MongoDB: ${kb._id}`);
+      
+      // Save ChatbotKnowledgeBase (for chatbot usage)
+      if (hasDataSources) {
+        try {
+          const chatbotKB = await ChatbotKnowledgeBase.create({
+            kb_id: chatbotKbId,
+            linked_kb_id: null, // Legacy KBs don't have voice agent KBs
+            userId: userIdObjectId,
+            name: name,
+            collection_name: collectionName,
+            source_type: hasUrlLinks ? 'url' : 'file',
+            source_payload: {
+              url: hasUrlLinks ? (dataSources.urlLinks || []).join(',') : undefined,
+              file_name: hasPdfFiles || hasExcelFiles ? 'Multiple files' : undefined,
+              file_type: hasPdfFiles ? 'application/pdf' : (hasExcelFiles ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : undefined),
+            },
+            status: 'ready',
+            metadata: {
+              legacy_kb_id: kb._id.toString(),
+            },
+            created_at_unix: nowUnix,
+            updated_at_unix: nowUnix,
+          });
+          console.log(`[KB Service] ✅ ChatbotKnowledgeBase saved: ${chatbotKB.kb_id} (collection: ${collectionName})`);
+        } catch (chatbotError: any) {
+          console.error(`[KB Service] ⚠️  Failed to create ChatbotKnowledgeBase:`, chatbotError.message);
+          // Don't throw - legacy KB was created successfully
+        }
+      }
       
       // Step 3: Auto-link KB to Settings
       await this.linkKBToSettings(userId, kb._id.toString(), collectionName);
@@ -753,7 +892,81 @@ export class KnowledgeBaseService {
   }
 
   /**
-   * Link a knowledge base to user's settings
+   * Link a ChatbotKnowledgeBase to user's settings
+   * 
+   * This ensures:
+   * - autoReplyEnabled is set to true
+   * - KB is added to defaultKnowledgeBaseNames array (no duplicates)
+   * - KB ID is added to defaultKnowledgeBaseIds array (no duplicates)
+   * - Legacy defaultKnowledgeBaseName is set (for backward compatibility)
+   * - First KB becomes the default
+   */
+  private async linkChatbotKBToSettings(userId: string, kbId: string, collectionName: string): Promise<void> {
+    try {
+      const Settings = (await import('../models/Settings')).default;
+      let settings = await Settings.findOne({ userId });
+      
+      if (settings) {
+        // Get existing KB names array
+        const existingNames = Array.isArray(settings.defaultKnowledgeBaseNames) 
+          ? [...settings.defaultKnowledgeBaseNames] 
+          : [];
+        
+        // Get existing KB IDs array
+        const existingIds = Array.isArray(settings.defaultKnowledgeBaseIds) 
+          ? [...settings.defaultKnowledgeBaseIds] 
+          : [];
+        
+        // Add new KB if not already present
+        const nameAlreadyLinked = existingNames.includes(collectionName);
+        const idAlreadyLinked = existingIds.some((id: any) => id.toString() === kbId);
+        
+        if (!nameAlreadyLinked) {
+          existingNames.push(collectionName);
+        }
+        
+        if (!idAlreadyLinked) {
+          existingIds.push(kbId);
+        }
+        
+        // Determine if this is the first KB (should be default)
+        const isFirstKB = existingNames.length === 1;
+        
+        // Update Settings
+        const updateData: any = {
+          autoReplyEnabled: true,
+          defaultKnowledgeBaseNames: existingNames,
+          defaultKnowledgeBaseIds: existingIds
+        };
+        
+        // Set legacy single-value fields (for backward compatibility)
+        if (isFirstKB || !settings.defaultKnowledgeBaseName) {
+          updateData.defaultKnowledgeBaseName = collectionName;
+          updateData.defaultKnowledgeBaseId = kbId;
+        }
+        
+        await Settings.updateOne({ userId }, { $set: updateData });
+        console.log(`[KB Service] ✅ Linked ChatbotKnowledgeBase ${kbId} (collection: ${collectionName}) to Settings`);
+      } else {
+        // Create new Settings if doesn't exist
+        await Settings.create({
+          userId,
+          autoReplyEnabled: true,
+          defaultKnowledgeBaseNames: [collectionName],
+          defaultKnowledgeBaseIds: [kbId],
+          defaultKnowledgeBaseName: collectionName,
+          defaultKnowledgeBaseId: kbId
+        });
+        console.log(`[KB Service] ✅ Created new Settings and linked ChatbotKnowledgeBase ${kbId} (collection: ${collectionName})`);
+      }
+    } catch (error: any) {
+      console.error(`[KB Service] ⚠️  Failed to link ChatbotKnowledgeBase to Settings:`, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Link a knowledge base to user's settings (legacy method for KnowledgeBase model)
    * 
    * This ensures:
    * - autoReplyEnabled is set to true

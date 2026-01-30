@@ -78,33 +78,42 @@ export class PythonRagService {
         excelFiles: params.excelFiles?.length || 0
       });
       
+      // Create FormData matching the RAG API format exactly:
+      // POST /rag/data_ingestion
+      // Content-Type: multipart/form-data
+      // Fields: collection_name, url_links, pdf_files, excel_files
       const formData = new FormData();
       formData.append('collection_name', params.collectionName);
+      console.log(`[Python RAG] Collection name: ${params.collectionName}`);
 
-      // Add URL links as comma-separated string
+      // Add URL links as comma-separated string (or single URL string)
+      // Format: url_links=https://example.com (single) or url_links=url1,url2,url3 (multiple)
       if (params.urlLinks && params.urlLinks.length > 0) {
         const urlLinksStr = params.urlLinks.join(',');
         formData.append('url_links', urlLinksStr);
-        console.log(`[Python RAG] Adding URL links: ${urlLinksStr}`);
+        console.log(`[Python RAG] Adding URL links (url_links field): ${urlLinksStr}`);
       }
 
       // Add PDF files
+      // Format: pdf_files=file1.pdf, pdf_files=file2.pdf (multiple files)
       if (params.pdfFiles && params.pdfFiles.length > 0) {
         params.pdfFiles.forEach((fileBuffer, index) => {
           formData.append('pdf_files', fileBuffer, `file_${index}.pdf`);
         });
-        console.log(`[Python RAG] Adding ${params.pdfFiles.length} PDF files`);
+        console.log(`[Python RAG] Adding ${params.pdfFiles.length} PDF file(s) (pdf_files field)`);
       }
 
       // Add Excel files
+      // Format: excel_files=file1.xlsx, excel_files=file2.xlsx (multiple files)
       if (params.excelFiles && params.excelFiles.length > 0) {
         params.excelFiles.forEach((fileBuffer, index) => {
           formData.append('excel_files', fileBuffer, `file_${index}.xlsx`);
         });
-        console.log(`[Python RAG] Adding ${params.excelFiles.length} Excel files`);
+        console.log(`[Python RAG] Adding ${params.excelFiles.length} Excel file(s) (excel_files field)`);
       }
 
       console.log(`[Python RAG] Sending POST request to: ${url}`);
+      console.log(`[Python RAG] Content-Type: multipart/form-data`);
       
       const response = await axios.post(
         url,

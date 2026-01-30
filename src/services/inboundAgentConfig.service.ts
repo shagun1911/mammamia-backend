@@ -61,7 +61,10 @@ export class InboundAgentConfigService {
     // Determine voice_id (prefer customVoiceId if set, otherwise use selectedVoice)
     const voice_id = phoneSettings?.customVoiceId || phoneSettings?.selectedVoice || 'adam';
     
-    // Get collections from settings (defaultKnowledgeBaseNames)
+    // Get knowledge_base_ids from settings (for voice agents - these are document_ids)
+    const knowledge_base_ids = settings?.knowledge_base_ids || [];
+    
+    // Get collections from settings (defaultKnowledgeBaseNames) - legacy support
     const collections = settings?.defaultKnowledgeBaseNames || [];
     
     // Get language from phone settings first, fallback to AI behavior
@@ -114,7 +117,8 @@ export class InboundAgentConfigService {
           
           // Always update these fields from latest settings
           config.voice_id = voice_id;
-          config.collections = collections;
+          config.knowledge_base_ids = knowledge_base_ids;
+          config.collections = collections; // Legacy support
           config.agent_instruction = agent_instruction;
           
           // Update greeting_message from phone settings (when user explicitly sets it)
@@ -140,7 +144,8 @@ export class InboundAgentConfigService {
             userId,
             calledNumber,
             voice_id,
-            collections,
+            knowledge_base_ids,
+            collections, // Legacy support
             language,
             agent_instruction,
             greeting_message
@@ -329,7 +334,8 @@ export class InboundAgentConfigService {
       
       // Get default values
       const voice_id = phoneSettings?.customVoiceId || phoneSettings?.selectedVoice || 'adam';
-      const collections = settings?.defaultKnowledgeBaseNames || [];
+      const knowledge_base_ids = settings?.knowledge_base_ids || [];
+      const collections = settings?.defaultKnowledgeBaseNames || []; // Legacy support
       const language = phoneSettings?.language || aiBehavior?.voiceAgent?.language || 'en';
       const agent_instruction = aiBehavior?.voiceAgent?.systemPrompt || '';
       const greeting_message = phoneSettings?.greetingMessage || 'Hello! How can I help you today?';
@@ -338,7 +344,8 @@ export class InboundAgentConfigService {
         userId,
         calledNumber, // Empty string for chatbot
         voice_id,
-        collections,
+        knowledge_base_ids,
+        collections, // Legacy support
         language,
         agent_instruction,
         greeting_message,
