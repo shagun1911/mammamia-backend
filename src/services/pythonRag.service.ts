@@ -2,8 +2,8 @@ import axios from 'axios';
 import FormData from 'form-data';
 import { AppError } from '../middleware/error.middleware';
 
-// Remove trailing slash from URL if present
-const PYTHON_RAG_BASE_URL = 'https://keplerov1-python-2.onrender.com';
+// Use RAG_API_URL environment variable, fallback to hardcoded URL for backward compatibility
+const PYTHON_RAG_BASE_URL = process.env.RAG_API_URL || 'https://keplerov1-python-2.onrender.com';
 
 /**
  * Python RAG Service

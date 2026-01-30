@@ -41,86 +41,138 @@ export class KnowledgeBaseService {
     const userIdObjectId = new mongoose.Types.ObjectId(userId);
     
     console.log(`[KB Service] ingestDocument - userId string: ${userId}, ObjectId: ${userIdObjectId}`);
-    console.log(`[KB Service] Calling Python API to create knowledge base...`);
+    console.log(`[KB Service] Calling both RAG API and Python API simultaneously...`);
 
-    // 2. Call Python API to create knowledge base
-    // Always use multipart/form-data as per Python API spec
+    // Prepare KB name
+    const kbName = name || (source_type === 'file' ? file?.originalname : (source_type === 'url' ? url : 'Untitled Document'));
+    
+    // Generate collection name for RAG API (use user's default collection or create one)
+    // For RAG API, we need a collection name - use a default collection per user
+    const collectionName = `user_${userId}_kb`;
+    
+    // 2. Call both APIs simultaneously
     const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/knowledge-base/ingest`;
+    
     try {
-      
       const FormData = require('form-data');
-      const formData = new FormData();
       
-      // Prepare KB name
-      const kbName = name || (source_type === 'file' ? file?.originalname : (source_type === 'url' ? url : 'Untitled Document'));
+      // Prepare Python API call (for calling agents) - DO NOT send parent_folder_id
+      const pythonFormData = new FormData();
+      pythonFormData.append('source_type', source_type);
+      pythonFormData.append('name', kbName);
+      // Don't append parent_folder_id - leave it out completely
       
-      // Always send all fields as form data (matching Swagger spec)
-      // Swagger shows: -F 'source_type=url' -F 'name=TEST_KB' -F 'parent_folder_id=' -F 'text=string' -F 'url=https://...' -F 'file='
-      formData.append('source_type', source_type);
-      formData.append('name', kbName);
-      formData.append('parent_folder_id', parent_folder_id || '');
-      
-      // Add source-specific fields (send empty string for fields not used)
-      // For file field, we'll append empty Buffer when not used to match Swagger spec
+      // Add source-specific fields
       if (source_type === 'text') {
-        formData.append('text', text || '');
-        formData.append('url', '');
-        formData.append('file', Buffer.from(''), { filename: '', contentType: 'application/octet-stream' });
+        pythonFormData.append('text', text || '');
+        pythonFormData.append('url', '');
+        pythonFormData.append('file', Buffer.from(''), { filename: '', contentType: 'application/octet-stream' });
       } else if (source_type === 'url') {
-        formData.append('text', '');
-        formData.append('url', url || '');
-        formData.append('file', Buffer.from(''), { filename: '', contentType: 'application/octet-stream' });
+        pythonFormData.append('text', '');
+        pythonFormData.append('url', url || '');
+        pythonFormData.append('file', Buffer.from(''), { filename: '', contentType: 'application/octet-stream' });
       } else if (source_type === 'file' && file) {
-        formData.append('text', '');
-        formData.append('url', '');
-        formData.append('file', file.buffer, {
+        pythonFormData.append('text', '');
+        pythonFormData.append('url', '');
+        pythonFormData.append('file', file.buffer, {
           filename: file.originalname,
           contentType: file.mimetype,
         });
       } else {
-        // Fallback
-        formData.append('text', '');
-        formData.append('url', '');
-        formData.append('file', Buffer.from(''), { filename: '', contentType: 'application/octet-stream' });
+        pythonFormData.append('text', '');
+        pythonFormData.append('url', '');
+        pythonFormData.append('file', Buffer.from(''), { filename: '', contentType: 'application/octet-stream' });
       }
 
+      // Prepare RAG API call (for chatbot usage)
+      const ragApiPromise = (async () => {
+        try {
+          if (source_type === 'url' && url) {
+            // Call RAG API with URL
+            await pythonRagService.ingestData({
+              collectionName: collectionName,
+              urlLinks: [url],
+            });
+            console.log(`[KB Service] ✅ RAG API ingestion completed for URL`);
+          } else if (source_type === 'file' && file) {
+            // Determine file type and call RAG API
+            const isPdf = file.mimetype === 'application/pdf';
+            const isExcel = file.mimetype?.includes('spreadsheet') || 
+                          file.mimetype?.includes('excel') ||
+                          file.mimetype?.includes('vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            
+            if (isPdf) {
+              await pythonRagService.ingestData({
+                collectionName: collectionName,
+                pdfFiles: [file.buffer],
+              });
+              console.log(`[KB Service] ✅ RAG API ingestion completed for PDF`);
+            } else if (isExcel) {
+              await pythonRagService.ingestData({
+                collectionName: collectionName,
+                excelFiles: [file.buffer],
+              });
+              console.log(`[KB Service] ✅ RAG API ingestion completed for Excel`);
+            } else {
+              console.log(`[KB Service] ⚠️  File type ${file.mimetype} not supported by RAG API, skipping RAG ingestion`);
+            }
+          } else if (source_type === 'text' && text) {
+            // RAG API doesn't support direct text ingestion, skip
+            console.log(`[KB Service] ⚠️  Text ingestion not supported by RAG API, skipping RAG ingestion`);
+          }
+        } catch (ragError: any) {
+          console.error(`[KB Service] ⚠️  RAG API ingestion failed:`, ragError.message);
+          // Don't throw - continue with Python API
+        }
+      })();
+
       // Log the payload being sent
-      console.log('\n========== KB CREATION - PAYLOAD ==========');
-      console.log(`[KB Service] Endpoint: ${pythonUrl}`);
-      console.log(`[KB Service] Method: POST`);
+      console.log('\n========== KB CREATION - DUAL API CALL ==========');
+      console.log(`[KB Service] Python API Endpoint: ${pythonUrl}`);
+      console.log(`[KB Service] RAG API Collection: ${collectionName}`);
+      console.log(`[KB Service] Method: POST (both APIs)`);
       console.log(`[KB Service] Content-Type: multipart/form-data`);
       console.log(`[KB Service] Payload:`, {
         source_type: source_type,
         name: kbName,
-        parent_folder_id: parent_folder_id || '',
+        parent_folder_id: 'NOT SENT (removed)',
         text: source_type === 'text' ? (text ? `${text.substring(0, 50)}...` : '') : '',
         url: source_type === 'url' ? (url || '') : '',
         file: source_type === 'file' ? (file ? `${file.originalname} (${file.size} bytes)` : '') : ''
       });
-      console.log('==========================================\n');
+      console.log('================================================\n');
 
-      const response = await axios.post(pythonUrl, formData, {
-        headers: formData.getHeaders(),
-        timeout: source_type === 'file' ? 300000 : 30000, // 5 minutes for file upload, 30s for others
-      });
+      // Execute both API calls in parallel
+      const [pythonResponse, _] = await Promise.allSettled([
+        axios.post(pythonUrl, pythonFormData, {
+          headers: pythonFormData.getHeaders(),
+          timeout: source_type === 'file' ? 300000 : 30000, // 5 minutes for file upload, 30s for others
+        }),
+        ragApiPromise
+      ]);
 
-      const pythonResponse = response.data;
-      console.log(`[KB Service] Python API response:`, pythonResponse);
+      // Handle Python API response
+      if (pythonResponse.status === 'rejected') {
+        throw pythonResponse.reason;
+      }
+
+      const pythonResponseData = pythonResponse.value.data;
+      console.log(`[KB Service] Python API response:`, pythonResponseData);
 
       // Store in database using document_id from Python API response
       // Handle folder_path - Python API returns it as array, keep as array or convert to string for storage
       // For storage, we'll keep it flexible - store as string if it's a path, or null if empty array
-      const folderPath = Array.isArray(pythonResponse.folder_path) 
-        ? (pythonResponse.folder_path.length > 0 ? pythonResponse.folder_path.join('/') : null)
-        : (pythonResponse.folder_path || null);
+      const folderPath = Array.isArray(pythonResponseData.folder_path) 
+        ? (pythonResponseData.folder_path.length > 0 ? pythonResponseData.folder_path.join('/') : null)
+        : (pythonResponseData.folder_path || null);
 
       const doc = await KnowledgeBaseDocument.create({
-        id: pythonResponse.document_id || pythonResponse.id,
-        document_id: pythonResponse.document_id || pythonResponse.id, // Use document_id from Python API
+        id: pythonResponseData.document_id || pythonResponseData.id,
+        document_id: pythonResponseData.document_id || pythonResponseData.id, // Use document_id from Python API
         userId: userIdObjectId,
-        name: pythonResponse.name || kbName,
-        source_type: pythonResponse.source_type || source_type,
-        folder_id: parent_folder_id || null,
+        name: pythonResponseData.name || kbName,
+        source_type: pythonResponseData.source_type || source_type,
+        folder_id: parent_folder_id || null, // Keep parent_folder_id in DB for reference, but don't send to Python API
         folder_path: folderPath,
         status: 'ready', // Python API creates it as ready
         source_payload: {
@@ -135,10 +187,15 @@ export class KnowledgeBaseService {
           embedding_model: 'text-embedding-3-small',
           vector_store: 'chroma',
         },
-        metadata: {},
+        metadata: {
+          rag_collection_name: collectionName, // Store RAG collection name for reference
+        },
         created_at_unix: nowUnix,
         updated_at_unix: nowUnix,
       });
+
+      console.log(`[KB Service] ✅ Document created in both RAG API and Python API`);
+      console.log(`[KB Service] ✅ Document saved to database: ${doc.document_id}`);
 
       return doc;
     } catch (error: any) {
@@ -581,7 +638,7 @@ export class KnowledgeBaseService {
         );
       }
       
-      // Step 1: Create collection in Python RAG system
+      // Step 1: Create collection and ingest data
       const hasUrlLinks = dataSources?.urlLinks && dataSources.urlLinks.length > 0;
       const hasPdfFiles = dataSources?.pdfFiles && dataSources.pdfFiles.length > 0;
       const hasExcelFiles = dataSources?.excelFiles && dataSources.excelFiles.length > 0;
@@ -595,14 +652,67 @@ export class KnowledgeBaseService {
           excelFiles: dataSources.excelFiles?.length || 0
         });
         
-        await pythonRagService.ingestData({
-          collectionName: collectionName,
-          urlLinks: dataSources.urlLinks || [],
-          pdfFiles: dataSources.pdfFiles || [],
-          excelFiles: dataSources.excelFiles || []
-        });
-        
-        console.log(`[KB Service] ✅ Collection created and data ingested in Python RAG`);
+        // If URLs are provided, call both APIs simultaneously:
+        // 1. RAG_API_URL/rag/data_ingestion (for chatbot usage)
+        // 2. PYTHON_API_URL/api/v1/knowledge-base/ingest (for calling agents)
+        if (hasUrlLinks) {
+          console.log(`[KB Service] URLs detected - calling both RAG and Python APIs simultaneously`);
+          
+          const ragApiPromise = pythonRagService.ingestData({
+            collectionName: collectionName,
+            urlLinks: dataSources.urlLinks || [],
+            pdfFiles: dataSources.pdfFiles || [],
+            excelFiles: dataSources.excelFiles || []
+          });
+          
+          // Call Python API for each URL (for calling agents)
+          const pythonApiPromises = (dataSources.urlLinks || []).map(async (url: string) => {
+            try {
+              const FormData = require('form-data');
+              const formData = new FormData();
+              formData.append('source_type', 'url');
+              formData.append('name', name);
+              formData.append('parent_folder_id', '');
+              formData.append('text', '');
+              formData.append('url', url);
+              formData.append('file', Buffer.from(''), { filename: '', contentType: 'application/octet-stream' });
+              
+              const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/knowledge-base/ingest`;
+              console.log(`[KB Service] Calling Python API for URL: ${url}`);
+              
+              const response = await axios.post(pythonUrl, formData, {
+                headers: formData.getHeaders(),
+                timeout: 30000,
+              });
+              
+              console.log(`[KB Service] ✅ Python API ingested URL: ${url}`);
+              return response.data;
+            } catch (error: any) {
+              console.error(`[KB Service] ⚠️  Failed to ingest URL ${url} in Python API:`, error.response?.data || error.message);
+              // Don't throw - continue with other URLs
+              return null;
+            }
+          });
+          
+          // Execute both API calls in parallel
+          const [ragResult, ...pythonResults] = await Promise.all([
+            ragApiPromise,
+            ...pythonApiPromises
+          ]);
+          
+          console.log(`[KB Service] ✅ RAG API ingestion completed`);
+          console.log(`[KB Service] ✅ Python API ingestion completed for ${pythonResults.filter(r => r !== null).length} URL(s)`);
+        } else {
+          // No URLs, only call RAG API (for PDFs/Excel files)
+          await pythonRagService.ingestData({
+            collectionName: collectionName,
+            urlLinks: [],
+            pdfFiles: dataSources.pdfFiles || [],
+            excelFiles: dataSources.excelFiles || []
+          });
+          
+          console.log(`[KB Service] ✅ Collection created and data ingested in Python RAG`);
+        }
       } else {
         console.log(`[KB Service] Creating empty collection (no data sources)`);
         await pythonRagService.createCollection(collectionName);
