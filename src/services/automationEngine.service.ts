@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import Automation from '../models/Automation';
 import AutomationExecution from '../models/AutomationExecution';
 import Customer from '../models/Customer';
@@ -273,17 +274,98 @@ export class AutomationEngine {
           throw new Error('Contact not found or phone number missing');
         }
 
-        // Get phone settings - find any configured settings if userId not provided
+        const organizationId = context?.organizationId || triggerData?.organizationId || (contact as any).organizationId;
+        const normalizedPhone = normalizePhoneNumber(contact.phone);
+
+        // New path: use agent_id + phone_number_id (same as test call / batch call) – no phone settings required
+        if (config.agent_id && config.phone_number_id && organizationId) {
+          const PhoneNumber = (await import('../models/PhoneNumber')).default;
+          const phoneNumber = await PhoneNumber.findOne({
+            phone_number_id: config.phone_number_id,
+            organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString())
+          }).lean();
+
+          if (!phoneNumber) {
+            throw new Error('Selected phone number not found. Please choose a valid phone number in the automation action.');
+          }
+          if (!phoneNumber.supports_outbound) {
+            throw new Error('Selected phone number does not support outbound calls. Please choose an outbound-capable number.');
+          }
+
+          let elevenlabsId = phoneNumber.elevenlabs_phone_number_id;
+          if (!elevenlabsId && (phoneNumber.provider === 'twilio' && phoneNumber.sid && phoneNumber.token)) {
+            const { sipTrunkService } = await import('./sipTrunk.service');
+            const reg = await sipTrunkService.registerTwilioPhoneNumberWithElevenLabs({
+              label: phoneNumber.label,
+              phone_number: phoneNumber.phone_number,
+              sid: phoneNumber.sid,
+              token: phoneNumber.token,
+              supports_inbound: phoneNumber.supports_inbound || false,
+              supports_outbound: phoneNumber.supports_outbound || false
+            });
+            elevenlabsId = reg.phone_number_id;
+            await PhoneNumber.updateOne(
+              { phone_number_id: config.phone_number_id },
+              { $set: { elevenlabs_phone_number_id: elevenlabsId } }
+            );
+          } else if (!elevenlabsId && (phoneNumber.provider === 'sip_trunk' || phoneNumber.provider === 'sip') && phoneNumber.outbound_trunk_config) {
+            const { sipTrunkService } = await import('./sipTrunk.service');
+            const reg = await sipTrunkService.registerSipPhoneNumberWithElevenLabs({
+              label: phoneNumber.label,
+              phone_number: phoneNumber.phone_number,
+              provider: (phoneNumber.provider as 'sip_trunk' | 'sip') || 'sip_trunk',
+              supports_inbound: phoneNumber.supports_inbound || false,
+              supports_outbound: phoneNumber.supports_outbound || false,
+              inbound_trunk_config: phoneNumber.inbound_trunk_config,
+              outbound_trunk_config: phoneNumber.outbound_trunk_config
+            });
+            elevenlabsId = reg.phone_number_id;
+            await PhoneNumber.updateOne(
+              { phone_number_id: config.phone_number_id },
+              { $set: { elevenlabs_phone_number_id: elevenlabsId } }
+            );
+          }
+          if (!elevenlabsId) {
+            throw new Error('Selected phone number is not registered with the voice service. Please register it in Configuration → Phone and try again.');
+          }
+
+          const { sipTrunkService } = await import('./sipTrunk.service');
+          const customerInfo = { name: contact.name || 'Customer', ...(contact.email && { email: contact.email }) };
+          if (phoneNumber.provider === 'twilio') {
+            await sipTrunkService.twilioOutboundCall({
+              agent_id: config.agent_id,
+              agent_phone_number_id: elevenlabsId,
+              to_number: normalizedPhone,
+              customer_info: customerInfo
+            });
+          } else {
+            await sipTrunkService.outboundCall({
+              agent_id: config.agent_id,
+              agent_phone_number_id: elevenlabsId,
+              to_number: normalizedPhone,
+              customer_info: customerInfo
+            });
+          }
+
+          if (context?.userId) {
+            try {
+              const { trackUsage } = await import('../middleware/profileTracking.middleware');
+              await trackUsage(context.userId, 'voice', 1);
+            } catch (_) {}
+          }
+          return { success: true, contactId: contact._id, phone: contact.phone };
+        }
+
+        // Legacy path: require phone settings
         let phoneSettings;
         if (context?.userId) {
           phoneSettings = await PhoneSettings.findOne({ userId: context.userId });
         } else {
-          // Find the first configured phone settings
           phoneSettings = await PhoneSettings.findOne({ isConfigured: true });
         }
 
         if (!phoneSettings || !phoneSettings.isConfigured) {
-          throw new Error('Phone settings not configured. Please configure phone settings in the Settings page.');
+          throw new Error('Phone settings not configured, or select Agent and Phone number in the automation action (recommended).');
         }
 
         // 🔑 CRITICAL: Determine which outbound number to use
@@ -394,9 +476,6 @@ export class AutomationEngine {
             voiceAgentPrompt = 'Have a friendly conversation';
           }
         }
-
-        // Normalize phone number to E.164 format
-        const normalizedPhone = normalizePhoneNumber(contact.phone);
 
         // Get default knowledge bases from settings
         let collectionNames: string[] = [];

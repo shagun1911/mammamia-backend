@@ -193,23 +193,95 @@ export class BatchCallingController {
         }
       }
 
+      // Helper to submit batch call (used for initial attempt and retry after re-register)
+      const doSubmit = (elevenLabsId: string) =>
+        batchCallingService.submitBatchCall({
+          agent_id,
+          call_name,
+          recipients: recipients.map((r: any) => ({
+            phone_number: r.phone_number,
+            name: r.name,
+            ...(r.email && { email: r.email }),
+            ...(r.dynamic_variables && { dynamic_variables: r.dynamic_variables })
+          })),
+          retry_count: retry_count || 0,
+          sender_email,
+          phone_number_id: elevenLabsId,
+          ecommerce_credentials
+        });
+
       // Call Python service to submit batch call
       console.log('[Batch Calling Controller] Calling Python service...');
       console.log('[Batch Calling Controller] Using ElevenLabs phone_number_id:', elevenlabsPhoneNumberId);
-      const result = await batchCallingService.submitBatchCall({
-        agent_id,
-        call_name,
-        recipients: recipients.map((r: any) => ({
-          phone_number: r.phone_number,
-          name: r.name,
-          ...(r.email && { email: r.email }),
-          ...(r.dynamic_variables && { dynamic_variables: r.dynamic_variables })
-        })),
-        retry_count: retry_count || 0,
-        sender_email,
-        phone_number_id: elevenlabsPhoneNumberId, // Use ElevenLabs phone_number_id
-        ecommerce_credentials
-      });
+      let result: Awaited<ReturnType<typeof doSubmit>>;
+      try {
+        result = await doSubmit(elevenlabsPhoneNumberId);
+      } catch (submitError: any) {
+        // If Python API returns 404 "Document not found", the phone number may be stale – try re-registering once
+        const is404NotFound =
+          submitError?.statusCode === 404 &&
+          (submitError?.message?.includes('not found') || submitError?.message?.includes('Document with id'));
+        if (!is404NotFound) throw submitError;
+
+        console.log('[Batch Calling Controller] Phone number not found in voice service (404). Attempting re-registration...');
+        const { sipTrunkService } = await import('../services/sipTrunk.service');
+        let newElevenLabsId: string;
+
+        try {
+          if (phoneNumber.provider === 'twilio' && phoneNumber.sid && phoneNumber.token) {
+            const reg = await sipTrunkService.registerTwilioPhoneNumberWithElevenLabs({
+              label: phoneNumber.label,
+              phone_number: phoneNumber.phone_number,
+              sid: phoneNumber.sid,
+              token: phoneNumber.token,
+              supports_inbound: phoneNumber.supports_inbound || false,
+              supports_outbound: phoneNumber.supports_outbound || false
+            });
+            newElevenLabsId = reg.phone_number_id;
+          } else if (
+            (phoneNumber.provider === 'sip_trunk' || phoneNumber.provider === 'sip') &&
+            phoneNumber.outbound_trunk_config
+          ) {
+            const reg = await sipTrunkService.registerSipPhoneNumberWithElevenLabs({
+              label: phoneNumber.label,
+              phone_number: phoneNumber.phone_number,
+              provider: (phoneNumber.provider as 'sip_trunk' | 'sip') || 'sip_trunk',
+              supports_inbound: phoneNumber.supports_inbound || false,
+              supports_outbound: phoneNumber.supports_outbound || false,
+              inbound_trunk_config: phoneNumber.inbound_trunk_config,
+              outbound_trunk_config: phoneNumber.outbound_trunk_config
+            });
+            newElevenLabsId = reg.phone_number_id;
+          } else {
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'PHONE_NUMBER_NOT_REGISTERED',
+                message:
+                  'This phone number is not registered with the voice service. Please open Phone Settings (Configuration → Phone), register this number, then try the batch call again.'
+              }
+            });
+          }
+
+          await PhoneNumber.updateOne(
+            { phone_number_id, organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString()) },
+            { $set: { elevenlabs_phone_number_id: newElevenLabsId } }
+          );
+          console.log('[Batch Calling Controller] ✅ Re-registered phone number. New ElevenLabs ID:', newElevenLabsId);
+          result = await doSubmit(newElevenLabsId);
+        } catch (regError: any) {
+          console.error('[Batch Calling Controller] Re-registration failed:', regError.message);
+          return res.status(regError.statusCode || 500).json({
+            success: false,
+            error: {
+              code: regError.code || 'REGISTRATION_ERROR',
+              message:
+                regError.message ||
+                'Phone number not found in voice service. Please register it in Phone Settings (Configuration → Phone) and try again.'
+            }
+          });
+        }
+      }
 
       console.log('[Batch Calling Controller] ✅ Batch call submitted:');
       console.log(JSON.stringify(result, null, 2));

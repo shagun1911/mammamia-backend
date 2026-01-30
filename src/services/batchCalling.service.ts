@@ -113,12 +113,14 @@ export class BatchCallingService {
         return formatted;
       });
       
+      // Python/ElevenLabs API expects agent_phone_number_id (official API uses this key)
       const payload: Record<string, any> = {
         agent_id: data.agent_id,
         call_name: data.call_name,
         recipients: formattedRecipients,
         retry_count: data.retry_count || 0,
-        phone_number_id: phoneNumberId // Required - must be ElevenLabs phone_number_id
+        agent_phone_number_id: phoneNumberId, // Required by ElevenLabs batch-calling API
+        phone_number_id: phoneNumberId // Send both for compatibility with different API versions
       };
       
       // Add optional fields only if they exist

@@ -326,22 +326,24 @@ export class AnalyticsService {
       { $sort: { _id: 1 } }
     ]);
 
-    // Response times over time
+    // Response times over time (ensure numeric for $divide)
     const responseTimes = await Conversation.aggregate([
       {
         $match: {
           ...dateQuery,
-          firstResponseAt: { $exists: true }
+          firstResponseAt: { $exists: true, $ne: null },
+          createdAt: { $exists: true, $ne: null }
         }
       },
       {
         $project: {
           period: { $dateToString: { format: dateFormat[groupBy], date: '$createdAt' } },
           responseTime: {
-            $divide: [
-              { $subtract: ['$firstResponseAt', '$createdAt'] },
-              60000 // Convert to minutes
-            ]
+            $cond: {
+              if: { $and: [{ $gte: [{ $subtract: ['$firstResponseAt', '$createdAt'] }, 0] }] },
+              then: { $divide: [{ $subtract: ['$firstResponseAt', '$createdAt'] }, 60000] },
+              else: 0
+            }
           }
         }
       },
@@ -370,7 +372,21 @@ export class AnalyticsService {
         $project: {
           _id: 1,
           resolutionRate: {
-            $multiply: [{ $divide: ['$resolved', '$total'] }, 100]
+            $multiply: [
+              {
+                $cond: {
+                  if: { $eq: ['$total', 0] },
+                  then: 0,
+                  else: {
+                    $divide: [
+                      { $convert: { input: '$resolved', to: 'double', onError: 0, onNull: 0 } },
+                      { $convert: { input: '$total', to: 'double', onError: 1, onNull: 1 } }
+                    ]
+                  }
+                }
+              },
+              100
+            ]
           }
         }
       },
@@ -390,18 +406,13 @@ export class AnalyticsService {
           period: { $dateToString: { format: dateFormat[groupBy], date: '$createdAt' } },
           duration: {
             $cond: {
-              if: { $and: [{ $ne: ['$transcript', null] }, { $gt: [{ $ifNull: ['$transcript.duration', 0] }, 0] }] },
-              then: { $divide: [{ $ifNull: ['$transcript.duration', 0] }, 60] },
+              if: { $and: [{ $ne: ['$transcript', null] }, { $gt: [{ $convert: { input: { $ifNull: ['$transcript.duration', 0] }, to: 'double', onError: 0, onNull: 0 } }, 0] }] },
+              then: { $divide: [{ $convert: { input: { $ifNull: ['$transcript.duration', 0] }, to: 'double', onError: 0, onNull: 0 } }, 60] },
               else: {
                 $cond: {
-                  if: { $and: ['$updatedAt', '$createdAt'] },
-                  then: {
-                    $divide: [
-                      { $subtract: ['$updatedAt', '$createdAt'] },
-                      60000
-                    ]
-                  },
-                  else: 2 // Default 2 minutes
+                  if: { $and: [{ $ne: ['$updatedAt', null] }, { $ne: ['$createdAt', null] }, { $gte: [{ $subtract: ['$updatedAt', '$createdAt'] }, 0] }] },
+                  then: { $divide: [{ $subtract: ['$updatedAt', '$createdAt'] }, 60000] },
+                  else: 2
                 }
               }
             }
@@ -547,7 +558,21 @@ export class AnalyticsService {
           totalHandled: 1,
           resolved: 1,
           resolutionRate: {
-            $multiply: [{ $divide: ['$resolved', '$totalHandled'] }, 100]
+            $multiply: [
+              {
+                $cond: {
+                  if: { $eq: ['$totalHandled', 0] },
+                  then: 0,
+                  else: {
+                    $divide: [
+                      { $convert: { input: '$resolved', to: 'double', onError: 0, onNull: 0 } },
+                      { $convert: { input: '$totalHandled', to: 'double', onError: 1, onNull: 1 } }
+                    ]
+                  }
+                }
+              },
+              100
+            ]
           }
         }
       },
