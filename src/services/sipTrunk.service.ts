@@ -100,6 +100,14 @@ interface OutboundCallRequest {
     name?: string;
   };
   sender_email?: string;
+  // Agent configuration for call execution
+  agent_config?: {
+    greeting_message?: string;
+    system_prompt?: string;
+    voice_id?: string;
+    language?: string;
+    escalationRules?: string[];
+  };
 }
 
 /** Twilio outbound: uses agent_phone_number_id from ElevenLabs, with optional credentials for unregistered numbers */
@@ -631,6 +639,61 @@ export class SipTrunkService {
         sender_email: data.sender_email
       };
 
+      // Include agent configuration if provided
+      // NOTE: Greeting is already validated and rendered in controller
+      // This layer just passes it through - NO additional processing
+      if (data.agent_config) {
+        // Greeting message is already rendered and validated - use as-is
+        if (data.agent_config.greeting_message && typeof data.agent_config.greeting_message === 'string') {
+          const greetingMessage = data.agent_config.greeting_message.trim();
+          
+          // Final sanity check: If somehow variables got through, BLOCK the call
+          if (greetingMessage.includes('{{') || greetingMessage.includes('}}')) {
+            console.error('[SIP Trunk Service] ❌ FATAL: Variables detected in greeting message!');
+            throw new AppError(
+              400,
+              'UNSAFE_GREETING',
+              'Greeting message contains unresolved variables - call blocked for safety'
+            );
+          }
+          
+          if (greetingMessage.length === 0) {
+            console.error('[SIP Trunk Service] ❌ FATAL: Greeting message is empty!');
+            throw new AppError(
+              400,
+              'EMPTY_GREETING',
+              'Greeting message is empty - call blocked'
+            );
+          }
+          
+          body.greeting_message = greetingMessage;
+          // Also send as first_message for Python API compatibility
+          body.first_message = greetingMessage;
+        }
+        
+        // System prompt validation
+        if (data.agent_config.system_prompt && typeof data.agent_config.system_prompt === 'string') {
+          const systemPrompt = data.agent_config.system_prompt.trim();
+          if (systemPrompt.length === 0) {
+            throw new AppError(
+              400,
+              'EMPTY_SYSTEM_PROMPT',
+              'System prompt is empty - call blocked'
+            );
+          }
+          body.system_prompt = systemPrompt;
+        }
+        
+        // Always include language - it's required for proper agent behavior
+        body.language = data.agent_config.language || 'en';
+        if (data.agent_config.voice_id) {
+          body.voice_id = data.agent_config.voice_id;
+        }
+        if (data.agent_config.escalationRules && data.agent_config.escalationRules.length > 0) {
+          body.escalationRules = data.agent_config.escalationRules;
+        }
+      }
+
       // If agent_phone_number_id looks like a phone number (not a registered ID),
       // include credentials as fallback - Python API might handle Twilio dynamically
       if (data.agent_phone_number_id?.startsWith('+') && data.phone_number && data.sid && data.token) {
@@ -640,15 +703,34 @@ export class SipTrunkService {
         body.token = data.token;
       }
 
-      console.log('[SIP Trunk Service] Request payload:', {
+      const greetingMsg = typeof body.greeting_message === 'string' ? body.greeting_message : '';
+      const firstMsg = typeof body.first_message === 'string' ? body.first_message : '';
+      const systemPrompt = typeof body.system_prompt === 'string' ? body.system_prompt : '';
+      
+      // CRITICAL: Final validation before sending to Python API
+      if (greetingMsg && (greetingMsg.includes('{{') || greetingMsg.includes('}}'))) {
+        console.error('[SIP Trunk Service] ❌ FATAL: Variables detected in greeting!', {
+          greeting: greetingMsg.substring(0, 200)
+        });
+        throw new AppError(
+          500,
+          'UNSAFE_GREETING',
+          'Greeting contains unresolved variables - this should never happen. Call blocked.'
+        );
+      }
+      
+      console.log('[SIP Trunk Service] ✅ Final payload validated:', {
         agent_id: body.agent_id,
         agent_phone_number_id: body.agent_phone_number_id,
         to_number: body.to_number,
-        customer_info: body.customer_info,
-        sender_email: body.sender_email,
-        phone_number: body.phone_number ? '***' : undefined,
-        sid: body.sid ? '***' : undefined,
-        token: body.token ? '***' : undefined
+        greeting_message: greetingMsg ? `${greetingMsg.substring(0, 80)}...` : 'MISSING',
+        greeting_length: greetingMsg.length,
+        first_message: firstMsg ? `${firstMsg.substring(0, 80)}...` : 'MISSING',
+        system_prompt: systemPrompt ? `${systemPrompt.substring(0, 80)}...` : 'MISSING',
+        system_prompt_length: systemPrompt.length,
+        voice_id: body.voice_id,
+        language: body.language,
+        has_variables: false // Should always be false after validation
       });
 
       const response = await axios.post<OutboundCallResponse>(
@@ -679,23 +761,107 @@ export class SipTrunkService {
       
       console.log('[SIP Trunk Service] ===== INITIATING SIP TRUNK OUTBOUND CALL =====');
       console.log('[SIP Trunk Service] Python API URL:', pythonUrl);
-      console.log('[SIP Trunk Service] Request payload:', {
+      
+      // Build payload
+      const body: Record<string, unknown> = {
         agent_id: data.agent_id,
         agent_phone_number_id: data.agent_phone_number_id,
         to_number: data.to_number,
-        customer_info: data.customer_info,
+        customer_info: data.customer_info || {},
         sender_email: data.sender_email
+      };
+
+      // Include agent configuration if provided
+      // NOTE: Greeting is already validated and rendered in controller
+      // This layer just passes it through - NO additional processing
+      if (data.agent_config) {
+        // Greeting message is already rendered and validated - use as-is
+        if (data.agent_config.greeting_message && typeof data.agent_config.greeting_message === 'string') {
+          const greetingMessage = data.agent_config.greeting_message.trim();
+          
+          // Final sanity check: If somehow variables got through, BLOCK the call
+          if (greetingMessage.includes('{{') || greetingMessage.includes('}}')) {
+            console.error('[SIP Trunk Service] ❌ FATAL: Variables detected in greeting message!');
+            throw new AppError(
+              400,
+              'UNSAFE_GREETING',
+              'Greeting message contains unresolved variables - call blocked for safety'
+            );
+          }
+          
+          if (greetingMessage.length === 0) {
+            console.error('[SIP Trunk Service] ❌ FATAL: Greeting message is empty!');
+            throw new AppError(
+              400,
+              'EMPTY_GREETING',
+              'Greeting message is empty - call blocked'
+            );
+          }
+          
+          body.greeting_message = greetingMessage;
+          // Also send as first_message for Python API compatibility
+          body.first_message = greetingMessage;
+        }
+        
+        // System prompt validation
+        if (data.agent_config.system_prompt && typeof data.agent_config.system_prompt === 'string') {
+          const systemPrompt = data.agent_config.system_prompt.trim();
+          if (systemPrompt.length === 0) {
+            throw new AppError(
+              400,
+              'EMPTY_SYSTEM_PROMPT',
+              'System prompt is empty - call blocked'
+            );
+          }
+          body.system_prompt = systemPrompt;
+        }
+        
+        // Always include language - it's required for proper agent behavior
+        body.language = data.agent_config.language || 'en';
+        if (data.agent_config.voice_id) {
+          body.voice_id = data.agent_config.voice_id;
+        }
+        if (data.agent_config.escalationRules && data.agent_config.escalationRules.length > 0) {
+          body.escalationRules = data.agent_config.escalationRules;
+        }
+      }
+
+      const greetingMsg = typeof body.greeting_message === 'string' ? body.greeting_message : '';
+      const firstMsg = typeof body.first_message === 'string' ? body.first_message : '';
+      const systemPrompt = typeof body.system_prompt === 'string' ? body.system_prompt : '';
+      
+      // CRITICAL: Final validation before sending to Python API
+      if (greetingMsg && (greetingMsg.includes('{{') || greetingMsg.includes('}}'))) {
+        console.error('[SIP Trunk Service] ❌ FATAL: Variables detected in greeting!', {
+          greeting: greetingMsg.substring(0, 200)
+        });
+        throw new AppError(
+          500,
+          'UNSAFE_GREETING',
+          'Greeting contains unresolved variables - this should never happen. Call blocked.'
+        );
+      }
+      
+      console.log('[SIP Trunk Service] ✅ Final payload validated:', {
+        agent_id: body.agent_id,
+        agent_phone_number_id: body.agent_phone_number_id,
+        to_number: body.to_number,
+        greeting_message: greetingMsg ? `${greetingMsg.substring(0, 80)}...` : 'MISSING',
+        greeting_length: greetingMsg.length,
+        first_message: firstMsg ? `${firstMsg.substring(0, 80)}...` : 'MISSING',
+        system_prompt: systemPrompt ? `${systemPrompt.substring(0, 80)}...` : 'MISSING',
+        system_prompt_length: systemPrompt.length,
+        voice_id: body.voice_id,
+        language: body.language,
+        has_variables: false // Should always be false after validation
       });
+      
+      // Log full payload for debugging
+      console.log('[SIP Trunk Service] Full payload being sent:', JSON.stringify(body, null, 2));
       
       const response = await axios.post<OutboundCallResponse>(
         pythonUrl,
-        {
-          agent_id: data.agent_id,
-          agent_phone_number_id: data.agent_phone_number_id,
-          to_number: data.to_number,
-          customer_info: data.customer_info || {},
-          sender_email: data.sender_email
-        },
+        body,
         {
           timeout: 60000 // 60 seconds timeout
         }

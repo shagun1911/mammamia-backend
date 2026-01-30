@@ -152,9 +152,60 @@ export class CSVImportService {
     });
   }
 
+  /** Known CSV column names (lowercase) that map to core contact fields. Extra columns go to metadata. */
+  private static readonly CORE_FIELDS = new Set([
+    'name', 'email', 'phone', 'tags',
+    'company', 'notes',
+    'full name', 'fullname', 'contact name',
+    'first name', 'firstname', 'first_name', 'fname',
+    'last name', 'lastname', 'last_name', 'lname', 'surname',
+    'email address', 'e-mail',
+    'phone number', 'phonenumber', 'mobile', 'telephone', 'cell',
+    'company name', 'company_name', 'organization', 'org',
+    'note', 'comments', 'remarks'
+  ]);
+
+  /** Aliases: header key (lowercase) -> canonical key for value lookup */
+  private static readonly COLUMN_ALIASES: Record<string, string> = {
+    'full name': 'name',
+    'fullname': 'name',
+    'contact name': 'name',
+    'first name': 'first_name',
+    'firstname': 'first_name',
+    'fname': 'first_name',
+    'last name': 'last_name',
+    'lastname': 'last_name',
+    'lname': 'last_name',
+    'surname': 'last_name',
+    'email address': 'email',
+    'e-mail': 'email',
+    'phone number': 'phone',
+    'phonenumber': 'phone',
+    'mobile': 'phone',
+    'telephone': 'phone',
+    'cell': 'phone',
+    'company name': 'company',
+    'company_name': 'company',
+    'organization': 'company',
+    'org': 'company',
+    'note': 'notes',
+    'comments': 'notes',
+    'remarks': 'notes'
+  };
+
+  /** Get first non-empty value from row using canonical key or aliases */
+  private static getCell(row: Record<string, string>, ...keys: string[]): string {
+    for (const key of keys) {
+      const v = (row[key] ?? '').trim();
+      if (v) return v;
+    }
+    return '';
+  }
+
   /**
    * Process a batch of contacts
-   * Optimized for speed: single DB queries, bulk operations
+   * Optimized for speed: single DB queries, bulk operations.
+   * All CSV columns are supported: name, email, phone, tags, company, notes, and any extra columns (e.g. "Company name", "Job title") are stored in metadata with readable labels.
    */
   private async processBatch(
     batch: any[],
@@ -183,11 +234,15 @@ export class CSVImportService {
       const rowNumber = startRowNumber + i;
 
       try {
-        const name = (row.name || '').trim();
-        const email = (row.email || '').trim().toLowerCase();
-        let phone = (row.phone || '').trim();
-        const company = (row.company || '').trim();
-        const notes = (row.notes || '').trim();
+        // Name: use full "name" if present, otherwise build from first name + last name
+        const fullName = CSVImportService.getCell(row, 'name', 'full name', 'fullname', 'contact name').trim();
+        const firstName = CSVImportService.getCell(row, 'first name', 'firstname', 'first_name', 'fname').trim();
+        const lastName = CSVImportService.getCell(row, 'last name', 'lastname', 'last_name', 'lname', 'surname').trim();
+        const name = fullName || [firstName, lastName].filter(Boolean).join(' ').trim();
+        const email = CSVImportService.getCell(row, 'email', 'email address', 'e-mail').trim().toLowerCase();
+        let phone = CSVImportService.getCell(row, 'phone', 'phone number', 'phonenumber', 'mobile', 'telephone', 'cell').trim();
+        const company = CSVImportService.getCell(row, 'company', 'company name', 'company_name', 'organization', 'org');
+        const notes = CSVImportService.getCell(row, 'notes', 'note', 'comments', 'remarks');
         const tagsStr = (row.tags || '').trim();
         const tags = tagsStr ? tagsStr.split(',').map((t: string) => t.trim()).filter(Boolean) : [];
 
@@ -208,10 +263,27 @@ export class CSVImportService {
           }
         }
 
-        // Build metadata
+        // Build metadata: known extras (company, notes) + any other CSV columns with readable labels
         const metadata: Record<string, any> = {};
-        if (company) metadata.company = company;
-        if (notes) metadata.notes = notes;
+        if (company) metadata['Company name'] = company;
+        if (notes) metadata['Notes'] = notes;
+
+        for (const [header, value] of Object.entries(row)) {
+          const key = (header || '').trim().toLowerCase();
+          const val = typeof value === 'string' ? value.trim() : value;
+          if (!key || val === undefined || val === '') continue;
+          const canonical = CSVImportService.COLUMN_ALIASES[key];
+          if (canonical) {
+            // Already handled above (company, notes, etc.)
+            if (canonical === 'company' && !metadata['Company name']) metadata['Company name'] = val;
+            else if (canonical === 'notes' && !metadata['Notes']) metadata['Notes'] = val;
+            continue;
+          }
+          if (CSVImportService.CORE_FIELDS.has(key)) continue; // name, email, phone, tags
+          // Human-readable label: "job title" -> "Job title"
+          const label = key.replace(/\b\w/g, c => c.toUpperCase()).replace(/_/g, ' ');
+          metadata[label] = val;
+        }
 
         // Track for duplicate checking
         if (email) {

@@ -369,6 +369,153 @@ export class SipTrunkController {
         });
       }
 
+      // Fetch agent configuration from database
+      const Agent = (await import('../models/Agent')).default;
+      const agent = await Agent.findOne({ agent_id });
+      
+      if (!agent) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'AGENT_NOT_FOUND',
+            message: `Agent with id ${agent_id} not found in database`
+          }
+        });
+      }
+
+      console.log('[SIP Trunk Controller] Agent found:', {
+        agent_id: agent.agent_id,
+        name: agent.name,
+        has_greeting_message: !!agent.greeting_message,
+        has_system_prompt: !!agent.system_prompt,
+        voice_id: agent.voice_id,
+        language: agent.language
+      });
+
+      // ============================================
+      // PRODUCTION-GRADE GREETING RENDERING PIPELINE
+      // ============================================
+      // SINGLE SOURCE OF TRUTH: All greeting rendering happens here
+      // VALIDATION GATE: Blocks call if greeting is unsafe
+      // ============================================
+      
+      const { 
+        renderGreeting, 
+        validateRenderedGreeting,
+        getDefaultGreeting, 
+        getDefaultSystemPrompt 
+      } = await import('../utils/greetingRenderer');
+      
+      // STEP 1: Fetch customer info from database if not provided
+      let finalCustomerInfo = customer_info || {};
+      
+      if (!finalCustomerInfo.name || !finalCustomerInfo.name.trim()) {
+        try {
+          const Customer = (await import('../models/Customer')).default;
+          const organizationId = req.user?.organizationId || req.user?._id;
+          
+          if (organizationId && to_number) {
+            const customer = await Customer.findOne({
+              phone: to_number,
+              organizationId: organizationId instanceof mongoose.Types.ObjectId 
+                ? organizationId 
+                : new mongoose.Types.ObjectId(organizationId.toString())
+            }).lean();
+            
+            if (customer && customer.name) {
+              finalCustomerInfo = {
+                name: customer.name,
+                email: customer.email || finalCustomerInfo.email || '',
+                phone: to_number
+              };
+              console.log('[SIP Trunk Controller] ✅ Fetched customer from database');
+            }
+          }
+        } catch (error: any) {
+          console.warn('[SIP Trunk Controller] ⚠️ Failed to fetch customer from database:', error.message);
+        }
+      }
+      
+      // STEP 2: Prepare contact data with GUARANTEED non-empty name
+      // CRITICAL: Name must be resolved BEFORE rendering (not during)
+      let contactName = finalCustomerInfo?.name?.trim();
+      if (!contactName || contactName.length === 0 || contactName === 'Unknown' || contactName === 'unknown') {
+        contactName = 'there'; // Safe fallback
+      }
+      
+      const contactData = {
+        name: contactName,  // REQUIRED - never empty
+        email: finalCustomerInfo?.email?.trim() || '',
+        phone: to_number || ''
+      };
+      
+      // STEP 3: Get greeting template
+      const greetingTemplate = agent.greeting_message?.trim() 
+        || agent.first_message?.trim() 
+        || getDefaultGreeting(agent.language || 'en');
+      
+      if (!greetingTemplate || greetingTemplate.length === 0) {
+        throw new Error('Greeting template is empty - cannot proceed with call');
+      }
+      
+      // STEP 4: RENDER GREETING (SINGLE PASS, DETERMINISTIC)
+      const renderingResult = renderGreeting(greetingTemplate, contactData, contactName);
+      
+      // STEP 5: VALIDATION GATE - BLOCK CALL IF UNSAFE
+      if (!renderingResult.success) {
+        console.error('[SIP Trunk Controller] ❌ FATAL: Greeting rendering failed:', renderingResult.errors);
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'GREETING_RENDER_ERROR',
+            message: `Failed to render greeting: ${renderingResult.errors.join('; ')}`,
+            details: renderingResult.errors
+          }
+        });
+      }
+      
+      // STEP 6: FINAL SAFETY CHECK - Validate rendered greeting is safe for TTS
+      const safetyCheck = validateRenderedGreeting(renderingResult.rendered);
+      if (!safetyCheck.safe) {
+        console.error('[SIP Trunk Controller] ❌ FATAL: Rendered greeting is unsafe:', safetyCheck.reason);
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'UNSAFE_GREETING',
+            message: `Greeting is unsafe for TTS: ${safetyCheck.reason}`,
+            rendered: renderingResult.rendered
+          }
+        });
+      }
+      
+      // STEP 7: Get system prompt
+      let systemPrompt = agent.system_prompt?.trim() 
+        || getDefaultSystemPrompt(agent.language || 'en');
+      
+      if (!systemPrompt || systemPrompt.length === 0) {
+        systemPrompt = getDefaultSystemPrompt(agent.language || 'en');
+      }
+      
+      // STEP 8: Final values (guaranteed safe)
+      const finalGreeting = renderingResult.rendered;
+      const finalSystemPrompt = systemPrompt;
+      
+      // Log warnings if any
+      if (renderingResult.warnings.length > 0) {
+        console.warn('[SIP Trunk Controller] ⚠️ Rendering warnings:', renderingResult.warnings);
+      }
+      
+      console.log('[SIP Trunk Controller] ✅ Greeting rendered successfully:', {
+        template: greetingTemplate,
+        rendered: finalGreeting,
+        rendered_length: finalGreeting.length,
+        customer_name: contactName,
+        has_variables: finalGreeting.includes('{{'),
+        system_prompt_length: finalSystemPrompt.length,
+        language: agent.language,
+        voice_id: agent.voice_id
+      });
+
       // Fetch phone number from database to verify it exists and get details
       const PhoneNumber = (await import('../models/PhoneNumber')).default;
       const phoneNumber = await PhoneNumber.findOne({ 
@@ -465,6 +612,14 @@ export class SipTrunkController {
           to_number,
           customer_info,
           sender_email,
+          // Include agent configuration
+          agent_config: {
+            greeting_message: finalGreeting, // Use final validated greeting with all variables replaced
+            system_prompt: finalSystemPrompt,
+            voice_id: agent.voice_id,
+            language: agent.language || 'en',
+            escalationRules: agent.escalationRules
+          },
           // Include credentials if using phone number as ID (not a registered ElevenLabs ID)
           ...(phoneNumber.elevenlabs_phone_number_id?.startsWith('+') && {
             phone_number: phoneNumber.phone_number,
@@ -489,7 +644,15 @@ export class SipTrunkController {
           agent_phone_number_id: phoneNumber.elevenlabs_phone_number_id,
           to_number,
           customer_info,
-          sender_email
+          sender_email,
+          // Include agent configuration
+          agent_config: {
+            greeting_message: finalGreeting, // Use final validated greeting with all variables replaced
+            system_prompt: finalSystemPrompt,
+            voice_id: agent.voice_id,
+            language: agent.language || 'en',
+            escalationRules: agent.escalationRules
+          }
         });
       }
 

@@ -10,8 +10,10 @@ export interface CreateAgentRequest {
   name: string;
   first_message: string;
   system_prompt: string;
+  greeting_message?: string;
   language: string;
   voice_id?: string;
+  escalationRules?: string[];
   knowledge_base_ids: string[];
   // tool_ids are now automatically added from env variables, not required in request
 }
@@ -23,7 +25,10 @@ export interface CreateAgentResponse {
 export interface UpdateAgentPromptRequest {
   first_message: string;
   system_prompt: string;
+  greeting_message?: string;
   language: string;
+  voice_id?: string;
+  escalationRules?: string[];
   knowledge_base_ids: string[];
   // tool_ids are automatically added from env variables, not required in request
 }
@@ -65,14 +70,18 @@ export class AgentService {
       
       console.log(`[Agent Service] Calling Python API: ${pythonUrl}`);
       
+      // Use greeting_message as first_message if provided, otherwise use first_message
+      const firstMessageToSend = data.greeting_message || data.first_message;
+      
       const requestBody = {
         name: data.name,
-        first_message: data.first_message,
+        first_message: firstMessageToSend,
         system_prompt: data.system_prompt,
         language: data.language,
         knowledge_base_ids: data.knowledge_base_ids,
         tool_ids: toolIds,
-        ...(data.voice_id && { voice_id: data.voice_id })
+        ...(data.voice_id && { voice_id: data.voice_id }),
+        ...(data.greeting_message && { greeting_message: data.greeting_message })
       };
 
       console.log(`[Agent Service] Request body:`, JSON.stringify(requestBody, null, 2));
@@ -104,8 +113,10 @@ export class AgentService {
         name: data.name,
         first_message: data.first_message,
         system_prompt: data.system_prompt,
+        greeting_message: data.greeting_message || '',
         language: data.language,
         voice_id: data.voice_id,
+        escalationRules: data.escalationRules || [],
         knowledge_base_ids: data.knowledge_base_ids,
         tool_ids: toolIds // Use the static tool IDs from env
       });
@@ -232,12 +243,17 @@ export class AgentService {
       
       console.log(`[Agent Service] Calling Python API: ${pythonUrl}`);
       
+      // Use greeting_message as first_message if provided, otherwise use first_message
+      const firstMessageToSend = data.greeting_message || data.first_message;
+      
       const requestBody = {
-        first_message: data.first_message,
+        first_message: firstMessageToSend,
         system_prompt: data.system_prompt,
         language: data.language,
         knowledge_base_ids: data.knowledge_base_ids,
         tool_ids: toolIds, // Static tool IDs from env
+        ...(data.voice_id && { voice_id: data.voice_id }),
+        ...(data.greeting_message && { greeting_message: data.greeting_message })
       };
 
       console.log(`[Agent Service] Request body:`, JSON.stringify(requestBody, null, 2));
@@ -265,6 +281,15 @@ export class AgentService {
       agent.language = data.language;
       agent.knowledge_base_ids = data.knowledge_base_ids;
       agent.tool_ids = toolIds; // Update with static tool IDs from env
+      if (data.voice_id !== undefined) {
+        agent.voice_id = data.voice_id;
+      }
+      if (data.greeting_message !== undefined) {
+        agent.greeting_message = data.greeting_message;
+      }
+      if (data.escalationRules !== undefined) {
+        agent.escalationRules = data.escalationRules;
+      }
       await agent.save();
 
       console.log(`[Agent Service] Agent prompt updated successfully for agent_id: ${agentId}`);

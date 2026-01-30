@@ -8,6 +8,8 @@ export interface IAgent extends Document {
   system_prompt: string;
   language: string;
   voice_id?: string;
+  greeting_message?: string; // Agent-level greeting with dynamic variables support
+  escalationRules?: string[]; // Array of escalation conditions (e.g., "user says transfer", "sentiment negative")
   knowledge_base_ids: string[]; // Array of document IDs
   tool_ids: string[]; // Array of tool IDs
   createdAt: Date;
@@ -46,6 +48,14 @@ const AgentSchema = new Schema<IAgent>({
   },
   voice_id: {
     type: String
+  },
+  greeting_message: {
+    type: String,
+    default: ''
+  },
+  escalationRules: {
+    type: [String],
+    default: []
   },
   knowledge_base_ids: {
     type: [String],
