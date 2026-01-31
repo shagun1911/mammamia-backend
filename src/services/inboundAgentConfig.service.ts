@@ -17,8 +17,88 @@ export class InboundAgentConfigService {
 
   /**
    * Get single inbound agent config by phone number
+   * If phone number has an agent_id assigned, use that agent's configuration
+   * Otherwise, fall back to InboundAgentConfig
    */
   async getByPhoneNumber(userId: string, calledNumber: string) {
+    // First, check if phone number has an agent assigned
+    const PhoneNumber = (await import('../models/PhoneNumber')).default;
+    const Agent = (await import('../models/Agent')).default;
+    const User = (await import('../models/User')).default;
+    const mongoose = (await import('mongoose')).default;
+    
+    const userObjectId = userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId.toString());
+    
+    // Get user's organizationId for proper phone number lookup
+    const user = await User.findById(userObjectId).lean();
+    const organizationId = (user as any)?.organizationId || userObjectId;
+    const orgObjectId = organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString());
+    
+    // Find phone number by phone_number (not phone_number_id)
+    // Check both organizationId (primary) and userId (backward compatibility)
+    const phoneNumber = await PhoneNumber.findOne({
+      phone_number: calledNumber,
+      $or: [
+        { organizationId: orgObjectId },
+        { userId: userObjectId }
+      ]
+    });
+
+    // If phone number has agent_id assigned, use that agent
+    if (phoneNumber?.agent_id) {
+      console.log(
+        '[Inbound Call] Phone number',
+        calledNumber,
+        'routed to agent',
+        phoneNumber.agent_id
+      );
+
+      const agent = await Agent.findOne({
+        agent_id: phoneNumber.agent_id,
+        userId: userObjectId
+      });
+
+      if (!agent) {
+        console.error(
+          '[Inbound Call] ❌ Agent',
+          phoneNumber.agent_id,
+          'not found for phone number',
+          calledNumber
+        );
+        throw new AppError(
+          404,
+          'AGENT_NOT_FOUND',
+          `Agent ${phoneNumber.agent_id} assigned to phone number ${calledNumber} not found. Please reassign a valid agent.`
+        );
+      }
+
+      // Get e-commerce credentials if available
+      const ecommerceCredentials = await getEcommerceCredentials(userId);
+
+      // Build config from agent
+      const config: any = {
+        userId: userObjectId,
+        calledNumber: calledNumber,
+        voice_id: agent.voice_id || '21m00Tcm4TlvDq8ikWAM',
+        language: agent.language || 'en',
+        agent_instruction: agent.system_prompt || '',
+        greeting_message: agent.greeting_message || agent.first_message || 'Hello! How can I help you today?',
+        knowledge_base_ids: agent.knowledge_base_ids || [],
+        collections: [], // Legacy field
+        ecommerce_credentials: ecommerceCredentials || undefined
+      };
+
+      console.log('[Inbound Call] ✅ Using agent configuration:', {
+        agent_id: agent.agent_id,
+        agent_name: agent.name,
+        voice_id: config.voice_id,
+        language: config.language
+      });
+
+      return config;
+    }
+
+    // Fall back to InboundAgentConfig if no agent assigned
     const config = await InboundAgentConfig.findOne({ userId, calledNumber });
     return config;
   }

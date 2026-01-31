@@ -3,6 +3,7 @@ import { AuthRequest } from '../middleware/auth.middleware';
 import { agentService } from '../services/agent.service';
 import { successResponse } from '../utils/response.util';
 import { AppError } from '../middleware/error.middleware';
+import { normalizeTemplateVariables } from '../utils/normalizeTemplateVariables.util';
 
 export class AgentController {
   /**
@@ -42,11 +43,19 @@ export class AgentController {
         throw new AppError(400, 'VALIDATION_ERROR', 'knowledge_base_ids must be an array');
       }
 
+      // Normalize template variables to lowercase (prevents runtime call drops)
+      const firstMessageResult = normalizeTemplateVariables(first_message);
+      const systemPromptResult = normalizeTemplateVariables(system_prompt);
+      
+      if (firstMessageResult.changed || systemPromptResult.changed) {
+        console.log('[Agent Normalize] Variables rewritten to lowercase during creation');
+      }
+
       // tool_ids are now automatically added from env variables (PRODUCTS_TOOL_ID and ORDERS_TOOL_ID)
       const agent = await agentService.createAgent(userId, {
         name: name.trim(),
-        first_message: first_message.trim(),
-        system_prompt: system_prompt.trim(),
+        first_message: firstMessageResult.normalized.trim(),
+        system_prompt: systemPromptResult.normalized.trim(),
         language: language.trim(),
         voice_id: voice_id?.trim(),
         knowledge_base_ids: knowledge_base_ids
@@ -125,10 +134,18 @@ export class AgentController {
         throw new AppError(400, 'VALIDATION_ERROR', 'knowledge_base_ids must be an array');
       }
 
+      // Normalize template variables to lowercase (prevents runtime call drops)
+      const firstMessageResult = normalizeTemplateVariables(first_message);
+      const systemPromptResult = normalizeTemplateVariables(system_prompt);
+      
+      if (firstMessageResult.changed || systemPromptResult.changed) {
+        console.log('[Agent Normalize] Variables rewritten to lowercase during update');
+      }
+
       // tool_ids are automatically added from env variables (PRODUCTS_TOOL_ID and ORDERS_TOOL_ID)
       const agent = await agentService.updateAgentPrompt(agentId, userId, {
-        first_message: first_message.trim(),
-        system_prompt: system_prompt.trim(),
+        first_message: firstMessageResult.normalized.trim(),
+        system_prompt: systemPromptResult.normalized.trim(),
         language: language.trim(),
         knowledge_base_ids: knowledge_base_ids
       });

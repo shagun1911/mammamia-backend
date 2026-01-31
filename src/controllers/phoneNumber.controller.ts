@@ -77,7 +77,8 @@ export class PhoneNumberController {
             supports_outbound: pn.supports_outbound ?? (pn.provider === 'twilio' || pn.provider === 'sip_trunk' || pn.provider === 'sip'),
             supports_inbound: pn.supports_inbound ?? (pn.provider === 'twilio'),
             elevenlabs_phone_number_id: pn.elevenlabs_phone_number_id,
-            created_at_unix: pn.created_at_unix
+            created_at_unix: pn.created_at_unix,
+            ...((pn as any).agent_id && { agent_id: (pn as any).agent_id })
           })),
           cursor: nextCursor
         });
@@ -534,7 +535,8 @@ export class PhoneNumberController {
         ...(phoneNumber.supports_inbound !== undefined && { supports_inbound: phoneNumber.supports_inbound }),
         ...(phoneNumber.supports_outbound !== undefined && { supports_outbound: phoneNumber.supports_outbound }),
         ...(phoneNumber.inbound_trunk_config && { inbound_trunk_config: phoneNumber.inbound_trunk_config }),
-        ...(phoneNumber.outbound_trunk_config && { outbound_trunk_config: phoneNumber.outbound_trunk_config })
+        ...(phoneNumber.outbound_trunk_config && { outbound_trunk_config: phoneNumber.outbound_trunk_config }),
+        ...((phoneNumber as any).agent_id && { agent_id: (phoneNumber as any).agent_id })
       });
     } catch (err: any) {
       console.error('[PhoneNumber Controller] GetById Error:', err);
@@ -554,6 +556,7 @@ export class PhoneNumberController {
     try {
       const { phone_number_id } = req.params;
       const { label, agent_id } = req.body;
+      const userId = req.user?.id || req.user?._id;
       const organizationId = req.user?.organizationId || req.user?._id;
 
       if (!organizationId) {
@@ -577,14 +580,54 @@ export class PhoneNumberController {
         });
       }
 
+      // Validate agent_id if provided
+      if (agent_id !== undefined && agent_id !== null && agent_id !== '') {
+        const Agent = (await import('../models/Agent')).default;
+        const userObjectId = userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId.toString());
+        
+        const agent = await Agent.findOne({
+          agent_id: agent_id,
+          userId: userObjectId
+        });
+
+        if (!agent) {
+          return res.status(404).json({
+            success: false,
+            error: "Agent not found",
+            detail: `Agent with ID ${agent_id} not found for this user`
+          });
+        }
+
+        // Log assignment change
+        const previousAgentId = phoneNumber.agent_id;
+        if (previousAgentId !== agent_id) {
+          console.log(
+            '[Phone Number] Inbound agent assigned:',
+            phone_number_id,
+            '→',
+            agent_id,
+            previousAgentId ? `(changed from ${previousAgentId})` : '(new assignment)'
+          );
+        }
+      } else if (agent_id === null || agent_id === '') {
+        // Allow clearing agent assignment
+        if (phoneNumber.agent_id) {
+          console.log(
+            '[Phone Number] Inbound agent unassigned:',
+            phone_number_id,
+            '(was',
+            phoneNumber.agent_id,
+            ')'
+          );
+        }
+      }
+
       // Update fields if provided
       if (label !== undefined) {
         phoneNumber.label = label;
       }
       if (agent_id !== undefined) {
-        // Note: agent_id is not in the schema yet, but keeping it for API compatibility
-        // You may need to add this field to the schema if needed
-        (phoneNumber as any).agent_id = agent_id;
+        phoneNumber.agent_id = agent_id || undefined; // Convert empty string to undefined
       }
 
       await phoneNumber.save();
@@ -595,7 +638,7 @@ export class PhoneNumberController {
         label: phoneNumber.label,
         provider: phoneNumber.provider,
         created_at_unix: phoneNumber.created_at_unix,
-        ...((phoneNumber as any).agent_id && { agent_id: (phoneNumber as any).agent_id })
+        agent_id: phoneNumber.agent_id || undefined
       });
     } catch (err: any) {
       console.error('[PhoneNumber Controller] Update Error:', err);

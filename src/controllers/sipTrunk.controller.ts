@@ -200,7 +200,7 @@ export class SipTrunkController {
    */
   async createInboundTrunk(req: AuthRequest, res: Response, next: NextFunction) {
     try {
-      const userId = req.user!.id;
+      const userId = req.user!._id?.toString() || req.user!.id;
       const { name, phone_numbers, allowed_numbers, krisp_enabled } = req.body;
 
       console.log('[SIP Trunk Controller] ===== CREATE INBOUND TRUNK REQUEST =====');
@@ -225,6 +225,42 @@ export class SipTrunkController {
         });
       }
 
+      // Check if user already has inbound setup in their database (query by userId)
+      const PhoneSettings = (await import('../models/PhoneSettings')).default;
+      const InboundNumber = (await import('../models/InboundNumber')).default;
+      const mongoose = (await import('mongoose')).default;
+      
+      // Convert userId to ObjectId for query
+      const userObjectId = userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId);
+      
+      console.log('[SIP Trunk Controller] Checking for existing inbound setup for userId:', userId, '(ObjectId:', userObjectId.toString(), ')');
+      
+      const userSettings = await PhoneSettings.findOne({ userId: userObjectId });
+      const userInboundNumbers = await InboundNumber.find({ userId: userObjectId });
+      
+      console.log('[SIP Trunk Controller] Existing setup check:', {
+        hasSettings: !!userSettings,
+        hasInboundTrunkId: !!(userSettings?.inboundTrunkId && userSettings.inboundTrunkId.trim() !== ''),
+        inboundTrunkId: userSettings?.inboundTrunkId,
+        inboundNumbersCount: userInboundNumbers?.length || 0
+      });
+      
+      const hasExistingInbound = (userSettings?.inboundTrunkId && userSettings.inboundTrunkId.trim() !== '') ||
+                                  (userInboundNumbers && userInboundNumbers.length > 0);
+      
+      if (hasExistingInbound) {
+        console.error('[SIP Trunk Controller] ❌ User already has inbound setup - blocking creation');
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'EXISTING_INBOUND_SETUP',
+            message: 'You already have an inbound setup configured. Please delete your existing inbound configuration first before creating a new one.'
+          }
+        });
+      }
+      
+      console.log('[SIP Trunk Controller] ✅ No existing inbound setup found - proceeding with trunk creation');
+
       // Step 1: Create inbound trunk
       console.log('[SIP Trunk Controller] Step 1: Creating inbound trunk...');
       const trunkResult = await sipTrunkService.createInboundTrunk({
@@ -237,46 +273,31 @@ export class SipTrunkController {
       console.log('[SIP Trunk Controller] ✅ Inbound trunk created:');
       console.log(JSON.stringify(trunkResult, null, 2));
 
-      // Step 2: Create dispatch rule using the trunk_id
-      console.log('[SIP Trunk Controller] Step 2: Creating dispatch rule with trunk_id:', trunkResult.trunk_id);
-
-      // Generate a unique name for the dispatch rule
-      const uniqueName = `dispatch-${Date.now()}`;
-
-      const dispatchResult = await sipTrunkService.createDispatchRule({
-        sip_trunk_id: trunkResult.trunk_id,
-        name: uniqueName,  // Random unique name
-        agent_name: 'love-papa'  // Fixed agent name as requested
-      });
-
-      console.log('[SIP Trunk Controller] ✅ Dispatch rule created:');
-      console.log(JSON.stringify(dispatchResult, null, 2));
-
+      // Step 2: Agent assignment is now handled by frontend
+      // Backend just creates the trunk, frontend will assign agents separately
+      // This allows user to select which agent to use
+      
       // Combine results
       const combinedResult = {
-        trunk: trunkResult,
-        dispatch_rule: dispatchResult
+        trunk: trunkResult
       };
 
       // Save to database
       console.log('[SIP Trunk Controller] Saving to database...');
-      const updatedSettings = await phoneSettingsService.update(userId, {
+      const updatedSettings = await phoneSettingsService.update(userId.toString(), {
         inboundTrunkId: trunkResult.trunk_id,
         inboundTrunkName: trunkResult.trunk_name,
-        inboundPhoneNumbers: phone_numbers,
-        inboundDispatchRuleId: dispatchResult.dispatch_rule_id,
-        inboundDispatchRuleName: dispatchResult.dispatch_rule_name
+        inboundPhoneNumbers: phone_numbers
       });
 
       console.log('[SIP Trunk Controller] ✅ Settings saved:', {
         inboundTrunkId: updatedSettings.inboundTrunkId,
         inboundTrunkName: updatedSettings.inboundTrunkName,
-        inboundDispatchRuleId: updatedSettings.inboundDispatchRuleId,
-        inboundDispatchRuleName: updatedSettings.inboundDispatchRuleName
+        inboundPhoneNumbers: updatedSettings.inboundPhoneNumbers
       });
 
       console.log('[SIP Trunk Controller] Sending response to frontend...');
-      res.json(successResponse(combinedResult, 'Inbound trunk and dispatch rule created successfully'));
+      res.json(successResponse(combinedResult, 'Inbound trunk created successfully. Please assign an agent to phone numbers in the next step.'));
     } catch (error) {
       next(error);
     }
@@ -293,6 +314,7 @@ export class SipTrunkController {
         agent_phone_number_id,
         to_number,
         customer_info,
+        dynamic_variables,
         sender_email: requestSenderEmail
       } = req.body;
 
@@ -623,6 +645,7 @@ export class SipTrunkController {
             agent_phone_number_id: phoneNumber.elevenlabs_phone_number_id,
             to_number,
             customer_info,
+            dynamic_variables, // Pass explicit dynamic_variables from request
             sender_email,
             // Include agent configuration
             agent_config: {
@@ -669,6 +692,7 @@ export class SipTrunkController {
                 agent_phone_number_id: elevenLabsResponse.phone_number_id,
                 to_number,
                 customer_info,
+                dynamic_variables, // Pass explicit dynamic_variables from request
                 sender_email,
                 // Include agent configuration
                 agent_config: {
@@ -715,6 +739,7 @@ export class SipTrunkController {
           agent_phone_number_id: phoneNumber.elevenlabs_phone_number_id,
           to_number,
           customer_info,
+          dynamic_variables, // Pass explicit dynamic_variables from request
           sender_email,
           // Include agent configuration
           agent_config: {

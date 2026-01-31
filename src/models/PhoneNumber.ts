@@ -28,6 +28,7 @@ export interface IPhoneNumber extends Document {
     transport?: string;
   };
   elevenlabs_phone_number_id?: string; // ElevenLabs-generated phone_number_id - REQUIRED for outbound calls
+  agent_id?: string; // Assigned agent for inbound calls
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -100,6 +101,11 @@ const PhoneNumberSchema = new Schema<IPhoneNumber>({
     required: false
   },
   elevenlabs_phone_number_id: {
+    type: String,
+    required: false,
+    index: true
+  },
+  agent_id: {
     type: String,
     required: false,
     index: true

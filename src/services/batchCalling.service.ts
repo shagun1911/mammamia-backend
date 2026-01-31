@@ -93,6 +93,9 @@ export class BatchCallingService {
       // Python API requires phone_number_id (ElevenLabs phone number ID)
       const phoneNumberId = String(data.phone_number_id).trim();
       
+      // Import utility function for building dynamic variables
+      const { buildDynamicVariables } = await import('../utils/dynamicVariables.util');
+
       // Format recipients with dynamic_variables structure
       // CRITICAL: ElevenLabs needs name, customer_name, email for first_message and appointment/booking tools
       const formattedRecipients = data.recipients.map((recipient, index) => {
@@ -105,21 +108,25 @@ export class BatchCallingService {
           formatted.email = recipient.email;
         }
         
-        let dynamicVars: Record<string, any> = {};
-        if (recipient.dynamic_variables && typeof recipient.dynamic_variables === 'object') {
-          dynamicVars = { ...recipient.dynamic_variables };
-        } else {
-          Object.keys(recipient).forEach(key => {
-            if (key !== 'phone_number' && key !== 'name' && key !== 'email' && key !== 'dynamic_variables') {
-              dynamicVars[key] = (recipient as any)[key];
-            }
-          });
-        }
-        const safeName = (recipient.name || formatted.name || 'there').trim() || 'there';
-        const safeEmail = String(recipient.email || formatted.email || '').trim();
-        dynamicVars.name = dynamicVars.name ?? safeName;
-        dynamicVars.customer_name = dynamicVars.customer_name ?? safeName;
-        dynamicVars.email = dynamicVars.email ?? safeEmail;
+        // Build dynamic_variables by merging customer_info (name, email) and explicit dynamic_variables
+        const customerInfo = {
+          name: recipient.name,
+          email: recipient.email
+        };
+        
+        // Also include any other fields from recipient as part of customer_info
+        Object.keys(recipient).forEach(key => {
+          if (key !== 'phone_number' && key !== 'name' && key !== 'email' && key !== 'dynamic_variables') {
+            customerInfo[key] = (recipient as any)[key];
+          }
+        });
+        
+        const dynamicVars = buildDynamicVariables(
+          customerInfo,
+          recipient.dynamic_variables
+        );
+        
+        // ALWAYS include dynamic_variables (never omit)
         formatted.dynamic_variables = dynamicVars;
         
         return formatted;
@@ -135,6 +142,11 @@ export class BatchCallingService {
           has_dynamic_variables: !!recipient.dynamic_variables,
           dynamic_variables: recipient.dynamic_variables || {}
         });
+        // Defensive logging for dynamic variables
+        console.log(
+          `[Dynamic Variables] Recipient ${idx + 1} final variables:`,
+          JSON.stringify(recipient.dynamic_variables, null, 2)
+        );
       });
       
       // Python/ElevenLabs API expects agent_phone_number_id (official API uses this key)

@@ -1,9 +1,12 @@
 import axios from 'axios';
 import { AppError } from '../middleware/error.middleware';
 
-// Use PYTHON_API_URL if available (for elvenlabs-voiceagent), otherwise fall back to COMM_API_URL
-// This ensures consistency - if PYTHON_API_URL is set, use it for all Python API calls
-const COMM_API_URL = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
+// Use PYTHON_API_URL from environment variables (required for ElevenLabs API)
+const PYTHON_API_URL = process.env.PYTHON_API_URL;
+if (!PYTHON_API_URL) {
+  throw new Error('PYTHON_API_URL is not configured in environment variables. This is required for ElevenLabs API calls.');
+}
+const COMM_API_URL = PYTHON_API_URL; // Alias for backward compatibility
 
 /** Country codes that often require TLS instead of UDP (e.g. Italian +39 carriers) */
 const TLS_PREFERRED_COUNTRY_CODES = ['39'];
@@ -109,6 +112,7 @@ interface InternalOutboundCallRequest {
     email?: string;
     name?: string;
   };
+  dynamic_variables?: Record<string, any>; // Explicit dynamic variables (highest priority)
   sender_email?: string;
   userId?: string; // Used for fetching e-commerce credentials
   // Agent configuration for call execution (Internal only - not sent to Python)
@@ -130,7 +134,7 @@ interface OutboundCallRequest {
     email?: string;
     name?: string;
   };
-  dynamic_variables?: Record<string, string>;
+  dynamic_variables: Record<string, any>; // REQUIRED - always included
   ecommerce_credentials?: {
     api_key: string;
     api_secret: string;
@@ -622,61 +626,123 @@ export class SipTrunkService {
   }
 
   /**
-   * Create Dispatch Rule
-   * Calls Python /calls/create-dispatch-rule endpoint
+   * Assign agent to phone number using ElevenLabs API
+   * PATCH /api/v1/phone-numbers/{phone_number_id}
    */
-  async createDispatchRule(data: CreateDispatchRuleRequest): Promise<CreateDispatchRuleResponse> {
+  async assignAgentToPhoneNumber(phone_number_id: string, agent_id: string): Promise<{ phone_number_id: string; agent_id: string }> {
     try {
-      // Build URL with query parameters (not body!)
-      const pythonUrl = `${COMM_API_URL}/calls/create-dispatch-rule?sip_trunk_id=${encodeURIComponent(data.sip_trunk_id)}&name=${encodeURIComponent(data.name)}&agent_name=${encodeURIComponent(data.agent_name)}`;
+      const pythonUrl = `${COMM_API_URL}/api/v1/phone-numbers/${encodeURIComponent(phone_number_id)}`;
 
-      console.log('[SIP Trunk Service] ===== CREATING DISPATCH RULE =====');
-      console.log('[SIP Trunk Service] Python API URL:', pythonUrl);
-      console.log('[SIP Trunk Service] Query params:', {
-        sip_trunk_id: data.sip_trunk_id,
-        name: data.name,
-        agent_name: data.agent_name
+      console.log('[SIP Trunk Service] ===== ASSIGNING AGENT TO PHONE NUMBER =====');
+      console.log('[SIP Trunk Service] ElevenLabs API URL:', pythonUrl);
+      console.log('[SIP Trunk Service] Request payload:', {
+        agent_id: agent_id
       });
 
-      const response = await axios.post<CreateDispatchRuleResponse>(
+      const response = await axios.patch<any>(
         pythonUrl,
-        {}, // Empty body - all params in URL
+        {
+          agent_id: agent_id
+        },
         {
           timeout: 60000 // 60 seconds timeout
         }
       );
 
-      console.log('[SIP Trunk Service] ✅ Dispatch rule created successfully');
+      console.log('[SIP Trunk Service] ✅ Agent assigned to phone number successfully');
       console.log('[SIP Trunk Service] Response status:', response.status);
-      console.log('[SIP Trunk Service] Response body:');
-      console.log(JSON.stringify(response.data, null, 2));
-      console.log('[SIP Trunk Service] Response fields:');
-      console.log('  - status:', response.data.status);
-      console.log('  - message:', response.data.message);
-      console.log('  - dispatch_rule_id:', response.data.dispatch_rule_id);
-      console.log('  - dispatch_rule_name:', response.data.dispatch_rule_name);
+      console.log('[SIP Trunk Service] Response body:', JSON.stringify(response.data, null, 2));
 
-      return response.data;
+      return {
+        phone_number_id: response.data.phone_number_id || phone_number_id,
+        agent_id: response.data.agent_id || agent_id
+      };
     } catch (error: any) {
-      console.error('[SIP Trunk] ❌ Failed to create dispatch rule:', error.response?.data || error.message);
-
-      // Log detailed validation errors
-      if (error.response?.data?.detail && Array.isArray(error.response.data.detail)) {
-        console.error('[SIP Trunk] ❌ VALIDATION ERRORS - Missing fields:');
-        error.response.data.detail.forEach((err: any, index: number) => {
-          console.error(`  ${index + 1}. Field: ${err.loc?.join(' -> ') || 'unknown'}`);
-          console.error(`     Type: ${err.type}`);
-          console.error(`     Message: ${err.msg}`);
-          console.error(`     Input: ${JSON.stringify(err.input)}`);
-        });
-      }
-
+      console.error('[SIP Trunk] ❌ Failed to assign agent to phone number:', error.response?.data || error.message);
       throw new AppError(
         error.response?.status || 500,
-        'DISPATCH_RULE_ERROR',
-        error.response?.data?.message || error.response?.data?.detail || 'Failed to create dispatch rule'
+        'AGENT_ASSIGNMENT_ERROR',
+        error.response?.data?.message || error.response?.data?.detail || `Failed to assign agent ${agent_id} to phone number ${phone_number_id}`
       );
     }
+  }
+
+  /**
+   * Get phone number ID from ElevenLabs API by phone number string
+   * GET /api/v1/phone-numbers and find matching phone_number
+   */
+  async getPhoneNumberIdByPhoneNumber(phone_number: string): Promise<string | null> {
+    try {
+      const pythonUrl = `${COMM_API_URL}/api/v1/phone-numbers`;
+
+      console.log('[SIP Trunk Service] ===== FETCHING PHONE NUMBER ID =====');
+      console.log('[SIP Trunk Service] ElevenLabs API URL:', pythonUrl);
+      console.log('[SIP Trunk Service] Looking for phone number:', phone_number);
+
+      const response = await axios.get<any>(
+        pythonUrl,
+        {
+          timeout: 60000 // 60 seconds timeout
+        }
+      );
+
+      const phoneNumbers = response.data?.phone_numbers || [];
+      const matchingNumber = phoneNumbers.find((pn: any) => pn.phone_number === phone_number);
+
+      if (matchingNumber?.phone_number_id) {
+        console.log('[SIP Trunk Service] ✅ Found phone number ID:', matchingNumber.phone_number_id);
+        return matchingNumber.phone_number_id;
+      }
+
+      console.warn('[SIP Trunk Service] ⚠️ Phone number not found in ElevenLabs:', phone_number);
+      return null;
+    } catch (error: any) {
+      console.error('[SIP Trunk] ❌ Failed to fetch phone number ID:', error.response?.data || error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Assign agent to multiple phone numbers
+   * For each phone number, finds its phone_number_id and assigns the agent
+   */
+  async assignAgentToPhoneNumbers(phone_numbers: string[], agent_id: string): Promise<Array<{ phone_number: string; phone_number_id: string; success: boolean; error?: string }>> {
+    const results = [];
+
+    for (const phone_number of phone_numbers) {
+      try {
+        // Get phone_number_id from ElevenLabs
+        const phone_number_id = await this.getPhoneNumberIdByPhoneNumber(phone_number);
+        
+        if (!phone_number_id) {
+          results.push({
+            phone_number,
+            phone_number_id: '',
+            success: false,
+            error: `Phone number ${phone_number} not found in ElevenLabs. Please register it first.`
+          });
+          continue;
+        }
+
+        // Assign agent
+        await this.assignAgentToPhoneNumber(phone_number_id, agent_id);
+        
+        results.push({
+          phone_number,
+          phone_number_id,
+          success: true
+        });
+      } catch (error: any) {
+        results.push({
+          phone_number,
+          phone_number_id: '',
+          success: false,
+          error: error.message || 'Failed to assign agent'
+        });
+      }
+    }
+
+    return results;
   }
 
   /**
@@ -705,6 +771,22 @@ export class SipTrunkService {
         }
       }
 
+      // Build dynamic_variables by merging customer_info and explicit dynamic_variables
+      const { buildDynamicVariables } = await import('../utils/dynamicVariables.util');
+      const dynamicVariables = buildDynamicVariables(
+        data.customer_info,
+        data.dynamic_variables
+      );
+
+      // Log dynamic variables
+      if (!data.dynamic_variables) {
+        console.warn('[Dynamic Variables] Missing in request — injecting from customer_info');
+      }
+      console.log(
+        '[Dynamic Variables] Final payload variables:',
+        JSON.stringify(dynamicVariables, null, 2)
+      );
+
       // Build payload matching ElevenLabs API schema
       const body: Record<string, unknown> = {
         agent_id: data.agent_id,
@@ -714,6 +796,7 @@ export class SipTrunkService {
           name: (data.customer_info?.name || "there").trim(),
           email: (data.customer_info?.email || "").trim()
         },
+        dynamic_variables: dynamicVariables, // ALWAYS include - never omit
         ...(ecommerceCredentials && { ecommerce_credentials: ecommerceCredentials })
       };
 
@@ -946,7 +1029,22 @@ export class SipTrunkService {
         }
       }
 
-      // Build payload matching ElevenLabs API schema (Strict)
+      // Build dynamic_variables by merging customer_info and explicit dynamic_variables
+      const { buildDynamicVariables } = await import('../utils/dynamicVariables.util');
+      const dynamicVariables = buildDynamicVariables(
+        data.customer_info,
+        data.dynamic_variables
+      );
+
+      // Log dynamic variables
+      if (!data.dynamic_variables) {
+        console.warn('[Dynamic Variables] Missing in request — injecting from customer_info');
+      }
+      console.log(
+        '[Dynamic Variables] Final payload variables:',
+        JSON.stringify(dynamicVariables, null, 2)
+      );
+
       // Build payload matching ElevenLabs API schema (Strict)
       const body: OutboundCallRequest = {
         agent_id: data.agent_id,
@@ -956,10 +1054,7 @@ export class SipTrunkService {
           name: (data.customer_info?.name || "there").trim(),
           email: (data.customer_info?.email || "").trim()
         },
-        dynamic_variables: {
-          name: (data.customer_info?.name || "there").trim(),
-          email: (data.customer_info?.email || "").trim()
-        }
+        dynamic_variables: dynamicVariables // ALWAYS include - never omit
       };
       
       // Add secure e-commerce credentials if valid

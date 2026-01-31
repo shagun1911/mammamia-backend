@@ -241,6 +241,15 @@ const startServer = async () => {
     // Connect to MongoDB
     await connectDatabase();
     
+    // Normalize all existing agent template variables to lowercase (one-time migration)
+    try {
+      const { normalizeAllAgentTemplates } = await import('./utils/migrateAgentTemplateVariables');
+      await normalizeAllAgentTemplates();
+    } catch (error: any) {
+      logger.warn('⚠️  Could not normalize agent templates:', error.message);
+      // Don't block server startup if migration fails
+    }
+    
     // Connect to Redis
     await connectRedis();
 

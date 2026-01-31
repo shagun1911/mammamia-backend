@@ -9,12 +9,15 @@ export class PhoneSettingsService {
    * Get phone settings for a user (creates default if doesn't exist)
    */
   async get(userId: string) {
-    let settings = await PhoneSettings.findOne({ userId });
+    // Convert userId to ObjectId for query
+    const userObjectId = userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId);
+    
+    let settings = await PhoneSettings.findOne({ userId: userObjectId });
     
     if (!settings) {
       // Create default settings if none exist
       settings = await PhoneSettings.create({
-        userId,
+        userId: userObjectId,
         selectedVoice: 'adam',
         twilioPhoneNumber: '',
         livekitSipTrunkId: '',

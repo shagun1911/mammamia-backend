@@ -217,9 +217,12 @@ export class InboundAgentConfigController {
         requestBody.escalation_condition = req.body.escalation_condition;
       }
 
-      // Use PYTHON_API_URL if available (for elvenlabs-voiceagent), otherwise fall back to COMM_API_URL
-      const COMM_API = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
-      const testUrl = `${COMM_API}/calls/inbound`;
+      // Use PYTHON_API_URL from environment variables
+      const PYTHON_API = process.env.PYTHON_API_URL;
+      if (!PYTHON_API) {
+        throw new AppError(500, 'CONFIGURATION_ERROR', 'PYTHON_API_URL is not configured in environment variables. This is required for inbound call testing.');
+      }
+      const testUrl = `${PYTHON_API}/calls/inbound`;
 
       console.log('\n========== TEST INBOUND CALL ==========');
       console.log('📞 [Test Inbound Call] URL:', testUrl);
