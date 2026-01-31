@@ -261,6 +261,42 @@ const startServer = async () => {
     } catch (error: any) {
       logger.warn('⚠️  Could not load CSV import queue:', error.message);
     }
+
+    // Resync all agents with tool_ids to ElevenLabs on startup
+    // This ensures tools survive server restarts and are always available
+    try {
+      const { agentService } = await import('./services/agent.service');
+      const Agent = (await import('./models/Agent')).default;
+      
+      const allAgents = await Agent.find({ 
+        tool_ids: { $exists: true }
+      }).lean();
+      
+      const agentsWithTools = allAgents.filter((agent: any) => 
+        agent.tool_ids && Array.isArray(agent.tool_ids) && agent.tool_ids.length > 0
+      );
+      
+      if (agentsWithTools.length > 0) {
+        logger.info(`[ElevenLabs Sync] Resyncing ${agentsWithTools.length} agents with tools on startup...`);
+        
+        // Sync all agents in parallel (but with error handling per agent)
+        const syncPromises = agentsWithTools.map(async (agent: any) => {
+          try {
+            await agentService.syncAgentToolsToElevenLabs(agent);
+          } catch (error: any) {
+            logger.warn(`[ElevenLabs Sync] Failed to sync agent ${agent.agent_id} on startup:`, error.message);
+          }
+        });
+        
+        await Promise.allSettled(syncPromises);
+        logger.info(`[ElevenLabs Sync] ✅ Startup resync completed for ${agentsWithTools.length} agents`);
+      } else {
+        logger.info('[ElevenLabs Sync] No agents with tools found, skipping startup resync');
+      }
+    } catch (error: any) {
+      logger.warn('⚠️  Could not perform startup agent sync:', error.message);
+      // Don't block server startup if sync fails
+    }
     
     // Start server with Socket.io
     httpServer.listen(PORT, () => {

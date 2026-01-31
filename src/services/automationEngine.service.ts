@@ -331,19 +331,72 @@ export class AutomationEngine {
 
           const { sipTrunkService } = await import('./sipTrunk.service');
           const customerInfo = { name: contact.name || 'Customer', ...(contact.email && { email: contact.email }) };
+          
+          // Resolve sender_email using priority order
+          let sender_email: string | undefined;
+          
+          if (context?.userId) {
+            try {
+              const userId = context.userId.toString();
+              const userObjectId = new mongoose.Types.ObjectId(userId);
+              
+              // Priority 1: Connected Gmail integration
+              const googleIntegration = await GoogleIntegration.findOne({
+                userId: userObjectId,
+                'services.gmail': true,
+                status: 'active'
+              }).lean();
+              
+              if (googleIntegration?.googleProfile?.email) {
+                sender_email = googleIntegration.googleProfile.email;
+              } else {
+                // Try SocialIntegration as fallback
+                const SocialIntegration = (await import('../models/SocialIntegration')).default;
+                const socialIntegration = await SocialIntegration.findOne({
+                  userId: userObjectId,
+                  platform: 'gmail',
+                  status: 'connected'
+                }).lean();
+                
+                if (socialIntegration) {
+                  sender_email = socialIntegration.credentials?.email || socialIntegration.metadata?.email;
+                }
+              }
+              
+              // Priority 2: Default SMTP sender
+              if (!sender_email) {
+                sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
+              }
+            } catch (emailError: any) {
+              console.warn('[Automation Engine] ⚠️ Error resolving sender email:', emailError.message);
+              // Fallback to DEFAULT_SMTP_SENDER_EMAIL on error
+              if (!sender_email) {
+                sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
+              }
+            }
+          } else {
+            // No userId, try DEFAULT_SMTP_SENDER_EMAIL
+            sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
+          }
+          
+          // Log resolved sender email
+          console.log('[Outbound Call] sender_email resolved:', sender_email ?? 'python-fallback');
+          
           if (phoneNumber.provider === 'twilio') {
             await sipTrunkService.twilioOutboundCall({
               agent_id: config.agent_id,
               agent_phone_number_id: elevenlabsId,
               to_number: normalizedPhone,
-              customer_info: customerInfo
+              customer_info: customerInfo,
+              sender_email
             });
           } else {
             await sipTrunkService.outboundCall({
               agent_id: config.agent_id,
               agent_phone_number_id: elevenlabsId,
               to_number: normalizedPhone,
-              customer_info: customerInfo
+              customer_info: customerInfo,
+              sender_email
             });
           }
 

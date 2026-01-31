@@ -103,6 +103,37 @@ WORKFLOW:
       next(error);
     }
   };
+
+  /**
+   * Update webhook URL for a specific email template
+   * POST /api/v1/email-templates/:templateId/update-webhook
+   */
+  updateTemplateWebhook = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user!.id;
+      const { templateId } = req.params;
+      
+      // IGNORE any webhook_base_url from request body - always use ENV
+      const template = await emailTemplateService.updateTemplateWebhookUrl(userId, templateId);
+      res.json(successResponse(template, 'Email template webhook URL updated successfully'));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /**
+   * Update webhook URLs for all email templates (admin/maintenance endpoint)
+   * POST /api/v1/email-templates/update-all-webhooks
+   */
+  updateAllTemplatesWebhook = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      // IGNORE any webhook_base_url from request body - always use ENV
+      const result = await emailTemplateService.updateAllTemplatesWebhookUrl();
+      res.json(successResponse(result, `Updated ${result.updated} templates, ${result.failed} failed`));
+    } catch (error) {
+      next(error);
+    }
+  };
 }
 
 export const emailTemplateController = new EmailTemplateController();

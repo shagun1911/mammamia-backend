@@ -18,19 +18,30 @@ import { AppError } from '../middleware/error.middleware';
  */
 export class EmailWebhookController {
   handleEmailWebhook = async (req: Request, res: Response, next: NextFunction) => {
+    // GUARANTEED ENTRY LOG - FIRST LINE
+    const { templateId } = req.params;
+    const payload = req.body || {};
+    const { to, recipient, parameters = {}, conversation_id } = payload;
+    
+    // Extract arguments from payload
+    const params = typeof parameters === 'object' && Object.keys(parameters).length > 0
+      ? parameters
+      : { ...payload };
+    delete params.to;
+    delete params.recipient;
+    delete params.conversation_id;
+    delete params.parameters;
+    
+    console.log(
+      '[TOOL NODE] 🔥 ENTERED TOOL EXECUTION',
+      JSON.stringify({
+        template_id: templateId, // templateId from URL params
+        arguments: params,
+        conversation_id
+      }, null, 2)
+    );
+    
     try {
-      const { templateId } = req.params;
-      const payload = req.body || {};
-      const { to, recipient, parameters = {}, conversation_id } = payload;
-
-      // Parameters might be at top level (e.g. { customer, Date, time }) or in parameters object
-      const params = typeof parameters === 'object' && Object.keys(parameters).length > 0
-        ? parameters
-        : { ...payload };
-      delete params.to;
-      delete params.recipient;
-      delete params.conversation_id;
-      delete params.parameters;
 
       if (!templateId) {
         throw new AppError(422, 'VALIDATION_ERROR', 'template_id is required');
@@ -43,10 +54,40 @@ export class EmailWebhookController {
         throw new AppError(404, 'NOT_FOUND', `Email template ${templateId} not found`);
       }
 
+      const tool_id = (template as any).tool_id;
+      const templateName = (template as any).name;
+      const templateParams = (template as any).parameters || [];
+
+      // PARAMETER VALIDATION WITH LOGGING - Before any execution
+      const missing = templateParams
+        .filter((p: any) => p.required === true)
+        .filter((p: any) => {
+          const paramValue = params[p.name];
+          return paramValue == null || paramValue === '' || (typeof paramValue === 'string' && paramValue.trim() === '');
+        });
+
+      if (missing.length > 0) {
+        console.error('[TOOL NODE ❌ MISSING PARAMS]', {
+          tool_id,
+          missing: missing.map((m: any) => m.name),
+          received: params
+        });
+        throw new AppError(
+          422,
+          'VALIDATION_ERROR',
+          `Missing required parameters: ${missing.map((m: any) => m.name).join(', ')}`
+        );
+      }
+
       // Resolve recipient: to > recipient > parameters.email
       let recipientEmail = (to || recipient || params?.email)?.trim();
       if (!recipientEmail) {
-        console.error('[Email Webhook] No recipient email. Body:', JSON.stringify(req.body));
+        console.error('[Tool Execution] ❌ No recipient email', {
+          tool_id,
+          template_name: templateName,
+          body: JSON.stringify(req.body),
+          conversation_id
+        });
         throw new AppError(422, 'VALIDATION_ERROR', 'Recipient email (to or recipient) is required');
       }
 
@@ -87,8 +128,10 @@ export class EmailWebhookController {
         }
       }
 
+      let senderEmail: string | undefined;
+      
       if (gmailIntegration) {
-        const senderEmail = gmailIntegration.getDecryptedApiKey();
+        senderEmail = gmailIntegration.getDecryptedApiKey();
         console.log('[Email Webhook] Sending via Gmail (Social):', {
           templateId,
           from: senderEmail,
@@ -106,16 +149,35 @@ export class EmailWebhookController {
           to: recipientEmail,
           subject: subject.substring(0, 50)
         });
-        await emailService.sendEmail({
+        const emailResult = await emailService.sendEmail({
           to: recipientEmail,
           subject,
           text: bodyText,
           html: bodyText.replace(/\n/g, '<br>')
         });
+        // Extract sender email from SMTP service if available
+        senderEmail = process.env.DEFAULT_SMTP_SENDER_EMAIL || process.env.SMTP_USER;
       }
 
+      // Log successful execution
+      console.log('[Tool Execution] ✅ Email sent successfully', {
+        tool_id,
+        template_name: templateName,
+        template_id: templateId,
+        sender_email: senderEmail,
+        recipient_email: recipientEmail,
+        conversation_id
+      });
+
       res.status(200).json({ success: true, message: 'Email sent successfully' });
-    } catch (error) {
+    } catch (error: any) {
+      // Log execution failure
+      console.error('[Tool Execution] ❌ Execution failed', {
+        error: error.message,
+        stack: error.stack,
+        template_id: req.params.templateId,
+        body: req.body
+      });
       next(error);
     }
   };

@@ -6,33 +6,29 @@ import mongoose from 'mongoose';
 const PYTHON_API_BASE_URL = process.env.PYTHON_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
 
 /**
- * Base URL for the email webhook - the Python/ElevenLabs API calls this when the agent invokes the email tool.
- * 
- * IMPORTANT: For Gmail from Socials to work, webhook MUST reach our backend. Set TEMPLATE_WEBHOOK_ENDPOINT
- * to your deployed backend URL (e.g. https://aisteinai-backend-2026.onrender.com). Then recreate the template.
- * 
- * Priority: TEMPLATE_WEBHOOK_ENDPOINT > NGROK_BASE_URL > BACKEND_URL > PYTHON_API_URL (fallback, uses SMTP)
+ * Get webhook endpoint from environment variable.
+ * ALWAYS uses TEMPLATE_WEBHOOK_ENDPOINT - fails fast if not configured.
+ * Client input is IGNORED - webhook_base_url is always enforced from ENV.
  */
 function getTemplateWebhookEndpoint(): string {
-  const explicit = process.env.TEMPLATE_WEBHOOK_ENDPOINT?.trim();
-  if (explicit) {
-    const url = explicit.endsWith('/api/v1') ? explicit : `${explicit.replace(/\/$/, '')}/api/v1`;
-    console.log('[EmailTemplate Service] Using TEMPLATE_WEBHOOK_ENDPOINT (Gmail from Socials will work):', url);
-    return url;
+  const webhookBaseUrl = process.env.TEMPLATE_WEBHOOK_ENDPOINT?.trim();
+  
+  if (!webhookBaseUrl) {
+    throw new AppError(
+      500,
+      'CONFIGURATION_ERROR',
+      'TEMPLATE_WEBHOOK_ENDPOINT is not configured in environment variables. This is required for email template webhooks.'
+    );
   }
   
-  const ngrok = process.env.NGROK_BASE_URL?.trim();
-  if (ngrok) return ngrok.endsWith('/api/v1') ? ngrok : `${ngrok.replace(/\/$/, '')}/api/v1`;
+  // Ensure URL ends with /api/v1
+  const url = webhookBaseUrl.endsWith('/api/v1') 
+    ? webhookBaseUrl 
+    : `${webhookBaseUrl.replace(/\/$/, '')}/api/v1`;
   
-  const backend = process.env.BACKEND_URL?.trim();
-  if (backend && !backend.includes('localhost') && !backend.includes('127.0.0.1')) {
-    return backend.endsWith('/api/v1') ? backend : `${backend.replace(/\/$/, '')}/api/v1`;
-  }
+  console.log('[Email Template] Webhook endpoint enforced:', url);
   
-  const pythonUrl = (process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com').replace(/\/$/, '');
-  const pythonBase = pythonUrl.endsWith('/api/v1') ? pythonUrl : `${pythonUrl}/api/v1`;
-  console.log('[EmailTemplate Service] Using PYTHON_API_URL for webhook - Gmail from Socials will NOT work (use TEMPLATE_WEBHOOK_ENDPOINT)');
-  return pythonBase;
+  return url;
 }
 
 export interface CreateEmailTemplateRequest {
@@ -69,10 +65,8 @@ export class EmailTemplateService {
     if (!data.body_template || !data.body_template.trim()) {
       throw new AppError(422, 'VALIDATION_ERROR', 'body_template is required');
     }
+    // ALWAYS enforce webhook URL from ENV - ignore any client input
     const webhookBaseUrl = getTemplateWebhookEndpoint();
-    if (!webhookBaseUrl) {
-      throw new AppError(500, 'CONFIGURATION_ERROR', 'Could not determine webhook URL. Set TEMPLATE_WEBHOOK_ENDPOINT, NGROK_BASE_URL, or BACKEND_URL in environment variables');
-    }
     if (!Array.isArray(data.parameters)) {
       throw new AppError(422, 'VALIDATION_ERROR', 'parameters must be an array');
     }
@@ -259,6 +253,121 @@ export class EmailTemplateService {
         // Don't throw - template deletion succeeded, agent update is a background operation
       }
     }
+  }
+
+  /**
+   * Update webhook_base_url for all existing email templates to use TEMPLATE_WEBHOOK_ENDPOINT.
+   * This fixes templates that were created with incorrect or stale webhook URLs.
+   */
+  async updateAllTemplatesWebhookUrl(): Promise<{ updated: number; failed: number }> {
+    const webhookBaseUrl = getTemplateWebhookEndpoint();
+    
+    console.log('[Email Template] Updating webhook URLs for all templates to:', webhookBaseUrl);
+    
+    let updated = 0;
+    let failed = 0;
+    
+    try {
+      const templates = await EmailTemplate.find({}).lean();
+      
+      for (const template of templates) {
+        try {
+          const templateId = (template as any).template_id;
+          const currentWebhook = (template as any).webhook_base_url;
+          
+          // Skip if already correct
+          if (currentWebhook === webhookBaseUrl) {
+            continue;
+          }
+          
+          // Update in database
+          await EmailTemplate.updateOne(
+            { _id: (template as any)._id },
+            { $set: { webhook_base_url: webhookBaseUrl } }
+          );
+          
+          // Update in Python API if template_id exists
+          if (templateId) {
+            try {
+              const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/email-templates/${templateId}`;
+              await axios.patch(pythonUrl, {
+                webhook_base_url: webhookBaseUrl
+              }, {
+                headers: { 'Content-Type': 'application/json' },
+                timeout: 30000
+              });
+              console.log(`[Email Template] ✅ Updated webhook for template ${templateId}`);
+            } catch (pythonError: any) {
+              console.error(`[Email Template] ⚠️ Failed to update Python API for template ${templateId}:`, pythonError.message);
+              // Continue - DB update succeeded
+            }
+          }
+          
+          updated++;
+        } catch (error: any) {
+          console.error(`[Email Template] ⚠️ Failed to update template ${(template as any)._id}:`, error.message);
+          failed++;
+        }
+      }
+      
+      console.log(`[Email Template] ✅ Updated ${updated} templates, ${failed} failed`);
+      return { updated, failed };
+    } catch (error: any) {
+      console.error('[Email Template] ❌ Failed to update templates:', error.message);
+      throw new AppError(500, 'UPDATE_ERROR', `Failed to update template webhook URLs: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update webhook_base_url for a specific email template.
+   */
+  async updateTemplateWebhookUrl(userId: string, templateId: string): Promise<IEmailTemplate> {
+    const webhookBaseUrl = getTemplateWebhookEndpoint();
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+    
+    // Find template
+    let template = null;
+    let query: any = { userId: userObjectId };
+    
+    if (mongoose.Types.ObjectId.isValid(templateId) && templateId.length === 24) {
+      query._id = templateId;
+      template = await EmailTemplate.findOne(query);
+    }
+    
+    if (!template) {
+      query = { userId: userObjectId, template_id: templateId };
+      template = await EmailTemplate.findOne(query);
+    }
+    
+    if (!template) {
+      throw new AppError(404, 'NOT_FOUND', 'Email template not found');
+    }
+    
+    const pythonTemplateId = (template as any).template_id;
+    
+    // Update in database
+    (template as any).webhook_base_url = webhookBaseUrl;
+    await template.save();
+    
+    // Update in Python API
+    if (pythonTemplateId) {
+      try {
+        const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/email-templates/${pythonTemplateId}`;
+        await axios.patch(pythonUrl, {
+          webhook_base_url: webhookBaseUrl
+        }, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 30000
+        });
+        console.log(`[Email Template] ✅ Updated webhook for template ${pythonTemplateId} in Python API`);
+      } catch (pythonError: any) {
+        console.error(`[Email Template] ⚠️ Failed to update Python API:`, pythonError.message);
+        // Don't throw - DB update succeeded
+      }
+    }
+    
+    console.log(`[Email Template] ✅ Updated webhook URL for template ${templateId}`);
+    return template;
   }
 }
 

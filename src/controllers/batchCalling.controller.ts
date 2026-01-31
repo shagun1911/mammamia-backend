@@ -62,14 +62,24 @@ export class BatchCallingController {
               }
             }
 
+            // Priority 2: Default SMTP sender
             if (!sender_email) {
-              console.warn('[Batch Calling Controller] ⚠️ No Gmail email found in connected integrations');
+              sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
             }
           } catch (emailError: any) {
-            console.warn('[Batch Calling Controller] ⚠️ Error fetching Gmail email:', emailError.message);
-            // Continue without sender_email - it's optional
+            console.warn('[Batch Calling Controller] ⚠️ Error resolving sender email:', emailError.message);
+            // Fallback to DEFAULT_SMTP_SENDER_EMAIL on error
+            if (!sender_email) {
+              sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
+            }
           }
+        } else {
+          // No organizationId, try DEFAULT_SMTP_SENDER_EMAIL
+          sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
         }
+        
+        // Log resolved sender email
+        console.log('[Outbound Call] sender_email resolved:', sender_email ?? 'python-fallback');
       }
 
       console.log('[Batch Calling Controller] ===== SUBMIT BATCH CALL REQUEST =====');

@@ -114,6 +114,61 @@ export class AgentService {
   }
 
   /**
+   * Sync agent tools to ElevenLabs runtime.
+   * This ensures tool_ids are patched into the agent so they can be invoked.
+   * 
+   * @param agent - Agent document or IAgent object with agent_id, tool_ids, and system_prompt
+   */
+  async syncAgentToolsToElevenLabs(agent: IAgent | any): Promise<void> {
+    try {
+      const agentId = agent.agent_id;
+      const toolIds = agent.tool_ids || [];
+      const systemPrompt = agent.system_prompt || '';
+
+      if (!agentId) {
+        console.warn('[ElevenLabs Sync] Agent missing agent_id, skipping sync');
+        return;
+      }
+
+      console.log('[ElevenLabs Sync] Agent:', agentId, 'Tools:', toolIds);
+
+      const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${agentId}/prompt`;
+      
+      // Build request body preserving all agent settings
+      const requestBody: any = {
+        system_prompt: systemPrompt,
+        tool_ids: toolIds,
+        first_message: agent.first_message || '',
+        language: agent.language || 'en',
+        knowledge_base_ids: agent.knowledge_base_ids || [],
+      };
+
+      // Add optional fields if they exist
+      if (agent.voice_id) {
+        requestBody.voice_id = agent.voice_id;
+      }
+      if (agent.greeting_message) {
+        requestBody.greeting_message = agent.greeting_message;
+      }
+      
+      await axios.patch(pythonUrl, requestBody, {
+        timeout: 30000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      // Enable tool_node if there are tools
+      if (toolIds.length > 0) {
+        await this.enableToolNodeForAgent(agentId);
+      }
+
+      console.log(`[ElevenLabs Sync] ✅ Synced agent ${agentId} with ${toolIds.length} tools`);
+    } catch (error: any) {
+      console.error(`[ElevenLabs Sync] ⚠️ Failed to sync agent ${agent.agent_id} to ElevenLabs:`, error.message);
+      // Don't throw - this is a background sync, shouldn't block operations
+    }
+  }
+
+  /**
    * Update agent tool_ids in Python API
    */
   private async updateAgentToolIdsInPython(agentId: string, toolIds: string[]): Promise<void> {
@@ -230,6 +285,16 @@ export class AgentService {
       });
 
       console.log(`[Agent Service] Agent created successfully with ID: ${agent.agent_id}`);
+
+      // Sync tools to ElevenLabs after agent creation
+      // This ensures tools are available in the agent runtime
+      try {
+        await this.syncAgentToolsToElevenLabs(agent);
+      } catch (error: any) {
+        console.error('[Agent Service] ⚠️ Failed to sync tools after agent creation (non-fatal):', error.message);
+        // Don't throw - agent creation succeeded, sync is a background operation
+      }
+
       return agent;
     } catch (error: any) {
       console.error('[Agent Service] Failed to create agent:', error);
@@ -563,8 +628,8 @@ export class AgentService {
         agent.tool_ids.push(toolId);
         await agent.save();
         
-        // Update in Python API
-        await this.updateAgentToolIdsInPython(agent.agent_id, agent.tool_ids);
+        // Sync to ElevenLabs to ensure tools are available in runtime
+        await this.syncAgentToolsToElevenLabs(agent);
         
         console.log(`[Agent Service] ✅ Added tool_id ${toolId} to agent ${agent.agent_id}`);
       }
@@ -601,8 +666,8 @@ export class AgentService {
         agent.tool_ids = agent.tool_ids.filter(id => id !== toolId);
         await agent.save();
         
-        // Update in Python API
-        await this.updateAgentToolIdsInPython(agent.agent_id, agent.tool_ids);
+        // Sync to ElevenLabs to ensure tools are updated in runtime
+        await this.syncAgentToolsToElevenLabs(agent);
         
         console.log(`[Agent Service] ✅ Removed tool_id ${toolId} from agent ${agent.agent_id}`);
       }

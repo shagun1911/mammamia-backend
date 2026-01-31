@@ -674,9 +674,13 @@ export class SipTrunkService {
         agent_id: data.agent_id,
         agent_phone_number_id: data.agent_phone_number_id,
         to_number: data.to_number,
-        customer_info: data.customer_info || {},
-        sender_email: data.sender_email
+        customer_info: data.customer_info || {}
       };
+      
+      // Only include sender_email if defined
+      if (data.sender_email) {
+        body.sender_email = data.sender_email;
+      }
 
       // Include agent configuration if provided
       // NOTE: Greeting is already validated and rendered in controller
@@ -793,17 +797,37 @@ export class SipTrunkService {
         has_variables: false // Should always be false after validation
       });
       
-      // Log full payload for debugging
-      console.log('[SIP Trunk Service] Full payload being sent:', JSON.stringify(body, null, 2));
-
-      const response = await axios.post<OutboundCallResponse>(
-        pythonUrl,
-        body,
-        { timeout: 60000 }
+      // Log BEFORE calling Python outbound-call
+      console.log(
+        '[OUTBOUND CALL → PYTHON] Payload:',
+        JSON.stringify(body, null, 2)
       );
 
-      console.log('[SIP Trunk Service] ✅ Twilio outbound call initiated');
-      return response.data;
+      // Wrap in try/catch to log success OR failure
+      try {
+        const response = await axios.post<OutboundCallResponse>(
+          pythonUrl,
+          body,
+          { timeout: 60000 }
+        );
+
+        // Log AFTER Python responds (success)
+        console.log(
+          '[OUTBOUND CALL ← PYTHON] Response:',
+          JSON.stringify(response.data, null, 2)
+        );
+
+        console.log('[SIP Trunk Service] ✅ Twilio outbound call initiated');
+        return response.data;
+      } catch (err: any) {
+        // Log AFTER Python responds (failure)
+        console.error(
+          '[OUTBOUND CALL ❌ PYTHON ERROR]',
+          err?.response?.data || err.message
+        );
+        // DO NOT silently catch - always throw after logging
+        throw err;
+      }
     } catch (error: any) {
       // Enhanced error logging for validation errors
       if (error.response?.status === 422) {
@@ -873,9 +897,13 @@ export class SipTrunkService {
         agent_id: data.agent_id,
         agent_phone_number_id: data.agent_phone_number_id,
         to_number: data.to_number,
-        customer_info: data.customer_info || {},
-        sender_email: data.sender_email
+        customer_info: data.customer_info || {}
       };
+      
+      // Only include sender_email if defined
+      if (data.sender_email) {
+        body.sender_email = data.sender_email;
+      }
 
       // Include agent configuration if provided
       // NOTE: Greeting is already validated and rendered in controller
@@ -962,23 +990,43 @@ export class SipTrunkService {
         has_variables: false // Should always be false after validation
       });
       
-      // Log full payload for debugging
-      console.log('[SIP Trunk Service] Full payload being sent:', JSON.stringify(body, null, 2));
-      
-      const response = await axios.post<OutboundCallResponse>(
-        pythonUrl,
-        body,
-        {
-          timeout: 60000 // 60 seconds timeout
-        }
+      // Log BEFORE calling Python outbound-call
+      console.log(
+        '[OUTBOUND CALL → PYTHON] Payload:',
+        JSON.stringify(body, null, 2)
       );
 
-      console.log('[SIP Trunk Service] ✅ Outbound call initiated successfully');
-      console.log('[SIP Trunk Service] Response status:', response.status);
-      console.log('[SIP Trunk Service] Response body:');
-      console.log(JSON.stringify(response.data, null, 2));
-      
-      return response.data;
+      // Wrap in try/catch to log success OR failure
+      try {
+        const response = await axios.post<OutboundCallResponse>(
+          pythonUrl,
+          body,
+          {
+            timeout: 60000 // 60 seconds timeout
+          }
+        );
+
+        // Log AFTER Python responds (success)
+        console.log(
+          '[OUTBOUND CALL ← PYTHON] Response:',
+          JSON.stringify(response.data, null, 2)
+        );
+
+        console.log('[SIP Trunk Service] ✅ Outbound call initiated successfully');
+        console.log('[SIP Trunk Service] Response status:', response.status);
+        console.log('[SIP Trunk Service] Response body:');
+        console.log(JSON.stringify(response.data, null, 2));
+        
+        return response.data;
+      } catch (err: any) {
+        // Log AFTER Python responds (failure)
+        console.error(
+          '[OUTBOUND CALL ❌ PYTHON ERROR]',
+          err?.response?.data || err.message
+        );
+        // DO NOT silently catch - always throw after logging
+        throw err;
+      }
     } catch (error: any) {
       console.error('[SIP Trunk Service] ❌ Failed to initiate outbound call:', error.response?.data || error.message);
       

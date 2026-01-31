@@ -296,16 +296,20 @@ export class SipTrunkController {
         sender_email: requestSenderEmail
       } = req.body;
 
-      // Get sender email from request, or automatically fetch from connected Gmail
-      let sender_email = requestSenderEmail;
+      // Resolve sender email using priority order:
+      // 1. Request-provided email
+      // 2. Connected Gmail integration
+      // 3. Default SMTP sender
+      // 4. Python fallback (undefined - let Python handle it)
+      let sender_email: string | undefined = requestSenderEmail;
       
       if (!sender_email) {
-        console.log('[SIP Trunk Controller] No sender_email provided, fetching from connected Gmail...');
+        const userId = req.user?._id?.toString() || req.user?.id;
         const organizationId = req.user?.organizationId || req.user?._id;
         
         if (organizationId) {
           try {
-            // Try GoogleIntegration first (for Gmail OAuth)
+            // Priority 1: Connected Gmail integration
             const GoogleIntegration = (await import('../models/GoogleIntegration')).default;
             const googleIntegration = await GoogleIntegration.findOne({
               organizationId: organizationId instanceof mongoose.Types.ObjectId 
@@ -317,7 +321,6 @@ export class SipTrunkController {
 
             if (googleIntegration?.googleProfile?.email) {
               sender_email = googleIntegration.googleProfile.email;
-              console.log('[SIP Trunk Controller] ✅ Found Gmail email from GoogleIntegration:', sender_email);
             } else {
               // Fallback: Try SocialIntegration (for Gmail via Dialog360 or other)
               const SocialIntegration = (await import('../models/SocialIntegration')).default;
@@ -330,23 +333,29 @@ export class SipTrunkController {
               }).lean();
 
               if (socialIntegration) {
-                // Check credentials.email or metadata.email
                 sender_email = socialIntegration.credentials?.email || socialIntegration.metadata?.email;
-                if (sender_email) {
-                  console.log('[SIP Trunk Controller] ✅ Found Gmail email from SocialIntegration:', sender_email);
-                }
               }
             }
 
+            // Priority 2: Default SMTP sender
             if (!sender_email) {
-              console.warn('[SIP Trunk Controller] ⚠️ No Gmail email found in connected integrations');
+              sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
             }
           } catch (emailError: any) {
-            console.warn('[SIP Trunk Controller] ⚠️ Error fetching Gmail email:', emailError.message);
-            // Continue without sender_email - it's optional
+            console.warn('[SIP Trunk Controller] ⚠️ Error resolving sender email:', emailError.message);
+            // Fallback to DEFAULT_SMTP_SENDER_EMAIL on error
+            if (!sender_email) {
+              sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
+            }
           }
+        } else {
+          // No organizationId, try DEFAULT_SMTP_SENDER_EMAIL
+          sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
         }
       }
+
+      // Log resolved sender email
+      console.log('[Outbound Call] sender_email resolved:', sender_email ?? 'python-fallback');
 
       console.log('[SIP Trunk Controller] ===== OUTBOUND CALL REQUEST =====');
       console.log('[SIP Trunk Controller] Endpoint:', req.method, req.originalUrl);
