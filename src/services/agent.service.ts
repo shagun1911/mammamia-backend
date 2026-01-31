@@ -130,23 +130,44 @@ export class AgentService {
 
   /**
    * Build complete tool_ids array including static env tools and email template tools
+   * Always includes PRODUCTS_TOOL_ID and ORDERS_TOOL_ID from environment variables if set
    */
   private async buildToolIds(userId: string): Promise<string[]> {
     // Get static tool IDs from environment variables
-    const productsToolId = process.env.PRODUCTS_TOOL_ID;
-    const ordersToolId = process.env.ORDERS_TOOL_ID;
+    const productsToolId = process.env.PRODUCTS_TOOL_ID?.trim();
+    const ordersToolId = process.env.ORDERS_TOOL_ID?.trim();
 
-    // Build tool_ids array from env variables (filter out undefined values)
+    // Build tool_ids array - always include PRODUCTS_TOOL_ID and ORDERS_TOOL_ID if set
     const toolIds: string[] = [];
-    if (productsToolId) toolIds.push(productsToolId);
-    if (ordersToolId) toolIds.push(ordersToolId);
+    
+    // Add PRODUCTS_TOOL_ID if defined
+    if (productsToolId && productsToolId.length > 0) {
+      toolIds.push(productsToolId);
+      console.log(`[Agent Service] ✅ Adding PRODUCTS_TOOL_ID: ${productsToolId}`);
+    } else {
+      console.warn(`[Agent Service] ⚠️ PRODUCTS_TOOL_ID not set in environment variables`);
+    }
+
+    // Add ORDERS_TOOL_ID if defined
+    if (ordersToolId && ordersToolId.length > 0) {
+      toolIds.push(ordersToolId);
+      console.log(`[Agent Service] ✅ Adding ORDERS_TOOL_ID: ${ordersToolId}`);
+    } else {
+      console.warn(`[Agent Service] ⚠️ ORDERS_TOOL_ID not set in environment variables`);
+    }
 
     // Add email template tool_ids
     const emailTemplateToolIds = await this.getEmailTemplateToolIds(userId);
-    toolIds.push(...emailTemplateToolIds);
+    if (emailTemplateToolIds.length > 0) {
+      toolIds.push(...emailTemplateToolIds);
+      console.log(`[Agent Service] ✅ Adding ${emailTemplateToolIds.length} email template tool(s)`);
+    }
 
-    // Remove duplicates
-    return [...new Set(toolIds)];
+    // Remove duplicates and log final result
+    const uniqueToolIds = [...new Set(toolIds)];
+    console.log(`[Agent Service] 📦 Final tool_ids array (${uniqueToolIds.length} tools):`, uniqueToolIds);
+    
+    return uniqueToolIds;
   }
 
   /**
