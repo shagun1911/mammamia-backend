@@ -10,246 +10,253 @@ import { getEcommerceCredentials } from '../utils/ecommerce.util';
 import Settings from '../models/Settings';
 import mongoose from 'mongoose';
 
-// Helper function to determine collection names from Settings/AI Behavior
-async function determineCollectionNames(userId: string, knowledgeBaseId?: string): Promise<string[]> {
-  let collectionNames: string[] = [];
+// Helper function to resolve a single KB ID to collection name(s)
+async function resolveSingleKBId(kbId: string, userId: string): Promise<string[]> {
   const userObjectId = new mongoose.Types.ObjectId(userId);
-  
-  // Import ChatbotKnowledgeBase model
   const ChatbotKnowledgeBase = (await import('../models/ChatbotKnowledgeBase')).default;
-  
-  if (knowledgeBaseId) {
-    // Use specified knowledge base
-    // Check if it's chatbot KB ID (kb_xxx), voice agent KB ID (KBDoc_xxx), or legacy ObjectId
-    if (knowledgeBaseId.startsWith('kb_')) {
-      // Chatbot KB ID - query ChatbotKnowledgeBase directly
+  const KnowledgeBaseDocument = (await import('../models/KnowledgeBaseDocument')).default;
+  const KnowledgeBase = (await import('../models/KnowledgeBase')).default;
+  const resolved: string[] = [];
+
+  if (kbId.startsWith('kb_')) {
+    // Chatbot KB ID - query ChatbotKnowledgeBase directly
+    const chatbotKB = await ChatbotKnowledgeBase.findOne({ 
+      kb_id: kbId, 
+      userId: userObjectId,
+      status: 'ready'
+    }).lean();
+    if (chatbotKB?.collection_name) {
+      resolved.push(chatbotKB.collection_name);
+      console.log('[Chatbot] Resolved kb_ ID to collection:', chatbotKB.collection_name);
+    }
+  } else if (kbId.startsWith('KBDoc_')) {
+    // Voice agent KB ID - find linked ChatbotKnowledgeBase
+    const voiceAgentKB = await KnowledgeBaseDocument.findOne({ 
+      document_id: kbId, 
+      userId: userObjectId 
+    }).lean();
+    if (voiceAgentKB?.linked_chatbot_kb_id) {
       const chatbotKB = await ChatbotKnowledgeBase.findOne({ 
-        kb_id: knowledgeBaseId, 
-        userId: userObjectId 
+        kb_id: voiceAgentKB.linked_chatbot_kb_id,
+        userId: userObjectId,
+        status: 'ready'
       }).lean();
-      if (!chatbotKB) {
-        throw new AppError(404, 'NOT_FOUND', 'Chatbot knowledge base not found');
+      if (chatbotKB?.collection_name) {
+        resolved.push(chatbotKB.collection_name);
+        console.log('[Chatbot] Resolved KBDoc_ ID to collection:', chatbotKB.collection_name);
       }
-      collectionNames = [chatbotKB.collection_name];
-      console.log('[Chatbot] Using ChatbotKnowledgeBase by kb_id:', collectionNames);
-    } else if (knowledgeBaseId.startsWith('KBDoc_')) {
-      // Voice agent KB ID - find linked ChatbotKnowledgeBase
-      const voiceAgentKB = await KnowledgeBaseDocument.findOne({ 
-        document_id: knowledgeBaseId, 
-        userId: userObjectId 
-      }).lean();
-      if (!voiceAgentKB) {
-        throw new AppError(404, 'NOT_FOUND', 'Knowledge base document not found');
-      }
-      
-      // Find linked ChatbotKnowledgeBase
-      if (voiceAgentKB.linked_chatbot_kb_id) {
-        const chatbotKB = await ChatbotKnowledgeBase.findOne({ 
-          kb_id: voiceAgentKB.linked_chatbot_kb_id,
-          userId: userObjectId 
-        }).lean();
-        if (chatbotKB) {
-          collectionNames = [chatbotKB.collection_name];
-          console.log('[Chatbot] Using ChatbotKnowledgeBase linked to voice agent KB:', collectionNames);
-        } else {
-          // Fallback: use default collection name pattern
-          collectionNames = [`user_${userId}_kb`];
-          console.log('[Chatbot] ⚠️  Linked ChatbotKnowledgeBase not found, using default collection');
-        }
-      } else {
-        // No linked chatbot KB - use default collection name
-        collectionNames = [`user_${userId}_kb`];
-        console.log('[Chatbot] ⚠️  Voice agent KB has no linked ChatbotKnowledgeBase, using default collection');
-      }
-    } else if (mongoose.Types.ObjectId.isValid(knowledgeBaseId) && knowledgeBaseId.length === 24) {
-      // Legacy ObjectId format - query KnowledgeBase
-      const kb = await KnowledgeBase.findById(knowledgeBaseId);
-      if (!kb) {
-        throw new AppError(404, 'NOT_FOUND', 'Knowledge base not found');
-      }
-      collectionNames = [kb.collectionName];
-      console.log('[Chatbot] Using legacy KnowledgeBase:', collectionNames);
-    } else {
-      // Raw document_id (e.g. from Python API) or collection_name - try KnowledgeBaseDocument
-      const voiceAgentKB = await KnowledgeBaseDocument.findOne({
-        document_id: knowledgeBaseId,
-        userId: userObjectId
-      }).lean();
-      if (voiceAgentKB?.linked_chatbot_kb_id) {
-        const chatbotKB = await ChatbotKnowledgeBase.findOne({
-          kb_id: voiceAgentKB.linked_chatbot_kb_id,
-          userId: userObjectId
-        }).lean();
-        if (chatbotKB) {
-          collectionNames = [chatbotKB.collection_name];
-          console.log('[Chatbot] Using ChatbotKnowledgeBase by document_id:', collectionNames);
-        }
-      }
-      // Also try as collection_name directly (e.g. from widget URL)
-      if (collectionNames.length === 0) {
-        const byCollection = await ChatbotKnowledgeBase.findOne({
-          collection_name: knowledgeBaseId,
-          userId: userObjectId,
-          status: 'ready'
-        }).lean();
-        if (byCollection) {
-          collectionNames = [byCollection.collection_name];
-          console.log('[Chatbot] Using ChatbotKnowledgeBase by collection_name:', collectionNames);
-        }
-      }
-      if (collectionNames.length === 0) {
-        throw new AppError(404, 'NOT_FOUND', 'Knowledge base not found');
-      }
+    }
+  } else if (mongoose.Types.ObjectId.isValid(kbId) && kbId.length === 24) {
+    // Legacy ObjectId format - query KnowledgeBase
+    const kb = await KnowledgeBase.findById(kbId).lean();
+    if (kb?.collectionName) {
+      resolved.push(kb.collectionName);
+      console.log('[Chatbot] Resolved legacy ObjectId to collection:', kb.collectionName);
     }
   } else {
-    // Check Settings first (priority order like other controllers)
-    const settings = await Settings.findOne({ userId: userObjectId });
-    
-    if (settings) {
-      // Priority 1: Use collection names from Settings (new format - multiple KBs)
-      if (settings.defaultKnowledgeBaseNames && settings.defaultKnowledgeBaseNames.length > 0) {
-        collectionNames = settings.defaultKnowledgeBaseNames;
-        console.log('[Chatbot] Using knowledge bases from Settings.defaultKnowledgeBaseNames:', collectionNames);
-      }
-      // Priority 2: Resolve knowledge base IDs from Settings to collection names
-      else if (settings.defaultKnowledgeBaseIds && settings.defaultKnowledgeBaseIds.length > 0) {
-        const resolvedNames: string[] = [];
-        
-        // Separate IDs by type
-        const chatbotKbIds = settings.defaultKnowledgeBaseIds.filter((id: string) => id.startsWith('kb_'));
-        const voiceAgentKbIds = settings.defaultKnowledgeBaseIds.filter((id: string) => id.startsWith('KBDoc_'));
-        const legacyKbIds = settings.defaultKnowledgeBaseIds.filter((id: string) => 
-          !id.startsWith('kb_') && !id.startsWith('KBDoc_')
-        );
-        
-        // Resolve ChatbotKnowledgeBase IDs
-        if (chatbotKbIds.length > 0) {
-          const chatbotKBs = await ChatbotKnowledgeBase.find({ 
-            kb_id: { $in: chatbotKbIds },
-            userId: userObjectId 
-          }).select('collection_name').lean();
-          resolvedNames.push(...chatbotKBs.map((kb: any) => kb.collection_name).filter(Boolean));
-        }
-        
-        // Resolve Voice Agent KB IDs (find linked ChatbotKnowledgeBase)
-        if (voiceAgentKbIds.length > 0) {
-          const voiceAgentKBs = await KnowledgeBaseDocument.find({ 
-            document_id: { $in: voiceAgentKbIds },
-            userId: userObjectId 
-          }).select('linked_chatbot_kb_id').lean();
-          
-          const linkedChatbotKbIds = voiceAgentKBs
-            .map((kb: any) => kb.linked_chatbot_kb_id)
-            .filter(Boolean);
-          
-          if (linkedChatbotKbIds.length > 0) {
-            const chatbotKBs = await ChatbotKnowledgeBase.find({ 
-              kb_id: { $in: linkedChatbotKbIds },
-              userId: userObjectId 
-            }).select('collection_name').lean();
-            resolvedNames.push(...chatbotKBs.map((kb: any) => kb.collection_name).filter(Boolean));
-          }
-        }
-        
-        // Resolve legacy KnowledgeBase IDs
-        if (legacyKbIds.length > 0) {
-          const objectIds = legacyKbIds
-            .filter((id: string) => mongoose.Types.ObjectId.isValid(id))
-            .map((id: string) => new mongoose.Types.ObjectId(id));
-          
-          if (objectIds.length > 0) {
-            const knowledgeBases = await KnowledgeBase.find({ 
-              _id: { $in: objectIds } 
-            }).select('collectionName').lean();
-            resolvedNames.push(...knowledgeBases.map((kb: any) => kb.collectionName).filter(Boolean));
-          }
-        }
-        
-        collectionNames = resolvedNames;
-        console.log('[Chatbot] Resolved knowledge base IDs to collection names:', collectionNames);
-      }
-      // Priority 3: Use single knowledge base name from Settings (legacy format)
-      else if (settings.defaultKnowledgeBaseName) {
-        collectionNames = [settings.defaultKnowledgeBaseName];
-        console.log('[Chatbot] Using knowledge base from Settings.defaultKnowledgeBaseName:', collectionNames);
-      }
-      // Priority 4: Resolve single knowledge base ID from Settings (legacy format)
-      else if (settings.defaultKnowledgeBaseId) {
-        if (settings.defaultKnowledgeBaseId.startsWith('kb_')) {
-          const chatbotKB = await ChatbotKnowledgeBase.findOne({ 
-            kb_id: settings.defaultKnowledgeBaseId,
-            userId: userObjectId 
-          }).select('collection_name').lean();
-          if (chatbotKB && chatbotKB.collection_name) {
-            collectionNames = [chatbotKB.collection_name];
-          }
-        } else if (settings.defaultKnowledgeBaseId.startsWith('KBDoc_')) {
-          const voiceAgentKB = await KnowledgeBaseDocument.findOne({ 
-            document_id: settings.defaultKnowledgeBaseId,
-            userId: userObjectId 
-          }).select('linked_chatbot_kb_id').lean();
-          if (voiceAgentKB && voiceAgentKB.linked_chatbot_kb_id) {
-            const chatbotKB = await ChatbotKnowledgeBase.findOne({ 
-              kb_id: voiceAgentKB.linked_chatbot_kb_id,
-              userId: userObjectId 
-            }).select('collection_name').lean();
-            if (chatbotKB && chatbotKB.collection_name) {
-              collectionNames = [chatbotKB.collection_name];
-            }
-          }
-        } else if (mongoose.Types.ObjectId.isValid(settings.defaultKnowledgeBaseId)) {
-          const kb = await KnowledgeBase.findById(settings.defaultKnowledgeBaseId).select('collectionName').lean();
-          if (kb && kb.collectionName) {
-            collectionNames = [kb.collectionName];
-          }
-        }
-        console.log('[Chatbot] Resolved knowledge base ID from Settings:', collectionNames);
+    // Try as document_id or collection_name
+    const voiceAgentKB = await KnowledgeBaseDocument.findOne({
+      document_id: kbId,
+      userId: userObjectId
+    }).lean();
+    if (voiceAgentKB?.linked_chatbot_kb_id) {
+      const chatbotKB = await ChatbotKnowledgeBase.findOne({
+        kb_id: voiceAgentKB.linked_chatbot_kb_id,
+        userId: userObjectId,
+        status: 'ready'
+      }).lean();
+      if (chatbotKB?.collection_name) {
+        resolved.push(chatbotKB.collection_name);
+        console.log('[Chatbot] Resolved document_id to collection:', chatbotKB.collection_name);
       }
     }
-    
-    // Priority 5: Use knowledge base from AI Behavior (if settings didn't have one)
-    if (collectionNames.length === 0) {
-      const aiBehavior = await aiBehaviorService.get(userId);
-      if (aiBehavior.knowledgeBaseId) {
-        const kbIdString = aiBehavior.knowledgeBaseId.toString();
-        if (kbIdString.startsWith('kb_')) {
-          const chatbotKB = await ChatbotKnowledgeBase.findOne({ 
-            kb_id: kbIdString,
-            userId: userObjectId 
-          }).lean();
-          if (chatbotKB) {
-            collectionNames = [chatbotKB.collection_name];
-          }
-        } else if (kbIdString.startsWith('KBDoc_')) {
-          const voiceAgentKB = await KnowledgeBaseDocument.findOne({ 
-            document_id: kbIdString,
-            userId: userObjectId 
-          }).lean();
-          if (voiceAgentKB && voiceAgentKB.linked_chatbot_kb_id) {
-            const chatbotKB = await ChatbotKnowledgeBase.findOne({ 
-              kb_id: voiceAgentKB.linked_chatbot_kb_id,
-              userId: userObjectId 
-            }).lean();
-            if (chatbotKB) {
-              collectionNames = [chatbotKB.collection_name];
-            }
-          }
-        } else {
-          const kb = await KnowledgeBase.findById(aiBehavior.knowledgeBaseId);
-          if (kb) {
-            collectionNames = [kb.collectionName];
-          }
-        }
-        console.log('[Chatbot] Using knowledge base from AI Behavior:', collectionNames);
-      }
-    }
-    
-    // CRITICAL: Fail loudly if no KB found - NO DEFAULT FALLBACK
-    if (collectionNames.length === 0) {
-      throw new AppError(400, 'NO_KNOWLEDGE_BASE', 'No knowledge base configured. Please configure a knowledge base in Settings → Knowledge Base.');
+    // Also try as collection_name directly
+    const byCollection = await ChatbotKnowledgeBase.findOne({
+      collection_name: kbId,
+      userId: userObjectId,
+      status: 'ready'
+    }).lean();
+    if (byCollection?.collection_name) {
+      resolved.push(byCollection.collection_name);
+      console.log('[Chatbot] Resolved collection_name directly:', byCollection.collection_name);
     }
   }
+
+  return resolved;
+}
+
+// Helper function to resolve multiple KB IDs to collection names
+async function resolveMultipleKBIds(ids: string[], userId: string): Promise<string[]> {
+  const userObjectId = new mongoose.Types.ObjectId(userId);
+  const ChatbotKnowledgeBase = (await import('../models/ChatbotKnowledgeBase')).default;
+  const KnowledgeBaseDocument = (await import('../models/KnowledgeBaseDocument')).default;
+  const KnowledgeBase = (await import('../models/KnowledgeBase')).default;
+  const resolvedNames: string[] = [];
+
+  // Separate IDs by type
+  const chatbotKbIds = ids.filter((id: string) => id.startsWith('kb_'));
+  const voiceAgentKbIds = ids.filter((id: string) => id.startsWith('KBDoc_'));
+  const legacyKbIds = ids.filter((id: string) => 
+    !id.startsWith('kb_') && !id.startsWith('KBDoc_') && mongoose.Types.ObjectId.isValid(id)
+  );
+
+  // Resolve ChatbotKnowledgeBase IDs
+  if (chatbotKbIds.length > 0) {
+    const chatbotKBs = await ChatbotKnowledgeBase.find({ 
+      kb_id: { $in: chatbotKbIds },
+      userId: userObjectId,
+      status: 'ready'
+    }).select('collection_name').lean();
+    resolvedNames.push(...chatbotKBs.map((kb: any) => kb.collection_name).filter(Boolean));
+  }
+
+  // Resolve Voice Agent KB IDs (find linked ChatbotKnowledgeBase)
+  if (voiceAgentKbIds.length > 0) {
+    const voiceAgentKBs = await KnowledgeBaseDocument.find({ 
+      document_id: { $in: voiceAgentKbIds },
+      userId: userObjectId 
+    }).select('linked_chatbot_kb_id').lean();
+    
+    const linkedChatbotKbIds = voiceAgentKBs
+      .map((kb: any) => kb.linked_chatbot_kb_id)
+      .filter(Boolean);
+    
+    if (linkedChatbotKbIds.length > 0) {
+      const chatbotKBs = await ChatbotKnowledgeBase.find({ 
+        kb_id: { $in: linkedChatbotKbIds },
+        userId: userObjectId,
+        status: 'ready'
+      }).select('collection_name').lean();
+      resolvedNames.push(...chatbotKBs.map((kb: any) => kb.collection_name).filter(Boolean));
+    }
+  }
+
+  // Resolve legacy KnowledgeBase IDs
+  if (legacyKbIds.length > 0) {
+    const objectIds = legacyKbIds
+      .filter((id: string) => mongoose.Types.ObjectId.isValid(id))
+      .map((id: string) => new mongoose.Types.ObjectId(id));
+    
+    if (objectIds.length > 0) {
+      const knowledgeBases = await KnowledgeBase.find({ 
+        _id: { $in: objectIds } 
+      }).select('collectionName').lean();
+      resolvedNames.push(...knowledgeBases.map((kb: any) => kb.collectionName).filter(Boolean));
+    }
+  }
+
+  return [...new Set(resolvedNames)]; // Deduplicate
+}
+
+// Helper function to determine collection names from Settings/AI Behavior
+async function determineCollectionNames(userId: string, knowledgeBaseId?: string): Promise<string[]> {
+  const collectionNamesSet = new Set<string>(); // Use Set to merge and deduplicate
+  const userObjectId = new mongoose.Types.ObjectId(userId);
   
+  // 1. If explicit knowledgeBaseId provided, resolve and add it (but don't short-circuit)
+  if (knowledgeBaseId) {
+    const resolved = await resolveSingleKBId(knowledgeBaseId, userId);
+    resolved.forEach(name => collectionNamesSet.add(name));
+    if (resolved.length > 0) {
+      console.log('[Chatbot] Added explicit knowledgeBaseId to collection set:', resolved);
+    }
+  }
+
+  // 2. Always check Settings (merge all sources, don't replace)
+  const settings = await Settings.findOne({ userId: userObjectId });
+  
+  if (settings) {
+    // Get user's actual collection names once for validation (used by Priority 1 and 3)
+    const ChatbotKnowledgeBase = (await import('../models/ChatbotKnowledgeBase')).default;
+    const userChatbotKBs = await ChatbotKnowledgeBase.find({ 
+      userId: userObjectId, 
+      status: 'ready' 
+    }).select('collection_name').lean();
+    
+    // Create a map of lowercase names to actual names (for case-insensitive matching)
+    const userCollectionMap = new Map<string, string>();
+    userChatbotKBs.forEach((kb: any) => {
+      if (kb.collection_name) {
+        userCollectionMap.set(kb.collection_name.toLowerCase(), kb.collection_name);
+      }
+    });
+    
+    // Also include legacy KB collections
+    const userLegacyKBs = await KnowledgeBase.find({ userId: userObjectId }).select('collectionName').lean();
+    userLegacyKBs.forEach((kb: any) => {
+      if (kb.collectionName) {
+        userCollectionMap.set(kb.collectionName.toLowerCase(), kb.collectionName);
+      }
+    });
+    
+    // Priority 1: Merge defaultKnowledgeBaseNames array (VALIDATE against user's KBs)
+    if (settings.defaultKnowledgeBaseNames && Array.isArray(settings.defaultKnowledgeBaseNames) && settings.defaultKnowledgeBaseNames.length > 0) {
+      // Only add collection names that actually belong to this user (case-insensitive match)
+      settings.defaultKnowledgeBaseNames.forEach((name: any) => {
+        if (name && typeof name === 'string' && name.trim() !== '') {
+          const nameLower = name.trim().toLowerCase();
+          const actualName = userCollectionMap.get(nameLower);
+          if (actualName) {
+            // Use the actual collection name from DB (preserves correct casing)
+            collectionNamesSet.add(actualName);
+          } else {
+            console.warn(`[Chatbot] ⚠️  Collection name "${name}" in defaultKnowledgeBaseNames does not belong to user ${userId}, skipping`);
+          }
+        }
+      });
+      console.log('[Chatbot] Merged and validated defaultKnowledgeBaseNames');
+    }
+
+    // Priority 2: Merge defaultKnowledgeBaseIds array (resolve to collection names)
+    if (settings.defaultKnowledgeBaseIds && Array.isArray(settings.defaultKnowledgeBaseIds) && settings.defaultKnowledgeBaseIds.length > 0) {
+      const resolvedNames = await resolveMultipleKBIds(settings.defaultKnowledgeBaseIds, userId);
+      resolvedNames.forEach(name => collectionNamesSet.add(name));
+      if (resolvedNames.length > 0) {
+        console.log('[Chatbot] Merged resolved defaultKnowledgeBaseIds:', resolvedNames);
+      }
+    }
+
+    // Priority 3: Merge defaultKnowledgeBaseName (legacy single value, VALIDATE)
+    if (settings.defaultKnowledgeBaseName && typeof settings.defaultKnowledgeBaseName === 'string' && settings.defaultKnowledgeBaseName.trim() !== '') {
+      const nameLower = settings.defaultKnowledgeBaseName.trim().toLowerCase();
+      const actualName = userCollectionMap.get(nameLower);
+      if (actualName) {
+        collectionNamesSet.add(actualName);
+        console.log('[Chatbot] Merged and validated defaultKnowledgeBaseName:', actualName);
+      } else {
+        console.warn(`[Chatbot] ⚠️  Collection name "${settings.defaultKnowledgeBaseName}" in defaultKnowledgeBaseName does not belong to user ${userId}, skipping`);
+      }
+    }
+
+    // Priority 4: Merge defaultKnowledgeBaseId (legacy single value, resolve)
+    if (settings.defaultKnowledgeBaseId) {
+      const resolved = await resolveSingleKBId(settings.defaultKnowledgeBaseId.toString(), userId);
+      resolved.forEach(name => collectionNamesSet.add(name));
+      if (resolved.length > 0) {
+        console.log('[Chatbot] Merged resolved defaultKnowledgeBaseId:', resolved);
+      }
+    }
+  }
+
+  // 3. Always check AI Behavior (merge, not just fallback)
+  const aiBehavior = await aiBehaviorService.get(userId);
+  if (aiBehavior.knowledgeBaseId) {
+    const resolved = await resolveSingleKBId(aiBehavior.knowledgeBaseId.toString(), userId);
+    resolved.forEach(name => collectionNamesSet.add(name));
+    if (resolved.length > 0) {
+      console.log('[Chatbot] Merged AI Behavior knowledgeBaseId:', resolved);
+    }
+  }
+
+  // Convert Set to array
+  const collectionNames = Array.from(collectionNamesSet);
+
+  // CRITICAL: Fail loudly if no KB found - NO DEFAULT FALLBACK
+  if (collectionNames.length === 0) {
+    throw new AppError(400, 'NO_KNOWLEDGE_BASE', 'No knowledge base configured. Please configure a knowledge base in Settings → Knowledge Base.');
+  }
+
+  console.log('[Chatbot] Final merged collection names:', collectionNames);
   return collectionNames;
 }
 

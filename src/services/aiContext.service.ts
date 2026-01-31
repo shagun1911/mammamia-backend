@@ -234,8 +234,8 @@ export class AIContextService {
    */
   private async buildContext(settings: any, userId: string, organizationId: string): Promise<AIContext | null> {
     try {
-      // Get knowledge base names (prioritize array, fallback to string, then resolve IDs)
-      let collectionNames: string[] = [];
+      // Use Set to merge and deduplicate all KB sources
+      const collectionNamesSet = new Set<string>();
       
       // Debug: Log what we have in settings
       console.log(`[AI Context] Building context for user: ${userId}`, {
@@ -247,45 +247,91 @@ export class AIContextService {
         defaultKnowledgeBaseId: settings.defaultKnowledgeBaseId
       });
       
-      // Priority 1: Use defaultKnowledgeBaseNames array (collection names directly)
+      // Get user's actual collection names once for validation (used by Priority 1 and 2)
+      const ChatbotKnowledgeBase = (await import('../models/ChatbotKnowledgeBase')).default;
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      const userChatbotKBs = await ChatbotKnowledgeBase.find({ 
+        userId: userObjectId, 
+        status: 'ready' 
+      }).select('collection_name').lean();
+      
+      // Create a map of lowercase names to actual names (for case-insensitive matching)
+      const userCollectionMap = new Map<string, string>();
+      userChatbotKBs.forEach((kb: any) => {
+        if (kb.collection_name) {
+          userCollectionMap.set(kb.collection_name.toLowerCase(), kb.collection_name);
+        }
+      });
+      
+      // Also include legacy KB collections
+      const KnowledgeBase = (await import('../models/KnowledgeBase')).default;
+      const userLegacyKBs = await KnowledgeBase.find({ userId: userObjectId }).select('collectionName').lean();
+      userLegacyKBs.forEach((kb: any) => {
+        if (kb.collectionName) {
+          userCollectionMap.set(kb.collectionName.toLowerCase(), kb.collectionName);
+        }
+      });
+      
+      // Priority 1: Merge defaultKnowledgeBaseNames array (VALIDATE against user's KBs)
       if (settings.defaultKnowledgeBaseNames && Array.isArray(settings.defaultKnowledgeBaseNames) && settings.defaultKnowledgeBaseNames.length > 0) {
-        // Filter out empty/null values
-        collectionNames = settings.defaultKnowledgeBaseNames
-          .filter((name: any) => name && typeof name === 'string' && name.trim() !== '');
+        // Only add collection names that actually belong to this user (case-insensitive match)
+        settings.defaultKnowledgeBaseNames
+          .filter((name: any) => name && typeof name === 'string' && name.trim() !== '')
+          .forEach((name: string) => {
+            const nameLower = name.trim().toLowerCase();
+            const actualName = userCollectionMap.get(nameLower);
+            if (actualName) {
+              // Use the actual collection name from DB (preserves correct casing)
+              collectionNamesSet.add(actualName);
+            } else {
+              console.warn(`[AI Context] ⚠️  Collection name "${name}" in defaultKnowledgeBaseNames does not belong to user ${userId}, skipping`);
+            }
+          });
         
-        if (collectionNames.length > 0) {
-          console.log(`[AI Context] ✅ Using defaultKnowledgeBaseNames array:`, collectionNames);
+        if (collectionNamesSet.size > 0) {
+          console.log(`[AI Context] ✅ Merged and validated defaultKnowledgeBaseNames array:`, Array.from(collectionNamesSet));
         } else {
-          console.warn(`[AI Context] ⚠️  defaultKnowledgeBaseNames array exists but all values are empty/null`);
+          console.warn(`[AI Context] ⚠️  defaultKnowledgeBaseNames array exists but no valid collections found`);
         }
       }
       
-      // Priority 2: Use defaultKnowledgeBaseName string (single collection name)
-      if (collectionNames.length === 0 && settings.defaultKnowledgeBaseName && typeof settings.defaultKnowledgeBaseName === 'string' && settings.defaultKnowledgeBaseName.trim() !== '') {
-        collectionNames = [settings.defaultKnowledgeBaseName];
-        console.log(`[AI Context] ✅ Using defaultKnowledgeBaseName string:`, collectionNames);
+      // Priority 2: Merge defaultKnowledgeBaseName string (single collection name, VALIDATE)
+      if (settings.defaultKnowledgeBaseName && typeof settings.defaultKnowledgeBaseName === 'string' && settings.defaultKnowledgeBaseName.trim() !== '') {
+        const nameLower = settings.defaultKnowledgeBaseName.trim().toLowerCase();
+        const actualName = userCollectionMap.get(nameLower);
+        if (actualName) {
+          collectionNamesSet.add(actualName);
+          console.log(`[AI Context] ✅ Merged and validated defaultKnowledgeBaseName string:`, actualName);
+        } else {
+          console.warn(`[AI Context] ⚠️  Collection name "${settings.defaultKnowledgeBaseName}" in defaultKnowledgeBaseName does not belong to user ${userId}, skipping`);
+        }
       }
       
-      // Priority 3: Resolve defaultKnowledgeBaseIds array to collection names
+      // Priority 3: Merge defaultKnowledgeBaseIds array (resolve to collection names)
       // CRITICAL: Support kb_ (ChatbotKnowledgeBase), KBDoc_ (KnowledgeBaseDocument/voice agent), and legacy ObjectId
-      if (collectionNames.length === 0 && settings.defaultKnowledgeBaseIds && Array.isArray(settings.defaultKnowledgeBaseIds) && settings.defaultKnowledgeBaseIds.length > 0) {
-        collectionNames = await this.resolveIdsToCollectionNames(userId, settings.defaultKnowledgeBaseIds);
-        if (collectionNames.length > 0) {
-          console.log(`[AI Context] ✅ Resolved defaultKnowledgeBaseIds to collection names:`, collectionNames);
+      if (settings.defaultKnowledgeBaseIds && Array.isArray(settings.defaultKnowledgeBaseIds) && settings.defaultKnowledgeBaseIds.length > 0) {
+        const resolvedNames = await this.resolveIdsToCollectionNames(userId, settings.defaultKnowledgeBaseIds);
+        resolvedNames.forEach(name => collectionNamesSet.add(name));
+        if (resolvedNames.length > 0) {
+          console.log(`[AI Context] ✅ Merged resolved defaultKnowledgeBaseIds:`, resolvedNames);
         } else {
           console.warn(`[AI Context] ⚠️  Could not resolve collection names from defaultKnowledgeBaseIds`);
         }
       }
       
-      // Priority 4: Resolve defaultKnowledgeBaseId (single ID) to collection name
-      if (collectionNames.length === 0 && settings.defaultKnowledgeBaseId) {
-        collectionNames = await this.resolveIdsToCollectionNames(userId, [settings.defaultKnowledgeBaseId]);
-        if (collectionNames.length > 0) {
-          console.log(`[AI Context] ✅ Resolved defaultKnowledgeBaseId to collection name:`, collectionNames);
+      // Priority 4: Merge defaultKnowledgeBaseId (single ID, resolve to collection name)
+      if (settings.defaultKnowledgeBaseId) {
+        const resolvedNames = await this.resolveIdsToCollectionNames(userId, [settings.defaultKnowledgeBaseId]);
+        resolvedNames.forEach(name => collectionNamesSet.add(name));
+        if (resolvedNames.length > 0) {
+          console.log(`[AI Context] ✅ Merged resolved defaultKnowledgeBaseId:`, resolvedNames);
         } else {
           console.warn(`[AI Context] ⚠️  Knowledge base not found:`, settings.defaultKnowledgeBaseId);
         }
       }
+
+      // Convert Set to array
+      let collectionNames = Array.from(collectionNamesSet);
 
       // Final fallback: If no KB found in Settings, query ChatbotKnowledgeBase for this user (chatbot uses RAG collections)
       if (collectionNames.length === 0) {
@@ -298,9 +344,13 @@ export class AIContextService {
           .lean();
         
         if (chatbotKBs.length > 0) {
-          collectionNames = chatbotKBs
+          const fallbackNames = chatbotKBs
             .map((kb: any) => kb.collection_name)
             .filter((name: string) => name && typeof name === 'string' && name.trim() !== '');
+          
+          // Add to set (merge, not replace)
+          fallbackNames.forEach(name => collectionNamesSet.add(name));
+          collectionNames = Array.from(collectionNamesSet);
           
           if (collectionNames.length > 0) {
             console.log(`[AI Context] ✅ Found ${collectionNames.length} Chatbot KB(s) for user (fallback):`, collectionNames);
@@ -334,9 +384,12 @@ export class AIContextService {
             .lean();
           
           if (allKBs.length > 0) {
-            collectionNames = allKBs
+            const legacyNames = allKBs
               .map((kb: any) => kb.collectionName)
               .filter((name: string) => name && typeof name === 'string' && name.trim() !== '');
+            // Add to set (merge, not replace)
+            legacyNames.forEach(name => collectionNamesSet.add(name));
+            collectionNames = Array.from(collectionNamesSet);
             if (collectionNames.length > 0) {
               console.log(`[AI Context] ✅ Found legacy KB(s) for user:`, collectionNames);
             }
