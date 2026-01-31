@@ -14,7 +14,7 @@ export class InboundAgentConfigService {
     const configs = await InboundAgentConfig.find({ userId }).sort({ calledNumber: 1 });
     return configs;
   }
-  
+
   /**
    * Get single inbound agent config by phone number
    */
@@ -50,7 +50,7 @@ export class InboundAgentConfigService {
       inboundPhoneNumbers: phoneSettings?.inboundPhoneNumbers || [],
       numberOfInboundNumbers: (phoneSettings?.inboundPhoneNumbers || []).length
     });
-    
+
     console.log('[InboundAgentConfig Service] Full phoneSettings:', {
       userId: phoneSettings?.userId,
       inboundPhoneNumbers: phoneSettings?.inboundPhoneNumbers,
@@ -60,36 +60,61 @@ export class InboundAgentConfigService {
 
     // Determine voice_id (prefer customVoiceId if set, otherwise use selectedVoice)
     const voice_id = phoneSettings?.customVoiceId || phoneSettings?.selectedVoice || 'adam';
-    
+
     // Get knowledge_base_ids from settings (for voice agents - these are document_ids)
     const knowledge_base_ids = settings?.knowledge_base_ids || [];
-    
+
     // Get collections from settings (defaultKnowledgeBaseNames) - legacy support
     const collections = settings?.defaultKnowledgeBaseNames || [];
-    
+
     // Get language from phone settings first, fallback to AI behavior
     const language = phoneSettings?.language || aiBehavior?.voiceAgent?.language || 'en';
-    
+
     // Get system prompt from AI behavior voice agent settings
     const agent_instruction = aiBehavior?.voiceAgent?.systemPrompt || '';
-    
+
     // Get greeting message from phone settings (updated from UI)
     const greeting_message = phoneSettings?.greetingMessage || 'Hello! How can I help you today?';
-    
+
     // Get e-commerce credentials if available
     const ecommerceCredentials = await getEcommerceCredentials(userId);
-    
+
     console.log('[InboundAgentConfig Service] Using greeting_message:', greeting_message);
     console.log('[InboundAgentConfig Service] Using language:', language);
     console.log('[InboundAgentConfig Service] E-commerce integration:', ecommerceCredentials ? '✅ Available' : '❌ Not configured');
 
-    // Get all inbound phone numbers
-    const inboundPhoneNumbers = phoneSettings?.inboundPhoneNumbers || [];
-    
+    // Get all phone numbers (both from PhoneSettings AND PhoneNumber model)
+    const phoneSettingsNumbers = phoneSettings?.inboundPhoneNumbers || [];
+
+    // Fetch all phone numbers associated with this user from PhoneNumber model
+    // This ensures outbound-only numbers also get a config (needed for e-commerce)
+    const PhoneNumber = (await import('../models/PhoneNumber')).default;
+    const userPhoneNumbersDocs = await PhoneNumber.find({
+      $or: [
+        { userId: userId },
+        { organizationId: (settings as any)?.organizationId || userId } // Handle org-level numbers if applicable
+      ]
+    });
+
+    const allPhoneNumbers = new Set<string>([...phoneSettingsNumbers]);
+    userPhoneNumbersDocs.forEach(doc => {
+      if (doc.phone_number) {
+        allPhoneNumbers.add(doc.phone_number);
+      }
+    });
+
+    const inboundPhoneNumbers = Array.from(allPhoneNumbers);
+
     if (inboundPhoneNumbers.length === 0) {
-      console.log('[InboundAgentConfig Service] No inbound phone numbers found');
+      console.log('[InboundAgentConfig Service] No phone numbers found (checked Settings and PhoneNumber model)');
+      // Create default config for chatbot anyway if no numbers
+      if (ecommerceCredentials) {
+        await this.createDefaultConfigForChatbot(userId, ecommerceCredentials);
+      }
       return [];
     }
+
+    console.log('[InboundAgentConfig Service] Found total', inboundPhoneNumbers.length, 'phone numbers (merged from settings + DB)');
 
     console.log('[InboundAgentConfig Service] Creating/updating configs for', inboundPhoneNumbers.length, 'phone numbers');
 
@@ -97,15 +122,15 @@ export class InboundAgentConfigService {
     const configs = [];
     for (let i = 0; i < inboundPhoneNumbers.length; i++) {
       const calledNumber = inboundPhoneNumbers[i];
-      
+
       console.log(`[InboundAgentConfig Service] Processing phone number [${i}]:`, calledNumber);
-      
+
       try {
         console.log(`[InboundAgentConfig Service] Looking for existing config:`, { userId, calledNumber });
-        
+
         // Try to find existing config first
         let config = await InboundAgentConfig.findOne({ userId, calledNumber });
-        
+
         if (config) {
           // Update existing - preserve greeting_message and language if already customized
           console.log(`[InboundAgentConfig Service] Found existing config, updating...`);
@@ -114,17 +139,17 @@ export class InboundAgentConfigService {
             language: config.language,
             greeting_message: config.greeting_message ? config.greeting_message.substring(0, 50) + '...' : 'empty'
           });
-          
+
           // Always update these fields from latest settings
           config.voice_id = voice_id;
           config.knowledge_base_ids = knowledge_base_ids;
           config.collections = collections; // Legacy support
           config.agent_instruction = agent_instruction;
-          
+
           // Update greeting_message from phone settings (when user explicitly sets it)
           console.log(`[InboundAgentConfig Service] Updating greeting_message from phone settings: ${greeting_message.substring(0, 50)}...`);
           config.greeting_message = greeting_message;
-          
+
           // Update language from phone settings (when user explicitly sets it)
           console.log(`[InboundAgentConfig Service] Updating language from phone settings: ${language}`);
           config.language = language;
@@ -134,7 +159,7 @@ export class InboundAgentConfigService {
             config.ecommerce_credentials = ecommerceCredentials;
             console.log(`[InboundAgentConfig Service] Updated e-commerce credentials for platform: ${ecommerceCredentials.platform}`);
           }
-          
+
           await config.save();
           console.log(`[InboundAgentConfig Service] Updated config for ${calledNumber}`);
         } else {
@@ -161,12 +186,12 @@ export class InboundAgentConfigService {
             ...configData,
             ecommerce_credentials: configData.ecommerce_credentials ? { ...configData.ecommerce_credentials, api_key: '***', api_secret: '***' } : undefined
           }, null, 2));
-          
+
           config = await InboundAgentConfig.create(configData);
-          
+
           console.log(`[InboundAgentConfig Service] Created new config for ${calledNumber}, ID:`, config._id);
         }
-        
+
         configs.push(config);
       } catch (error: any) {
         console.error(`[InboundAgentConfig Service] ERROR processing ${calledNumber}:`, error.message);
@@ -186,12 +211,12 @@ export class InboundAgentConfigService {
 
     console.log('[InboundAgentConfig Service] Synced', configs.length, 'configs successfully');
     console.log('[InboundAgentConfig Service] Created/Updated configs for numbers:', configs.map(c => c.calledNumber));
-    
+
     // Verify what's in DB after sync
     const allConfigsInDb = await InboundAgentConfig.find({ userId });
     console.log('[InboundAgentConfig Service] Total configs in DB for user:', allConfigsInDb.length);
     console.log('[InboundAgentConfig Service] Phone numbers in DB:', allConfigsInDb.map(c => c.calledNumber));
-    
+
     return configs;
   }
 
@@ -222,9 +247,9 @@ export class InboundAgentConfigService {
     console.log('[InboundAgentConfig Service] CalledNumber:', calledNumber);
     console.log('[InboundAgentConfig Service] Update Data:', JSON.stringify(data, null, 2));
     console.log('[InboundAgentConfig Service] ==========================================');
-    
+
     let config = await InboundAgentConfig.findOne({ userId, calledNumber });
-    
+
     if (!config) {
       // Create new config if doesn't exist
       console.log('[InboundAgentConfig Service] Config not found, creating new one...');
@@ -257,17 +282,17 @@ export class InboundAgentConfigService {
         config.greeting_message = data.greeting_message;
         console.log('[InboundAgentConfig Service] Updated greeting_message:', data.greeting_message);
       }
-      
+
       // Update e-commerce credentials if provided
       if (data.ecommerce_credentials !== undefined) {
         config.ecommerce_credentials = data.ecommerce_credentials;
         console.log('[InboundAgentConfig Service] Updated e-commerce credentials');
       }
-      
+
       await config.save();
       console.log('[InboundAgentConfig Service] Config saved successfully');
     }
-    
+
     console.log('[InboundAgentConfig Service] Final config:', {
       _id: config._id,
       calledNumber: config.calledNumber,
@@ -275,7 +300,7 @@ export class InboundAgentConfigService {
       language: config.language,
       greeting_message: config.greeting_message
     });
-    
+
     return config;
   }
 
@@ -285,7 +310,7 @@ export class InboundAgentConfigService {
   async deleteAll(userId: string): Promise<void> {
     await InboundAgentConfig.deleteMany({ userId });
   }
-  
+
   /**
    * Delete inbound agent config for a specific phone number
    */
@@ -308,13 +333,13 @@ export class InboundAgentConfigService {
     }
   ) {
     console.log('[InboundAgentConfig Service] Creating default config for chatbot...');
-    
+
     // Use empty string as calledNumber for chatbot (distinguishes from phone-based configs)
     const calledNumber = '';
-    
+
     // Check if default config already exists
     let config = await InboundAgentConfig.findOne({ userId, calledNumber });
-    
+
     if (config) {
       // Update existing default config with e-commerce credentials
       console.log('[InboundAgentConfig Service] Updating existing default config for chatbot...');
@@ -324,14 +349,14 @@ export class InboundAgentConfigService {
     } else {
       // Create new default config
       console.log('[InboundAgentConfig Service] Creating new default config for chatbot...');
-      
+
       // Fetch settings to get default values
       const [phoneSettings, aiBehavior, settings] = await Promise.all([
         PhoneSettings.findOne({ userId }),
         AIBehavior.findOne({ userId }),
         Settings.findOne({ userId })
       ]);
-      
+
       // Get default values
       const voice_id = phoneSettings?.customVoiceId || phoneSettings?.selectedVoice || 'adam';
       const knowledge_base_ids = settings?.knowledge_base_ids || [];
@@ -339,7 +364,7 @@ export class InboundAgentConfigService {
       const language = phoneSettings?.language || aiBehavior?.voiceAgent?.language || 'en';
       const agent_instruction = aiBehavior?.voiceAgent?.systemPrompt || '';
       const greeting_message = phoneSettings?.greetingMessage || 'Hello! How can I help you today?';
-      
+
       config = await InboundAgentConfig.create({
         userId,
         calledNumber, // Empty string for chatbot
@@ -351,12 +376,12 @@ export class InboundAgentConfigService {
         greeting_message,
         ecommerce_credentials: ecommerceCredentials
       });
-      
+
       console.log('[InboundAgentConfig Service] ✅ Created default config for chatbot with e-commerce credentials');
       console.log('[InboundAgentConfig Service] Config ID:', config._id);
       console.log('[InboundAgentConfig Service] Platform:', ecommerceCredentials.platform);
     }
-    
+
     return config;
   }
 }

@@ -239,10 +239,10 @@ export class SipTrunkController {
 
       // Step 2: Create dispatch rule using the trunk_id
       console.log('[SIP Trunk Controller] Step 2: Creating dispatch rule with trunk_id:', trunkResult.trunk_id);
-      
+
       // Generate a unique name for the dispatch rule
       const uniqueName = `dispatch-${Date.now()}`;
-      
+
       const dispatchResult = await sipTrunkService.createDispatchRule({
         sip_trunk_id: trunkResult.trunk_id,
         name: uniqueName,  // Random unique name
@@ -302,18 +302,18 @@ export class SipTrunkController {
       // 3. Default SMTP sender
       // 4. Python fallback (undefined - let Python handle it)
       let sender_email: string | undefined = requestSenderEmail;
-      
+
       if (!sender_email) {
         const userId = req.user?._id?.toString() || req.user?.id;
         const organizationId = req.user?.organizationId || req.user?._id;
-        
+
         if (organizationId) {
           try {
             // Priority 1: Connected Gmail integration
             const GoogleIntegration = (await import('../models/GoogleIntegration')).default;
             const googleIntegration = await GoogleIntegration.findOne({
-              organizationId: organizationId instanceof mongoose.Types.ObjectId 
-                ? organizationId 
+              organizationId: organizationId instanceof mongoose.Types.ObjectId
+                ? organizationId
                 : new mongoose.Types.ObjectId(organizationId.toString()),
               'services.gmail': true,
               status: 'active'
@@ -325,8 +325,8 @@ export class SipTrunkController {
               // Fallback: Try SocialIntegration (for Gmail via Dialog360 or other)
               const SocialIntegration = (await import('../models/SocialIntegration')).default;
               const socialIntegration = await SocialIntegration.findOne({
-                organizationId: organizationId instanceof mongoose.Types.ObjectId 
-                  ? organizationId 
+                organizationId: organizationId instanceof mongoose.Types.ObjectId
+                  ? organizationId
                   : new mongoose.Types.ObjectId(organizationId.toString()),
                 platform: 'gmail',
                 status: 'connected'
@@ -381,7 +381,7 @@ export class SipTrunkController {
       // Fetch agent configuration from database
       const Agent = (await import('../models/Agent')).default;
       const agent = await Agent.findOne({ agent_id });
-      
+
       if (!agent) {
         return res.status(404).json({
           success: false,
@@ -407,30 +407,30 @@ export class SipTrunkController {
       // SINGLE SOURCE OF TRUTH: All greeting rendering happens here
       // VALIDATION GATE: Blocks call if greeting is unsafe
       // ============================================
-      
-      const { 
-        renderGreeting, 
+
+      const {
+        renderGreeting,
         validateRenderedGreeting,
-        getDefaultGreeting, 
-        getDefaultSystemPrompt 
+        getDefaultGreeting,
+        getDefaultSystemPrompt
       } = await import('../utils/greetingRenderer');
-      
+
       // STEP 1: Fetch customer info from database if not provided
       let finalCustomerInfo = customer_info || {};
-      
+
       if (!finalCustomerInfo.name || !finalCustomerInfo.name.trim()) {
         try {
           const Customer = (await import('../models/Customer')).default;
           const organizationId = req.user?.organizationId || req.user?._id;
-          
+
           if (organizationId && to_number) {
             const customer = await Customer.findOne({
               phone: to_number,
-              organizationId: organizationId instanceof mongoose.Types.ObjectId 
-                ? organizationId 
+              organizationId: organizationId instanceof mongoose.Types.ObjectId
+                ? organizationId
                 : new mongoose.Types.ObjectId(organizationId.toString())
             }).lean();
-            
+
             if (customer && customer.name) {
               finalCustomerInfo = {
                 name: customer.name,
@@ -444,32 +444,32 @@ export class SipTrunkController {
           console.warn('[SIP Trunk Controller] ⚠️ Failed to fetch customer from database:', error.message);
         }
       }
-      
+
       // STEP 2: Prepare contact data with GUARANTEED non-empty name
       // CRITICAL: Name must be resolved BEFORE rendering (not during)
       let contactName = finalCustomerInfo?.name?.trim();
       if (!contactName || contactName.length === 0 || contactName === 'Unknown' || contactName === 'unknown') {
         contactName = 'there'; // Safe fallback
       }
-      
+
       const contactData = {
         name: contactName,  // REQUIRED - never empty
         email: finalCustomerInfo?.email?.trim() || '',
         phone: to_number || ''
       };
-      
+
       // STEP 3: Get greeting template
-      const greetingTemplate = agent.greeting_message?.trim() 
-        || agent.first_message?.trim() 
+      const greetingTemplate = agent.greeting_message?.trim()
+        || agent.first_message?.trim()
         || getDefaultGreeting(agent.language || 'en');
-      
+
       if (!greetingTemplate || greetingTemplate.length === 0) {
         throw new Error('Greeting template is empty - cannot proceed with call');
       }
-      
+
       // STEP 4: RENDER GREETING (SINGLE PASS, DETERMINISTIC)
       const renderingResult = renderGreeting(greetingTemplate, contactData, contactName);
-      
+
       // STEP 5: VALIDATION GATE - BLOCK CALL IF UNSAFE
       if (!renderingResult.success) {
         console.error('[SIP Trunk Controller] ❌ FATAL: Greeting rendering failed:', renderingResult.errors);
@@ -482,7 +482,7 @@ export class SipTrunkController {
           }
         });
       }
-      
+
       // STEP 6: FINAL SAFETY CHECK - Validate rendered greeting is safe for TTS
       const safetyCheck = validateRenderedGreeting(renderingResult.rendered);
       if (!safetyCheck.safe) {
@@ -496,24 +496,24 @@ export class SipTrunkController {
           }
         });
       }
-      
+
       // STEP 7: Get system prompt
-      let systemPrompt = agent.system_prompt?.trim() 
+      let systemPrompt = agent.system_prompt?.trim()
         || getDefaultSystemPrompt(agent.language || 'en');
-      
+
       if (!systemPrompt || systemPrompt.length === 0) {
         systemPrompt = getDefaultSystemPrompt(agent.language || 'en');
       }
-      
+
       // STEP 8: Final values (guaranteed safe)
       const finalGreeting = renderingResult.rendered;
       const finalSystemPrompt = systemPrompt;
-      
+
       // Log warnings if any
       if (renderingResult.warnings.length > 0) {
         console.warn('[SIP Trunk Controller] ⚠️ Rendering warnings:', renderingResult.warnings);
       }
-      
+
       console.log('[SIP Trunk Controller] ✅ Greeting rendered successfully:', {
         template: greetingTemplate,
         rendered: finalGreeting,
@@ -527,8 +527,8 @@ export class SipTrunkController {
 
       // Fetch phone number from database to verify it exists and get details
       const PhoneNumber = (await import('../models/PhoneNumber')).default;
-      const phoneNumber = await PhoneNumber.findOne({ 
-        phone_number_id: agent_phone_number_id 
+      const phoneNumber = await PhoneNumber.findOne({
+        phone_number_id: agent_phone_number_id
       });
 
       if (!phoneNumber) {
@@ -603,7 +603,7 @@ export class SipTrunkController {
             console.error('[SIP Trunk Controller] ❌ Error status:', registerError.statusCode);
             console.error('[SIP Trunk Controller] ❌ Error code:', registerError.code);
             console.error('[SIP Trunk Controller] ❌ Error response:', JSON.stringify(registerError.response?.data || {}, null, 2));
-            
+
             // Don't fall back to phone number - registration is required
             return res.status(registerError.statusCode || 500).json({
               success: false,
@@ -615,9 +615,10 @@ export class SipTrunkController {
           }
         }
         console.log('[SIP Trunk Controller] Using Twilio outbound endpoint; agent_phone_number_id:', phoneNumber.elevenlabs_phone_number_id, 'from_number:', phoneNumber.phone_number);
-        
+
         try {
           result = await sipTrunkService.twilioOutboundCall({
+            userId: req.user!.id.toString(), // Pass userId for e-commerce credentials
             agent_id,
             agent_phone_number_id: phoneNumber.elevenlabs_phone_number_id,
             to_number,
@@ -660,9 +661,10 @@ export class SipTrunkController {
 
               phoneNumber.elevenlabs_phone_number_id = elevenLabsResponse.phone_number_id;
               console.log('[SIP Trunk Controller] ✅ Phone number re-registered with new ID:', elevenLabsResponse.phone_number_id);
-              
+
               // Retry the call with the new ID
               result = await sipTrunkService.twilioOutboundCall({
+                userId: req.user!.id.toString(), // Pass userId for e-commerce credentials
                 agent_id,
                 agent_phone_number_id: elevenLabsResponse.phone_number_id,
                 to_number,
@@ -677,7 +679,7 @@ export class SipTrunkController {
                   escalationRules: agent.escalationRules
                 }
               });
-              
+
               console.log('[SIP Trunk Controller] ✅ Outbound call succeeded after re-registration');
             } catch (registerError: any) {
               // Re-registration failed, return error
@@ -708,6 +710,7 @@ export class SipTrunkController {
         }
         console.log('[SIP Trunk Controller] Using SIP trunk endpoint with ElevenLabs phone_number_id:', phoneNumber.elevenlabs_phone_number_id);
         result = await sipTrunkService.outboundCall({
+          userId: req.user!.id.toString(), // Pass userId for e-commerce credentials
           agent_id,
           agent_phone_number_id: phoneNumber.elevenlabs_phone_number_id,
           to_number,
@@ -734,7 +737,7 @@ export class SipTrunkController {
           const Customer = (await import('../models/Customer')).default;
           const Message = (await import('../models/Message')).default;
           const organizationId = req.user?.organizationId || req.user?._id;
-          
+
           if (!organizationId) {
             console.warn('[SIP Trunk Controller] ⚠️ No organizationId found, skipping conversation creation');
           } else {
@@ -742,18 +745,18 @@ export class SipTrunkController {
             const customerPhone = to_number;
             const customerName = customer_info?.name || 'Unknown';
             const customerEmail = customer_info?.email;
-            
+
             let customer = await Customer.findOne({
               phone: customerPhone,
-              organizationId: organizationId instanceof mongoose.Types.ObjectId 
-                ? organizationId 
+              organizationId: organizationId instanceof mongoose.Types.ObjectId
+                ? organizationId
                 : new mongoose.Types.ObjectId(organizationId.toString())
             });
-            
+
             if (!customer) {
               customer = await Customer.create({
-                organizationId: organizationId instanceof mongoose.Types.ObjectId 
-                  ? organizationId 
+                organizationId: organizationId instanceof mongoose.Types.ObjectId
+                  ? organizationId
                   : new mongoose.Types.ObjectId(organizationId.toString()),
                 name: customerName,
                 phone: customerPhone,
@@ -774,8 +777,8 @@ export class SipTrunkController {
 
             // Create conversation
             const conversation = await Conversation.create({
-              organizationId: organizationId instanceof mongoose.Types.ObjectId 
-                ? organizationId 
+              organizationId: organizationId instanceof mongoose.Types.ObjectId
+                ? organizationId
                 : new mongoose.Types.ObjectId(organizationId.toString()),
               customerId: customer._id,
               channel: 'phone',
@@ -805,7 +808,7 @@ export class SipTrunkController {
 
             console.log('[SIP Trunk Controller] ✅ Created conversation:', conversation._id);
             console.log('[SIP Trunk Controller] Conversation will appear in conversations tab');
-            
+
             // Add conversation ID to response so frontend can navigate to it
             (result as any).conversation_db_id = conversation._id.toString();
           }

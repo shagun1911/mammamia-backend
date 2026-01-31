@@ -6,6 +6,68 @@ import mongoose from 'mongoose';
 // Python API base URL - should match the one used for agents endpoint
 const PYTHON_API_BASE_URL = process.env.PYTHON_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
 
+const WOOCOMMERCE_MASTER_PROMPT = `
+You are a live AI voice agent connected to a WooCommerce store.
+
+You have direct access to WooCommerce tools that can fetch:
+
+- products
+- inventory
+- prices
+- orders
+- store data
+
+IMPORTANT RULE:
+
+WooCommerce data is NOT in your knowledge base.
+You must fetch it using tools.
+
+Never say:
+“I don’t have WooCommerce information.”
+Never apologize for missing WooCommerce data.
+Never say it is outside your knowledge.
+
+Instead:
+
+When the user asks about WooCommerce products,
+you MUST call the WooCommerce tool.
+
+Always prefer tool calls over guessing.
+
+If a tool exists for the request → use it.
+
+If the user asks:
+“Tell me about WooCommerce products”
+You should immediately fetch products.
+
+If the tool fails:
+Say:
+“I’m having a small issue connecting to the store. Let me try again.”
+
+Retry once.
+
+If it still fails:
+Explain the issue calmly without blaming knowledge limits.
+
+Conversation rules:
+
+- Never claim lack of WooCommerce knowledge
+- Treat WooCommerce as live data
+- Always attempt a tool call first
+- Speak naturally
+- Keep the call alive
+- Avoid silence
+- Guide the user helpfully
+
+After fetching products:
+
+Summarize them clearly.
+Offer help selecting one.
+Ask follow-up questions.
+
+You are a real store assistant, not a generic chatbot.
+`;
+
 export interface CreateAgentRequest {
   name: string;
   first_message: string;
@@ -49,15 +111,15 @@ export class AgentService {
     try {
       const EmailTemplate = (await import('../models/EmailTemplate')).default;
       const userObjectId = new mongoose.Types.ObjectId(userId);
-      
+
       const templates = await EmailTemplate.find({ userId: userObjectId })
         .select('tool_id')
         .lean();
-      
+
       const toolIds = templates
         .map(t => (t as any).tool_id)
         .filter((id): id is string => !!id && typeof id === 'string');
-      
+
       console.log(`[Agent Service] Found ${toolIds.length} email template tool_ids for user ${userId}`);
       return toolIds;
     } catch (error: any) {
@@ -73,16 +135,16 @@ export class AgentService {
     // Get static tool IDs from environment variables
     const productsToolId = process.env.PRODUCTS_TOOL_ID;
     const ordersToolId = process.env.ORDERS_TOOL_ID;
-    
+
     // Build tool_ids array from env variables (filter out undefined values)
     const toolIds: string[] = [];
     if (productsToolId) toolIds.push(productsToolId);
     if (ordersToolId) toolIds.push(ordersToolId);
-    
+
     // Add email template tool_ids
     const emailTemplateToolIds = await this.getEmailTemplateToolIds(userId);
     toolIds.push(...emailTemplateToolIds);
-    
+
     // Remove duplicates
     return [...new Set(toolIds)];
   }
@@ -133,7 +195,7 @@ export class AgentService {
       console.log('[ElevenLabs Sync] Agent:', agentId, 'Tools:', toolIds);
 
       const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${agentId}/prompt`;
-      
+
       // Build request body preserving all agent settings
       const requestBody: any = {
         system_prompt: systemPrompt,
@@ -150,7 +212,7 @@ export class AgentService {
       if (agent.greeting_message) {
         requestBody.greeting_message = agent.greeting_message;
       }
-      
+
       await axios.patch(pythonUrl, requestBody, {
         timeout: 30000,
         headers: { 'Content-Type': 'application/json' }
@@ -174,15 +236,15 @@ export class AgentService {
   private async updateAgentToolIdsInPython(agentId: string, toolIds: string[]): Promise<void> {
     try {
       const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${agentId}/prompt`;
-      
+
       // Get the current agent to preserve other settings
       const agent = await Agent.findOne({ agent_id: agentId }).lean();
-      
+
       if (!agent) {
         console.warn(`[Agent Service] Agent ${agentId} not found, skipping Python API update`);
         return;
       }
-      
+
       const requestBody = {
         first_message: (agent as any).first_message || '',
         system_prompt: (agent as any).system_prompt || '',
@@ -192,7 +254,7 @@ export class AgentService {
         ...((agent as any).voice_id && { voice_id: (agent as any).voice_id }),
         ...((agent as any).greeting_message && { greeting_message: (agent as any).greeting_message })
       };
-      
+
       await axios.patch(pythonUrl, requestBody, {
         timeout: 30000,
         headers: { 'Content-Type': 'application/json' }
@@ -227,16 +289,19 @@ export class AgentService {
 
       // Call external Python API to create agent
       const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents`;
-      
+
       console.log(`[Agent Service] Calling Python API: ${pythonUrl}`);
-      
+
       // Python API only accepts first_message, not greeting_message
       const firstMessageToSend = data.first_message || 'Hello! How can I help you today?';
-      
+
+      // Prepend WooCommerce master prompt to system prompt
+      const systemPromptToSend = `${WOOCOMMERCE_MASTER_PROMPT}\n\n${data.system_prompt || ''}`;
+
       const requestBody = {
         name: data.name,
         first_message: firstMessageToSend,
-        system_prompt: data.system_prompt,
+        system_prompt: systemPromptToSend,
         language: data.language,
         knowledge_base_ids: data.knowledge_base_ids,
         tool_ids: toolIds,
@@ -298,7 +363,7 @@ export class AgentService {
       return agent;
     } catch (error: any) {
       console.error('[Agent Service] Failed to create agent:', error);
-      
+
       if (error.response) {
         console.error('[Agent Service] Python API error response:', {
           status: error.response.status,
@@ -310,11 +375,11 @@ export class AgentService {
           error.response.data?.detail || error.response.data?.message || 'Failed to create agent in Python API'
         );
       }
-      
+
       if (error instanceof AppError) {
         throw error;
       }
-      
+
       throw new AppError(
         500,
         'AGENT_CREATION_ERROR',
@@ -332,7 +397,7 @@ export class AgentService {
       const agents = await Agent.find({ userId: userObjectId })
         .sort({ createdAt: -1 })
         .lean();
-      
+
       return agents as unknown as IAgent[];
     } catch (error: any) {
       console.error('[Agent Service] Failed to get agents:', error);
@@ -346,11 +411,11 @@ export class AgentService {
   async getAgentById(agentId: string, userId: string): Promise<IAgent | null> {
     try {
       const userObjectId = new mongoose.Types.ObjectId(userId);
-      const agent = await Agent.findOne({ 
+      const agent = await Agent.findOne({
         _id: agentId,
-        userId: userObjectId 
+        userId: userObjectId
       }).lean();
-      
+
       return agent as unknown as IAgent | null;
     } catch (error: any) {
       console.error('[Agent Service] Failed to get agent:', error);
@@ -364,11 +429,11 @@ export class AgentService {
   async getAgentByAgentId(agentId: string, userId: string): Promise<IAgent | null> {
     try {
       const userObjectId = new mongoose.Types.ObjectId(userId);
-      const agent = await Agent.findOne({ 
+      const agent = await Agent.findOne({
         agent_id: agentId,
-        userId: userObjectId 
+        userId: userObjectId
       }).lean();
-      
+
       return agent as unknown as IAgent | null;
     } catch (error: any) {
       console.error('[Agent Service] Failed to get agent by agent_id:', error);
@@ -383,7 +448,7 @@ export class AgentService {
    */
   async updateAgentPrompt(agentId: string, userId: string, data: UpdateAgentPromptRequest): Promise<IAgent> {
     const userObjectId = new mongoose.Types.ObjectId(userId);
-    
+
     const agent = await Agent.findOne({
       agent_id: agentId,
       userId: userObjectId
@@ -395,9 +460,13 @@ export class AgentService {
 
     const toolIds = await this.buildToolIds(userId);
     const firstMessageToSend = data.first_message || agent.first_message || 'Hello! How can I help you today?';
+
+    // Prepend WooCommerce master prompt to system prompt
+    const systemPromptToSend = `${WOOCOMMERCE_MASTER_PROMPT}\n\n${data.system_prompt || ''}`;
+
     const requestBody = {
       first_message: firstMessageToSend,
-      system_prompt: data.system_prompt,
+      system_prompt: systemPromptToSend,
       language: data.language,
       knowledge_base_ids: data.knowledge_base_ids,
       tool_ids: toolIds,
@@ -526,11 +595,11 @@ export class AgentService {
   async deleteAgent(agentId: string, userId: string): Promise<void> {
     try {
       const userObjectId = new mongoose.Types.ObjectId(userId);
-      
+
       // First, find the agent to get the Python API agent_id
-      const agent = await Agent.findOne({ 
+      const agent = await Agent.findOne({
         _id: agentId,
-        userId: userObjectId 
+        userId: userObjectId
       });
 
       if (!agent) {
@@ -543,7 +612,7 @@ export class AgentService {
 
       // Call external Python API to delete the agent
       const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${pythonAgentId}`;
-      
+
       console.log(`[Agent Service] Calling Python API to delete agent: ${pythonUrl}`);
 
       try {
@@ -563,7 +632,7 @@ export class AgentService {
           data: pythonError.response?.data,
           message: pythonError.message
         });
-        
+
         // If it's a 404, the agent might already be deleted from Python API, which is fine
         if (pythonError.response?.status !== 404) {
           // For other errors, we might want to still proceed or throw
@@ -571,7 +640,7 @@ export class AgentService {
           console.warn('[Agent Service] Python API delete failed, but proceeding with database cleanup');
         }
       }
-      
+
       // Delete from our database
       await Agent.deleteOne({ _id: agentId, userId: userObjectId });
       console.log(`[Agent Service] Agent deleted from database: ${agentId}`);
@@ -610,12 +679,12 @@ export class AgentService {
   async addEmailTemplateToolIdToAllAgents(userId: string, toolId: string): Promise<void> {
     try {
       const userObjectId = new mongoose.Types.ObjectId(userId);
-      
+
       // Find all agents for this user
       const agents = await Agent.find({ userId: userObjectId });
-      
+
       console.log(`[Agent Service] Adding tool_id ${toolId} to ${agents.length} agents for user ${userId}`);
-      
+
       // Update each agent
       for (const agent of agents) {
         // Check if tool_id already exists
@@ -623,17 +692,17 @@ export class AgentService {
           console.log(`[Agent Service] Agent ${agent.agent_id} already has tool_id ${toolId}, skipping`);
           continue;
         }
-        
+
         // Add tool_id to the array
         agent.tool_ids.push(toolId);
         await agent.save();
-        
+
         // Sync to ElevenLabs to ensure tools are available in runtime
         await this.syncAgentToolsToElevenLabs(agent);
-        
+
         console.log(`[Agent Service] ✅ Added tool_id ${toolId} to agent ${agent.agent_id}`);
       }
-      
+
       console.log(`[Agent Service] ✅ Successfully added tool_id ${toolId} to all agents for user ${userId}`);
     } catch (error: any) {
       console.error('[Agent Service] Failed to add email template tool_id to agents:', error);
@@ -648,12 +717,12 @@ export class AgentService {
   async removeEmailTemplateToolIdFromAllAgents(userId: string, toolId: string): Promise<void> {
     try {
       const userObjectId = new mongoose.Types.ObjectId(userId);
-      
+
       // Find all agents for this user
       const agents = await Agent.find({ userId: userObjectId });
-      
+
       console.log(`[Agent Service] Removing tool_id ${toolId} from ${agents.length} agents for user ${userId}`);
-      
+
       // Update each agent
       for (const agent of agents) {
         // Check if tool_id exists
@@ -661,17 +730,17 @@ export class AgentService {
           console.log(`[Agent Service] Agent ${agent.agent_id} doesn't have tool_id ${toolId}, skipping`);
           continue;
         }
-        
+
         // Remove tool_id from the array
         agent.tool_ids = agent.tool_ids.filter(id => id !== toolId);
         await agent.save();
-        
+
         // Sync to ElevenLabs to ensure tools are updated in runtime
         await this.syncAgentToolsToElevenLabs(agent);
-        
+
         console.log(`[Agent Service] ✅ Removed tool_id ${toolId} from agent ${agent.agent_id}`);
       }
-      
+
       console.log(`[Agent Service] ✅ Successfully removed tool_id ${toolId} from all agents for user ${userId}`);
     } catch (error: any) {
       console.error('[Agent Service] Failed to remove email template tool_id from agents:', error);

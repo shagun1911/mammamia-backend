@@ -100,7 +100,8 @@ interface CreateDispatchRuleResponse {
   dispatch_rule_name: string;
 }
 
-interface OutboundCallRequest {
+// Internal/Legacy request structure used by Controller (includes agent config overrides)
+interface InternalOutboundCallRequest {
   agent_id: string;
   agent_phone_number_id: string;
   to_number: string;
@@ -109,7 +110,8 @@ interface OutboundCallRequest {
     name?: string;
   };
   sender_email?: string;
-  // Agent configuration for call execution
+  userId?: string; // Used for fetching e-commerce credentials
+  // Agent configuration for call execution (Internal only - not sent to Python)
   agent_config?: {
     greeting_message?: string;
     system_prompt?: string;
@@ -119,8 +121,28 @@ interface OutboundCallRequest {
   };
 }
 
+// Strict payload structure for ElevenLabs API
+interface OutboundCallRequest {
+  agent_id: string;
+  agent_phone_number_id: string;
+  to_number: string;
+  customer_info?: {
+    email?: string;
+    name?: string;
+  };
+  dynamic_variables?: Record<string, string>;
+  ecommerce_credentials?: {
+    api_key: string;
+    api_secret: string;
+    base_url: string;
+    platform: string;
+    access_token?: string;
+  };
+  sender_email?: string;
+}
+
 /** Twilio outbound: uses agent_phone_number_id from ElevenLabs, with optional credentials for unregistered numbers */
-interface TwilioOutboundCallRequest extends OutboundCallRequest {
+interface TwilioOutboundCallRequest extends InternalOutboundCallRequest {
   phone_number?: string;  // E.164 from number (fallback if not registered)
   sid?: string;          // Twilio Account SID (fallback if not registered)
   token?: string;        // Twilio Auth Token (fallback if not registered)
@@ -143,7 +165,7 @@ export class SipTrunkService {
   async setupSipTrunk(data: SetupSipTrunkRequest): Promise<SetupSipTrunkResponse> {
     try {
       const pythonUrl = `${COMM_API_URL}/calls/setup-sip-trunk`;
-      
+
       console.log('[SIP Trunk Service] ===== CALLING PYTHON SERVICE =====');
       console.log('[SIP Trunk Service] Python API Base:', COMM_API_URL);
       console.log('[SIP Trunk Service] Full URL:', pythonUrl);
@@ -154,7 +176,7 @@ export class SipTrunkService {
         twilio_sid: data.twilio_sid,
         twilio_auth_token: '***hidden***'
       });
-      
+
       const response = await axios.post<SetupSipTrunkResponse>(
         pythonUrl,
         {
@@ -183,7 +205,7 @@ export class SipTrunkService {
       console.log('  - ip_acl_sid:', response.data.ip_acl_sid);
       console.log('  - username:', response.data.username);
       console.log('  - origination_uri_sid:', response.data.origination_uri_sid);
-      
+
       return response.data;
     } catch (error: any) {
       console.error('[SIP Trunk] ❌ Failed to setup Twilio SIP trunk:', error.response?.data || error.message);
@@ -202,7 +224,7 @@ export class SipTrunkService {
   // async createLivekitTrunk(data: CreateLivekitTrunkRequest): Promise<CreateLivekitTrunkResponse> {
   //   try {
   //     console.log('[SIP Trunk] Creating LiveKit SIP trunk...');
-      
+
   //     const response = await axios.post<CreateLivekitTrunkResponse>(
   //       `${COMM_API_URL}/calls/create-livekit-trunk`,
   //       {
@@ -220,7 +242,7 @@ export class SipTrunkService {
 
   //     console.log('[SIP Trunk] ✅ LiveKit SIP trunk created successfully');
   //     console.log('[SIP Trunk] LiveKit Trunk ID:', response.data.livekit_trunk_id);
-      
+
   //     return response.data;
   //   } catch (error: any) {
   //     console.error('[SIP Trunk] ❌ Failed to create LiveKit SIP trunk:', error.response?.data || error.message);
@@ -245,10 +267,10 @@ export class SipTrunkService {
         `${COMM_API_URL}/api/v1/sip-trunk`,
         `${COMM_API_URL}/calls/create-generic-sip-trunk`
       ];
-      
+
       let lastError: any = null;
       let response: any = null;
-      
+
       for (const pythonUrl of possibleEndpoints) {
         try {
           const suggestedTransport = getSuggestedTransport(data.phone_number, data.transport);
@@ -264,7 +286,7 @@ export class SipTrunkService {
             transport: data.transport || 'udp',
             port: data.port || 5060
           });
-          
+
           response = await axios.post<CreateGenericSipTrunkResponse>(
             pythonUrl,
             {
@@ -281,7 +303,7 @@ export class SipTrunkService {
               timeout: 60000 // 60 seconds timeout
             }
           );
-          
+
           // Success - break out of loop
           console.log('[SIP Trunk Service] ✅ Generic SIP trunk created successfully');
           console.log('[SIP Trunk Service] Working endpoint:', pythonUrl);
@@ -297,7 +319,7 @@ export class SipTrunkService {
           throw error;
         }
       }
-      
+
       // If we have a successful response, return it
       if (response && response.data) {
         console.log('[SIP Trunk Service] Response status:', response.status);
@@ -313,7 +335,7 @@ export class SipTrunkService {
         console.log('  - transport:', response.data.transport);
         return response.data;
       }
-      
+
       throw lastError || new Error('All SIP trunk registration endpoints failed');
     } catch (error: any) {
       const transport = data.transport || 'udp';
@@ -348,7 +370,7 @@ export class SipTrunkService {
   async createInboundTrunk(data: CreateInboundTrunkRequest): Promise<CreateInboundTrunkResponse> {
     try {
       const pythonUrl = `${COMM_API_URL}/calls/create-inbound-trunk`;
-      
+
       console.log('[SIP Trunk Service] ===== CREATING INBOUND TRUNK =====');
       console.log('[SIP Trunk Service] Python API URL:', pythonUrl);
       console.log('[SIP Trunk Service] Request payload:', {
@@ -357,7 +379,7 @@ export class SipTrunkService {
         allowed_numbers: data.allowed_numbers || [],
         krisp_enabled: data.krisp_enabled !== undefined ? data.krisp_enabled : true
       });
-      
+
       const response = await axios.post<CreateInboundTrunkResponse>(
         pythonUrl,
         {
@@ -381,7 +403,7 @@ export class SipTrunkService {
       console.log('  - trunk_id:', response.data.trunk_id);
       console.log('  - trunk_name:', response.data.trunk_name);
       console.log('  - phone_numbers:', response.data.phone_numbers);
-      
+
       return response.data;
     } catch (error: any) {
       console.error('[SIP Trunk] ❌ Failed to create inbound trunk:', error.response?.data || error.message);
@@ -409,7 +431,7 @@ export class SipTrunkService {
   }): Promise<{ phone_number_id: string }> {
     try {
       const pythonUrl = `${COMM_API_URL}/api/v1/phone-numbers`;
-      
+
       // Build payload matching ElevenLabs API schema exactly
       // According to API docs: POST /api/v1/phone-numbers - Import Phone Number (Twilio)
       const payload: any = {
@@ -420,7 +442,7 @@ export class SipTrunkService {
         supports_inbound: data.supports_inbound ?? true,
         supports_outbound: data.supports_outbound ?? true
       };
-      
+
       console.log('[SIP Trunk Service] ===== REGISTERING TWILIO PHONE NUMBER WITH ELEVENLABS =====');
       console.log('[SIP Trunk Service] ElevenLabs Python API URL:', pythonUrl);
       console.log('[SIP Trunk Service] Request payload:', {
@@ -431,7 +453,7 @@ export class SipTrunkService {
         supports_inbound: payload.supports_inbound,
         supports_outbound: payload.supports_outbound
       });
-      
+
       const response = await axios.post<any>(
         pythonUrl,
         payload,
@@ -443,17 +465,17 @@ export class SipTrunkService {
       console.log('[SIP Trunk Service] ✅ Twilio phone number registered with ElevenLabs');
       console.log('[SIP Trunk Service] Response status:', response.status);
       console.log('[SIP Trunk Service] Full response:', JSON.stringify(response.data, null, 2));
-      
+
       // Handle different possible response formats
       const phoneNumberId = response.data?.phone_number_id || response.data?.id || response.data?.phoneNumberId;
-      
+
       if (!phoneNumberId) {
         console.error('[SIP Trunk Service] ❌ Response does not contain phone_number_id:', response.data);
         throw new Error('Registration response does not contain phone_number_id');
       }
-      
+
       console.log('[SIP Trunk Service] ElevenLabs phone_number_id:', phoneNumberId);
-      
+
       return { phone_number_id: phoneNumberId };
     } catch (error: any) {
       // If phone number already exists (409 Conflict or similar), try to fetch it
@@ -464,11 +486,11 @@ export class SipTrunkService {
           const listResponse = await axios.get<any>(`${COMM_API_URL}/api/v1/phone-numbers`, {
             timeout: 60000
           });
-          
+
           const existingNumber = listResponse.data?.phone_numbers?.find(
             (pn: any) => pn.phone_number === data.phone_number
           );
-          
+
           if (existingNumber?.phone_number_id) {
             console.log('[SIP Trunk Service] ✅ Found existing phone number:', existingNumber.phone_number_id);
             return { phone_number_id: existingNumber.phone_number_id };
@@ -477,7 +499,7 @@ export class SipTrunkService {
           console.warn('[SIP Trunk Service] Failed to fetch existing phone number:', fetchError.message);
         }
       }
-      
+
       console.error('[SIP Trunk Service] ❌ Failed to register Twilio phone number with ElevenLabs:', error.response?.data || error.message);
       throw new AppError(
         error.response?.status || 500,
@@ -518,7 +540,7 @@ export class SipTrunkService {
   }): Promise<{ phone_number_id: string }> {
     try {
       const pythonUrl = `${COMM_API_URL}/api/v1/phone-numbers/sip-trunk`;
-      
+
       // Build payload matching ElevenLabs API schema exactly
       const payload: any = {
         label: data.label,
@@ -553,7 +575,7 @@ export class SipTrunkService {
           payload.outbound_trunk_config.transport = data.outbound_trunk_config.transport;
         }
       }
-      
+
       const transport = data.outbound_trunk_config?.transport || data.inbound_trunk_config ? 'udp' : 'n/a';
       const suggestedTransport = getSuggestedTransport(data.phone_number, transport);
 
@@ -607,7 +629,7 @@ export class SipTrunkService {
     try {
       // Build URL with query parameters (not body!)
       const pythonUrl = `${COMM_API_URL}/calls/create-dispatch-rule?sip_trunk_id=${encodeURIComponent(data.sip_trunk_id)}&name=${encodeURIComponent(data.name)}&agent_name=${encodeURIComponent(data.agent_name)}`;
-      
+
       console.log('[SIP Trunk Service] ===== CREATING DISPATCH RULE =====');
       console.log('[SIP Trunk Service] Python API URL:', pythonUrl);
       console.log('[SIP Trunk Service] Query params:', {
@@ -615,7 +637,7 @@ export class SipTrunkService {
         name: data.name,
         agent_name: data.agent_name
       });
-      
+
       const response = await axios.post<CreateDispatchRuleResponse>(
         pythonUrl,
         {}, // Empty body - all params in URL
@@ -633,11 +655,11 @@ export class SipTrunkService {
       console.log('  - message:', response.data.message);
       console.log('  - dispatch_rule_id:', response.data.dispatch_rule_id);
       console.log('  - dispatch_rule_name:', response.data.dispatch_rule_name);
-      
+
       return response.data;
     } catch (error: any) {
       console.error('[SIP Trunk] ❌ Failed to create dispatch rule:', error.response?.data || error.message);
-      
+
       // Log detailed validation errors
       if (error.response?.data?.detail && Array.isArray(error.response.data.detail)) {
         console.error('[SIP Trunk] ❌ VALIDATION ERRORS - Missing fields:');
@@ -648,7 +670,7 @@ export class SipTrunkService {
           console.error(`     Input: ${JSON.stringify(err.input)}`);
         });
       }
-      
+
       throw new AppError(
         error.response?.status || 500,
         'DISPATCH_RULE_ERROR',
@@ -668,15 +690,33 @@ export class SipTrunkService {
       const pythonUrl = `${COMM_API_URL}/api/v1/phone-numbers/twilio/outbound-call`;
       console.log('[SIP Trunk Service] ===== INITIATING TWILIO OUTBOUND CALL =====');
       console.log('[SIP Trunk Service] Python API URL:', pythonUrl);
-      
+
+      // Fetch e-commerce credentials if userId is provided
+      let ecommerceCredentials = undefined;
+      if (data.userId) {
+        try {
+          const { getEcommerceCredentials } = await import('../utils/ecommerce.util');
+          ecommerceCredentials = await getEcommerceCredentials(data.userId);
+          if (ecommerceCredentials) {
+            console.log('[SIP Trunk Service] ✅ Found e-commerce credentials for user, attaching to payload');
+          }
+        } catch (err) {
+          console.warn('[SIP Trunk Service] ⚠️ Failed to fetch e-commerce credentials:', err);
+        }
+      }
+
       // Build payload matching ElevenLabs API schema
       const body: Record<string, unknown> = {
         agent_id: data.agent_id,
         agent_phone_number_id: data.agent_phone_number_id,
         to_number: data.to_number,
-        customer_info: data.customer_info || {}
+        customer_info: {
+          name: (data.customer_info?.name || "there").trim(),
+          email: (data.customer_info?.email || "").trim()
+        },
+        ...(ecommerceCredentials && { ecommerce_credentials: ecommerceCredentials })
       };
-      
+
       // Only include sender_email if defined
       if (data.sender_email) {
         body.sender_email = data.sender_email;
@@ -689,7 +729,7 @@ export class SipTrunkService {
         // Greeting message is already rendered and validated - use as-is
         if (data.agent_config.greeting_message && typeof data.agent_config.greeting_message === 'string') {
           const greetingMessage = data.agent_config.greeting_message.trim();
-          
+
           // Final sanity check: If somehow variables got through, BLOCK the call
           if (greetingMessage.includes('{{') || greetingMessage.includes('}}')) {
             console.error('[SIP Trunk Service] ❌ FATAL: Variables detected in greeting message!');
@@ -699,7 +739,7 @@ export class SipTrunkService {
               'Greeting message contains unresolved variables - call blocked for safety'
             );
           }
-          
+
           if (greetingMessage.length === 0) {
             console.error('[SIP Trunk Service] ❌ FATAL: Greeting message is empty!');
             throw new AppError(
@@ -708,12 +748,12 @@ export class SipTrunkService {
               'Greeting message is empty - call blocked'
             );
           }
-          
+
           body.greeting_message = greetingMessage;
           // Also send as first_message for Python API compatibility
           body.first_message = greetingMessage;
         }
-        
+
         // System prompt validation
         if (data.agent_config.system_prompt && typeof data.agent_config.system_prompt === 'string') {
           const systemPrompt = data.agent_config.system_prompt.trim();
@@ -726,7 +766,7 @@ export class SipTrunkService {
           }
           body.system_prompt = systemPrompt;
         }
-        
+
         // Always include language - it's required for proper agent behavior
         body.language = data.agent_config.language || 'en';
         if (data.agent_config.voice_id) {
@@ -749,7 +789,7 @@ export class SipTrunkService {
       const greetingMsg = typeof body.greeting_message === 'string' ? body.greeting_message : '';
       const firstMsg = typeof body.first_message === 'string' ? body.first_message : '';
       const systemPrompt = typeof body.system_prompt === 'string' ? body.system_prompt : '';
-      
+
       // CRITICAL: Final validation before sending to Python API
       if (greetingMsg && (greetingMsg.includes('{{') || greetingMsg.includes('}}'))) {
         console.error('[SIP Trunk Service] ❌ FATAL: Variables detected in greeting!', {
@@ -761,7 +801,7 @@ export class SipTrunkService {
           'Greeting contains unresolved variables - this should never happen. Call blocked.'
         );
       }
-      
+
       // Ensure required fields are always present
       // Python API may require these fields even if not in agent_config
       if (!body.greeting_message && !body.first_message) {
@@ -772,14 +812,14 @@ export class SipTrunkService {
         body.first_message = defaultGreeting;
         console.warn('[SIP Trunk Service] ⚠️ No greeting message provided, using default');
       }
-      
+
       if (!body.system_prompt) {
         // Use default system prompt if not provided
         const { getDefaultSystemPrompt } = await import('../utils/greetingRenderer');
         body.system_prompt = getDefaultSystemPrompt(body.language as string || 'en');
         console.warn('[SIP Trunk Service] ⚠️ No system prompt provided, using default');
       }
-      
+
       if (!body.language) {
         body.language = 'en';
         console.warn('[SIP Trunk Service] ⚠️ No language provided, defaulting to en');
@@ -796,7 +836,7 @@ export class SipTrunkService {
         language: body.language || 'NOT_SET',
         has_variables: false // Should always be false after validation
       });
-      
+
       // Log BEFORE calling Python outbound-call
       console.log(
         '[OUTBOUND CALL → PYTHON] Payload:',
@@ -844,14 +884,14 @@ export class SipTrunkService {
           });
         }
       }
-      
+
       // Check if it's a 404 for phone number not found
-      if (error.response?.status === 404 && 
-          (error.response?.data?.detail?.includes('not found') || 
-           error.response?.data?.message?.includes('not found') ||
-           error.response?.data?.detail?.includes('Document with id') ||
-           error.response?.data?.message?.includes('Document with id'))) {
-        
+      if (error.response?.status === 404 &&
+        (error.response?.data?.detail?.includes('not found') ||
+          error.response?.data?.message?.includes('not found') ||
+          error.response?.data?.detail?.includes('Document with id') ||
+          error.response?.data?.message?.includes('Document with id'))) {
+
         console.warn('[SIP Trunk Service] ⚠️ Phone number ID not found in Python API:', data.agent_phone_number_id);
         console.warn('[SIP Trunk Service] ⚠️ Error detail:', error.response?.data?.detail || error.response?.data?.message);
         // Throw a specific error that the controller can catch and handle
@@ -861,9 +901,9 @@ export class SipTrunkService {
           `Phone number ID ${data.agent_phone_number_id} not found in Python API. The phone number may need to be re-registered.`
         );
       }
-      
+
       console.error('[SIP Trunk Service] ❌ Twilio outbound call failed:', error.response?.data || error.message);
-      
+
       // Provide more detailed error message for validation errors
       let errorMessage = error.response?.data?.message || error.response?.data?.detail || 'Failed to initiate Twilio outbound call';
       if (error.response?.status === 422 && Array.isArray(error.response?.data?.detail)) {
@@ -872,7 +912,7 @@ export class SipTrunkService {
           .join(', ');
         errorMessage = `Validation failed. Missing or invalid fields: ${missingFields}`;
       }
-      
+
       throw new AppError(
         error.response?.status || 500,
         'OUTBOUND_CALL_ERROR',
@@ -885,115 +925,73 @@ export class SipTrunkService {
    * Initiate outbound call via SIP trunk
    * Calls Python /api/v1/sip-trunk/outbound-call endpoint
    */
-  async outboundCall(data: OutboundCallRequest): Promise<OutboundCallResponse> {
+  async outboundCall(data: InternalOutboundCallRequest): Promise<OutboundCallResponse> {
     try {
       const pythonUrl = `${COMM_API_URL}/api/v1/sip-trunk/outbound-call`;
-      
+
       console.log('[SIP Trunk Service] ===== INITIATING SIP TRUNK OUTBOUND CALL =====');
       console.log('[SIP Trunk Service] Python API URL:', pythonUrl);
-      
-      // Build payload
-      const body: Record<string, unknown> = {
+
+      // Fetch e-commerce credentials if userId is provided
+      let ecommerceCredentials = undefined;
+      if (data.userId) {
+        try {
+          const { getEcommerceCredentials } = await import('../utils/ecommerce.util');
+          ecommerceCredentials = await getEcommerceCredentials(data.userId);
+          if (ecommerceCredentials) {
+            console.log('[SIP Trunk Service] ✅ Found e-commerce credentials for user, attaching to payload');
+          }
+        } catch (err) {
+          console.warn('[SIP Trunk Service] ⚠️ Failed to fetch e-commerce credentials:', err);
+        }
+      }
+
+      // Build payload matching ElevenLabs API schema (Strict)
+      // Build payload matching ElevenLabs API schema (Strict)
+      const body: OutboundCallRequest = {
         agent_id: data.agent_id,
         agent_phone_number_id: data.agent_phone_number_id,
         to_number: data.to_number,
-        customer_info: data.customer_info || {}
+        customer_info: {
+          name: (data.customer_info?.name || "there").trim(),
+          email: (data.customer_info?.email || "").trim()
+        },
+        dynamic_variables: {
+          name: (data.customer_info?.name || "there").trim(),
+          email: (data.customer_info?.email || "").trim()
+        }
       };
       
-      // Only include sender_email if defined
+      // Add secure e-commerce credentials if valid
+      if (ecommerceCredentials && 
+          ecommerceCredentials.api_key && 
+          ecommerceCredentials.api_secret && 
+          ecommerceCredentials.base_url && 
+          ecommerceCredentials.platform) {
+            body.ecommerce_credentials = {
+              api_key: ecommerceCredentials.api_key,
+              api_secret: ecommerceCredentials.api_secret,
+              base_url: ecommerceCredentials.base_url,
+              platform: ecommerceCredentials.platform,
+              access_token: ecommerceCredentials.access_token
+            };
+      }
+
       if (data.sender_email) {
         body.sender_email = data.sender_email;
       }
+      
+      console.log('[SIP Trunk Service] ✅ Final outbound payload constructed (Strict Schema)');
 
-      // Include agent configuration if provided
-      // NOTE: Greeting is already validated and rendered in controller
-      // This layer just passes it through - NO additional processing
-      if (data.agent_config) {
-        // Greeting message is already rendered and validated - use as-is
-        if (data.agent_config.greeting_message && typeof data.agent_config.greeting_message === 'string') {
-          const greetingMessage = data.agent_config.greeting_message.trim();
-          
-          // Final sanity check: If somehow variables got through, BLOCK the call
-          if (greetingMessage.includes('{{') || greetingMessage.includes('}}')) {
-            console.error('[SIP Trunk Service] ❌ FATAL: Variables detected in greeting message!');
-            throw new AppError(
-              400,
-              'UNSAFE_GREETING',
-              'Greeting message contains unresolved variables - call blocked for safety'
-            );
-          }
-          
-          if (greetingMessage.length === 0) {
-            console.error('[SIP Trunk Service] ❌ FATAL: Greeting message is empty!');
-            throw new AppError(
-              400,
-              'EMPTY_GREETING',
-              'Greeting message is empty - call blocked'
-            );
-          }
-          
-          body.greeting_message = greetingMessage;
-          // Also send as first_message for Python API compatibility
-          body.first_message = greetingMessage;
-        }
-        
-        // System prompt validation
-        if (data.agent_config.system_prompt && typeof data.agent_config.system_prompt === 'string') {
-          const systemPrompt = data.agent_config.system_prompt.trim();
-          if (systemPrompt.length === 0) {
-            throw new AppError(
-              400,
-              'EMPTY_SYSTEM_PROMPT',
-              'System prompt is empty - call blocked'
-            );
-          }
-          body.system_prompt = systemPrompt;
-        }
-        
-        // Always include language - it's required for proper agent behavior
-        body.language = data.agent_config.language || 'en';
-        if (data.agent_config.voice_id) {
-          body.voice_id = data.agent_config.voice_id;
-        }
-        if (data.agent_config.escalationRules && data.agent_config.escalationRules.length > 0) {
-          body.escalationRules = data.agent_config.escalationRules;
-        }
-      }
+      console.log('[SIP Trunk Service] ✅ Final outbound payload constructed (Strict Schema)');
 
-      const greetingMsg = typeof body.greeting_message === 'string' ? body.greeting_message : '';
-      const firstMsg = typeof body.first_message === 'string' ? body.first_message : '';
-      const systemPrompt = typeof body.system_prompt === 'string' ? body.system_prompt : '';
-      
-      // CRITICAL: Final validation before sending to Python API
-      if (greetingMsg && (greetingMsg.includes('{{') || greetingMsg.includes('}}'))) {
-        console.error('[SIP Trunk Service] ❌ FATAL: Variables detected in greeting!', {
-          greeting: greetingMsg.substring(0, 200)
-        });
-        throw new AppError(
-          500,
-          'UNSAFE_GREETING',
-          'Greeting contains unresolved variables - this should never happen. Call blocked.'
-        );
-      }
-      
-      console.log('[SIP Trunk Service] ✅ Final payload validated:', {
-        agent_id: body.agent_id,
-        agent_phone_number_id: body.agent_phone_number_id,
-        to_number: body.to_number,
-        greeting_message: greetingMsg ? `${greetingMsg.substring(0, 80)}...` : 'MISSING',
-        greeting_length: greetingMsg.length,
-        first_message: firstMsg ? `${firstMsg.substring(0, 80)}...` : 'MISSING',
-        system_prompt: systemPrompt ? `${systemPrompt.substring(0, 80)}...` : 'MISSING',
-        system_prompt_length: systemPrompt.length,
-        voice_id: body.voice_id,
-        language: body.language,
-        has_variables: false // Should always be false after validation
-      });
-      
-      // Log BEFORE calling Python outbound-call
+      // Log sensitive info redacted
       console.log(
         '[OUTBOUND CALL → PYTHON] Payload:',
-        JSON.stringify(body, null, 2)
+        JSON.stringify({
+          ...body,
+          ecommerce_credentials: body.ecommerce_credentials ? { ...body.ecommerce_credentials, api_key: '***', api_secret: '***' } : undefined
+        }, null, 2)
       );
 
       // Wrap in try/catch to log success OR failure
@@ -1016,7 +1014,7 @@ export class SipTrunkService {
         console.log('[SIP Trunk Service] Response status:', response.status);
         console.log('[SIP Trunk Service] Response body:');
         console.log(JSON.stringify(response.data, null, 2));
-        
+
         return response.data;
       } catch (err: any) {
         // Log AFTER Python responds (failure)
@@ -1029,7 +1027,7 @@ export class SipTrunkService {
       }
     } catch (error: any) {
       console.error('[SIP Trunk Service] ❌ Failed to initiate outbound call:', error.response?.data || error.message);
-      
+
       // Enhanced error handling for 404 - phone number not found in Python API
       if (error.response?.status === 404) {
         const errorMessage = error.response?.data?.message || error.response?.data?.detail || 'Phone number not found in Python API';
@@ -1037,14 +1035,14 @@ export class SipTrunkService {
         console.error('[SIP Trunk Service] This usually means the phone number needs to be registered with Python API first.');
         console.error('[SIP Trunk Service] Phone numbers created via Generic SIP Trunk are automatically synced.');
         console.error('[SIP Trunk Service] For other phone numbers, ensure they are registered with Python API.');
-        
+
         throw new AppError(
           404,
           'OUTBOUND_CALL_ERROR',
           `Phone number ${data.agent_phone_number_id} not found in Python API. Please ensure the phone number is registered with Python API (e.g., via Generic SIP Trunk creation).`
         );
       }
-      
+
       throw new AppError(
         error.response?.status || 500,
         'OUTBOUND_CALL_ERROR',
