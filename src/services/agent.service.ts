@@ -314,63 +314,52 @@ export class AgentService {
   /**
    * Update agent prompt by calling external Python API
    * Then update the agent configuration in the database
+   * On failure (e.g. language change on existing agent), tries creating a new agent as fallback
    */
   async updateAgentPrompt(agentId: string, userId: string, data: UpdateAgentPromptRequest): Promise<IAgent> {
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+    
+    const agent = await Agent.findOne({
+      agent_id: agentId,
+      userId: userObjectId
+    });
+
+    if (!agent) {
+      throw new AppError(404, 'AGENT_NOT_FOUND', 'Agent not found');
+    }
+
+    const toolIds = await this.buildToolIds(userId);
+    const firstMessageToSend = data.first_message || agent.first_message || 'Hello! How can I help you today?';
+    const requestBody = {
+      first_message: firstMessageToSend,
+      system_prompt: data.system_prompt,
+      language: data.language,
+      knowledge_base_ids: data.knowledge_base_ids,
+      tool_ids: toolIds,
+      ...(data.voice_id && { voice_id: data.voice_id })
+    };
+
+    const logContext = (action: string) => ({
+      action,
+      agent_id: agentId,
+      userId,
+      language: data.language,
+      languageChanged: (agent as any).language !== data.language
+    });
+
+    console.log('[Agent Service] updateAgentPrompt START', logContext('update'));
+    console.log('[Agent Service] Request summary:', {
+      language: data.language,
+      knowledge_base_ids_count: data.knowledge_base_ids.length,
+      tool_ids_count: toolIds.length
+    });
+
     try {
-      // Build complete tool_ids array (env tools + email template tools)
-      const toolIds = await this.buildToolIds(userId);
-
-      const userObjectId = new mongoose.Types.ObjectId(userId);
-      
-      // First, verify the agent exists and belongs to the user
-      const agent = await Agent.findOne({ 
-        agent_id: agentId,
-        userId: userObjectId 
-      });
-
-      if (!agent) {
-        throw new AppError(404, 'AGENT_NOT_FOUND', 'Agent not found');
-      }
-
-      console.log(`[Agent Service] Updating agent prompt for agent_id: ${agentId}, userId: ${userId}`);
-      console.log(`[Agent Service] Update data:`, {
-        language: data.language,
-        knowledge_base_ids_count: data.knowledge_base_ids.length,
-        tool_ids_count: toolIds.length,
-        tool_ids: toolIds
-      });
-
-      // Call external Python API to update agent prompt
       const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${agentId}/prompt`;
-      
-      console.log(`[Agent Service] Calling Python API: ${pythonUrl}`);
-      
-      // Python API only accepts first_message, not greeting_message
-      const firstMessageToSend = data.first_message || agent.first_message || 'Hello! How can I help you today?';
-      
-      const requestBody = {
-        first_message: firstMessageToSend,
-        system_prompt: data.system_prompt,
-        language: data.language,
-        knowledge_base_ids: data.knowledge_base_ids,
-        tool_ids: toolIds, // Static tool IDs from env
-        ...(data.voice_id && { voice_id: data.voice_id })
-      };
-
-      console.log(`[Agent Service] Request body:`, JSON.stringify(requestBody, null, 2));
-
-      const response = await axios.patch<UpdateAgentPromptResponse>(
-        pythonUrl,
-        requestBody,
-        {
-          timeout: 30000, // 30 seconds timeout
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-
-      console.log(`[Agent Service] Python API response:`, response.data);
+      const response = await axios.patch<UpdateAgentPromptResponse>(pythonUrl, requestBody, {
+        timeout: 30000,
+        headers: { 'Content-Type': 'application/json' }
+      });
 
       if (!response.data.agent_id) {
         throw new AppError(500, 'INVALID_RESPONSE', 'Python API did not return agent_id');
@@ -380,50 +369,89 @@ export class AgentService {
         await this.enableToolNodeForAgent(agentId);
       }
 
-      // Update agent configuration in database
-      // Update first_message and also set greeting_message to same value (for backward compatibility)
       if (data.first_message !== undefined) {
         agent.first_message = data.first_message;
-        agent.greeting_message = data.first_message; // Keep in sync for backward compatibility
+        agent.greeting_message = data.first_message;
       }
       agent.system_prompt = data.system_prompt;
       agent.language = data.language;
       agent.knowledge_base_ids = data.knowledge_base_ids;
-      agent.tool_ids = toolIds; // Update with static tool IDs from env
-      if (data.voice_id !== undefined) {
-        agent.voice_id = data.voice_id;
-      }
-      if (data.escalationRules !== undefined) {
-        agent.escalationRules = data.escalationRules;
-      }
+      agent.tool_ids = toolIds;
+      if (data.voice_id !== undefined) agent.voice_id = data.voice_id;
+      if (data.escalationRules !== undefined) agent.escalationRules = data.escalationRules;
       await agent.save();
 
-      console.log(`[Agent Service] Agent prompt updated successfully for agent_id: ${agentId}`);
+      console.log('[Agent Service] updateAgentPrompt SUCCESS', logContext('updated'));
       return agent;
-    } catch (error: any) {
-      console.error('[Agent Service] Failed to update agent prompt:', error);
-      
-      if (error instanceof AppError) {
-        throw error;
+    } catch (patchError: any) {
+      const errDetail = patchError.response?.data?.detail;
+      const errMsg = typeof errDetail === 'string' ? errDetail : (Array.isArray(errDetail) ? JSON.stringify(errDetail) : patchError.response?.data?.message);
+      const languageChanged = (agent as any).language !== data.language;
+
+      console.error('[Agent Service] updateAgentPrompt PATCH FAILED', {
+        ...logContext('patch_failed'),
+        status: patchError.response?.status,
+        errorMessage: errMsg,
+        hint: languageChanged ? 'Language change on existing agent often fails – trying create-new-agent fallback' : undefined
+      });
+
+      if (patchError.response?.status && patchError.response.status >= 400 && patchError.response.status < 500) {
+        console.error('[Agent Service] Python API validation/error detail:', JSON.stringify(patchError.response?.data, null, 2));
       }
-      
-      if (error.response) {
-        console.error('[Agent Service] Python API error response:', {
-          status: error.response.status,
-          data: error.response.data
-        });
+
+      if (!languageChanged) {
+        if (patchError instanceof AppError) throw patchError;
         throw new AppError(
-          error.response.status || 500,
+          patchError.response?.status || 500,
           'AGENT_UPDATE_ERROR',
-          error.response.data?.detail || error.response.data?.message || 'Failed to update agent prompt in Python API'
+          (typeof errMsg === 'string' ? errMsg : patchError.message) || 'Failed to update agent prompt'
         );
       }
-      
-      throw new AppError(
-        500,
-        'AGENT_UPDATE_ERROR',
-        error.message || 'Failed to update agent prompt'
-      );
+
+      console.log('[Agent Service] Trying create-new-agent fallback for language change');
+      try {
+        const newAgent = await this.createAgent(userId, {
+          name: agent.name,
+          first_message: firstMessageToSend,
+          system_prompt: data.system_prompt,
+          greeting_message: data.greeting_message || firstMessageToSend,
+          language: data.language,
+          voice_id: data.voice_id || agent.voice_id,
+          escalationRules: data.escalationRules || agent.escalationRules || [],
+          knowledge_base_ids: data.knowledge_base_ids
+        });
+
+        agent.agent_id = newAgent.agent_id;
+        agent.first_message = firstMessageToSend;
+        agent.greeting_message = firstMessageToSend;
+        agent.system_prompt = data.system_prompt;
+        agent.language = data.language;
+        agent.knowledge_base_ids = data.knowledge_base_ids;
+        agent.tool_ids = toolIds;
+        if (data.voice_id !== undefined) agent.voice_id = data.voice_id;
+        if (data.escalationRules !== undefined) agent.escalationRules = data.escalationRules;
+        await agent.save();
+
+        await Agent.deleteOne({ _id: newAgent._id });
+
+        console.log('[Agent Service] create-new-agent fallback SUCCESS', {
+          old_agent_id: agentId,
+          new_agent_id: newAgent.agent_id,
+          language: data.language
+        });
+        return agent;
+      } catch (createError: any) {
+        console.error('[Agent Service] create-new-agent fallback FAILED', {
+          ...logContext('create_fallback_failed'),
+          error: createError.message,
+          createDetail: createError.response?.data
+        });
+        throw new AppError(
+          500,
+          'AGENT_UPDATE_ERROR',
+          `Language change failed. Update error: ${errMsg || patchError.message}. Fallback (create new agent) also failed: ${createError.message}. Try creating a new agent manually with the preferred language.`
+        );
+      }
     }
   }
 

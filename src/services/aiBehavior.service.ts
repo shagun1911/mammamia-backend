@@ -168,24 +168,23 @@ export class AIBehaviorService {
   async updateVoiceAgentLanguage(userId: string, language: string) {
     try {
       const aiBehavior = await this.get(userId);
+      const prevLanguage = aiBehavior.voiceAgent.language;
       aiBehavior.voiceAgent.language = language;
       await aiBehavior.save();
-      
-      console.log('[AI Behavior] Updated voice agent language');
-      
-      // Sync inbound agent config after language update
+
+      console.log('[AI Behavior] updateVoiceAgentLanguage', { userId, prevLanguage, newLanguage: language });
+
       try {
-        console.log('[AI Behavior] Syncing inbound agent config...');
+        console.log('[AI Behavior] Syncing inbound agent config after language change...');
         await inboundAgentConfigService.syncConfig(userId);
         console.log('[AI Behavior] Inbound agent config synced successfully');
-      } catch (error) {
-        console.error('[AI Behavior] Failed to sync inbound agent config:', error);
-        // Don't throw error, just log it
+      } catch (syncError: any) {
+        console.error('[AI Behavior] Failed to sync inbound agent config after language change:', syncError.message);
       }
-      
+
       return aiBehavior;
     } catch (error: any) {
-      console.error('[AI Behavior] Failed to update voice agent language:', error);
+      console.error('[AI Behavior] updateVoiceAgentLanguage FAILED', { userId, language, error: error.message });
       throw new AppError(500, 'AI_BEHAVIOR_ERROR', 'Failed to update voice agent language');
     }
   }

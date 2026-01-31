@@ -5,6 +5,15 @@ import { AppError } from '../middleware/error.middleware';
 // This ensures consistency - if PYTHON_API_URL is set, use it for all Python API calls
 const COMM_API_URL = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
 
+/** Country codes that often require TLS instead of UDP (e.g. Italian +39 carriers) */
+const TLS_PREFERRED_COUNTRY_CODES = ['39'];
+
+function getSuggestedTransport(phoneNumber: string, currentTransport?: string): string | undefined {
+  const digits = (phoneNumber || '').replace(/\D/g, '');
+  if (digits.startsWith('39') && (!currentTransport || currentTransport === 'udp')) return 'tls';
+  return undefined;
+}
+
 interface SetupSipTrunkRequest {
   label: string;
   phone_number: string;
@@ -242,8 +251,9 @@ export class SipTrunkService {
       
       for (const pythonUrl of possibleEndpoints) {
         try {
+          const suggestedTransport = getSuggestedTransport(data.phone_number, data.transport);
           console.log('[SIP Trunk Service] ===== CREATING GENERIC SIP TRUNK =====');
-          console.log('[SIP Trunk Service] Trying Python API URL:', pythonUrl);
+          console.log('[SIP Trunk Service] phone_number:', data.phone_number, '| transport:', data.transport || 'udp', suggestedTransport ? `| hint: try "${suggestedTransport}" if errors` : '');
           console.log('[SIP Trunk Service] Request payload:', {
             label: data.label,
             phone_number: data.phone_number,
@@ -304,15 +314,30 @@ export class SipTrunkService {
         return response.data;
       }
       
-      // If we get here, all endpoints failed
       throw lastError || new Error('All SIP trunk registration endpoints failed');
     } catch (error: any) {
-      console.error('[SIP Trunk] ❌ Failed to create Generic SIP trunk:', error.response?.data || error.message);
-      throw new AppError(
-        error.response?.status || 500,
-        'GENERIC_SIP_TRUNK_ERROR',
-        error.response?.data?.message || error.response?.data?.detail || 'Failed to create Generic SIP trunk'
-      );
+      const transport = data.transport || 'udp';
+      const suggestedTransport = getSuggestedTransport(data.phone_number, transport);
+      const errMsg = error.response?.data?.message || error.response?.data?.detail || error.message;
+
+      console.error('[SIP Trunk] ❌ CREATE GENERIC SIP TRUNK FAILED', {
+        phone_number: data.phone_number,
+        transport,
+        status: error.response?.status,
+        error: typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg).slice(0, 200)
+      });
+      if (suggestedTransport) {
+        console.error('[SIP Trunk] 💡 For +39 (Italy) numbers, try transport:', suggestedTransport);
+      }
+      if (error.response?.data && typeof error.response.data === 'object') {
+        console.error('[SIP Trunk] Full error:', JSON.stringify(error.response.data, null, 2));
+      }
+
+      const userMessage = suggestedTransport
+        ? `${String(errMsg)} For +39 numbers, try transport "${suggestedTransport}" instead of "${transport}".`
+        : (typeof errMsg === 'string' ? errMsg : 'Failed to create Generic SIP trunk');
+
+      throw new AppError(error.response?.status || 500, 'GENERIC_SIP_TRUNK_ERROR', userMessage);
     }
   }
 
@@ -529,34 +554,48 @@ export class SipTrunkService {
         }
       }
       
+      const transport = data.outbound_trunk_config?.transport || data.inbound_trunk_config ? 'udp' : 'n/a';
+      const suggestedTransport = getSuggestedTransport(data.phone_number, transport);
+
       console.log('[SIP Trunk Service] ===== REGISTERING SIP PHONE NUMBER WITH ELEVENLABS =====');
-      console.log('[SIP Trunk Service] ElevenLabs Python API URL:', pythonUrl);
+      console.log('[SIP Trunk Service] phone_number:', data.phone_number, '| transport:', transport, suggestedTransport ? `| hint: try transport "${suggestedTransport}" if errors` : '');
       console.log('[SIP Trunk Service] Request payload:', {
         ...payload,
         inbound_trunk_config: payload.inbound_trunk_config ? { ...payload.inbound_trunk_config, credentials: { ...payload.inbound_trunk_config.credentials, password: '***hidden***' } } : undefined,
         outbound_trunk_config: payload.outbound_trunk_config ? { ...payload.outbound_trunk_config, credentials: { ...payload.outbound_trunk_config.credentials, password: '***hidden***' } } : undefined
       });
-      
+
       const response = await axios.post<{ phone_number_id: string }>(
         pythonUrl,
         payload,
-        {
-          timeout: 60000 // 60 seconds timeout
-        }
+        { timeout: 60000 }
       );
 
-      console.log('[SIP Trunk Service] ✅ Phone number registered with ElevenLabs');
-      console.log('[SIP Trunk Service] Response status:', response.status);
-      console.log('[SIP Trunk Service] ElevenLabs phone_number_id:', response.data.phone_number_id);
-      
+      console.log('[SIP Trunk Service] ✅ Phone number registered with ElevenLabs | phone_number_id:', response.data.phone_number_id);
       return response.data;
     } catch (error: any) {
-      console.error('[SIP Trunk Service] ❌ Failed to register phone number with ElevenLabs:', error.response?.data || error.message);
-      throw new AppError(
-        error.response?.status || 500,
-        'ELEVENLABS_REGISTRATION_ERROR',
-        error.response?.data?.message || error.response?.data?.detail || 'Failed to register phone number with ElevenLabs'
-      );
+      const transport = data.outbound_trunk_config?.transport || 'udp';
+      const suggestedTransport = getSuggestedTransport(data.phone_number, transport);
+      const errMsg = error.response?.data?.message || error.response?.data?.detail || error.message;
+
+      console.error('[SIP Trunk Service] ❌ REGISTER FAILED', {
+        phone_number: data.phone_number,
+        transport,
+        status: error.response?.status,
+        error: typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg).slice(0, 200)
+      });
+      if (suggestedTransport) {
+        console.error('[SIP Trunk Service] 💡 For +39 (Italy) numbers, transport mismatch often causes errors. Try transport:', suggestedTransport);
+      }
+      if (error.response?.data && typeof error.response.data === 'object') {
+        console.error('[SIP Trunk Service] Full error response:', JSON.stringify(error.response.data, null, 2));
+      }
+
+      const userMessage = suggestedTransport
+        ? `${String(errMsg)} For +39 numbers, try using transport "${suggestedTransport}" instead of "${transport}".`
+        : (typeof errMsg === 'string' ? errMsg : 'Failed to register phone number with ElevenLabs');
+
+      throw new AppError(error.response?.status || 500, 'ELEVENLABS_REGISTRATION_ERROR', userMessage);
     }
   }
 
