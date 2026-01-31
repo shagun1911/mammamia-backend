@@ -15,11 +15,13 @@ export class SettingsController {
       const settings = await settingsService.getWidgetSettings(widgetId);
 
       // Return only public-safe settings (no sensitive data)
+      const greeting = settings.autoReplyMessage || 'Hello! How can I help you today?';
       res.json(successResponse({
         chatbotName: settings.chatbotName || 'Support Assistant',
         chatbotAvatar: settings.chatbotAvatar || null,
         primaryColor: settings.primaryColor || '#6366f1',
-        autoReplyMessage: settings.autoReplyMessage || 'Hello! How can I help you today?',
+        autoReplyMessage: greeting,
+        welcomeMessage: greeting, // Alias for widget compatibility
         language: settings.language || 'en'
       }));
     } catch (error) {

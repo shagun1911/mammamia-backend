@@ -88,6 +88,32 @@ export class AgentService {
   }
 
   /**
+   * Enable tool_node in ElevenLabs workflow so tools can execute.
+   * Call this when agent has tool_ids - without it, "Unable to execute function" occurs.
+   * Uses PATCH /agents/{id} with conversation_config (per OpenAPI).
+   */
+  private async enableToolNodeForAgent(agentId: string): Promise<void> {
+    try {
+      const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${agentId}`;
+      const requestBody = {
+        conversation_config: {
+          workflow: {
+            tool_node: { enabled: true }
+          }
+        }
+      };
+      await axios.patch(pythonUrl, requestBody, {
+        timeout: 15000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+      console.log(`[Agent Service] ✅ Enabled tool_node for agent ${agentId}`);
+    } catch (error: any) {
+      console.warn(`[Agent Service] ⚠️ Could not enable tool_node for ${agentId}:`, error.message);
+      // Non-fatal - tools may still work on some ElevenLabs versions
+    }
+  }
+
+  /**
    * Update agent tool_ids in Python API
    */
   private async updateAgentToolIdsInPython(agentId: string, toolIds: string[]): Promise<void> {
@@ -116,7 +142,9 @@ export class AgentService {
         timeout: 30000,
         headers: { 'Content-Type': 'application/json' }
       });
-      
+      if (toolIds.length > 0) {
+        await this.enableToolNodeForAgent(agentId);
+      }
       console.log(`[Agent Service] ✅ Updated agent ${agentId} tool_ids in Python API`);
     } catch (error: any) {
       console.error(`[Agent Service] ⚠️ Failed to update agent ${agentId} tool_ids in Python API:`, error.message);
@@ -157,7 +185,10 @@ export class AgentService {
         language: data.language,
         knowledge_base_ids: data.knowledge_base_ids,
         tool_ids: toolIds,
-        ...(data.voice_id && { voice_id: data.voice_id })
+        ...(data.voice_id && { voice_id: data.voice_id }),
+        ...(toolIds.length > 0 && {
+          conversation_config: { workflow: { tool_node: { enabled: true } } }
+        })
       };
 
       console.log(`[Agent Service] Request body:`, JSON.stringify(requestBody, null, 2));
@@ -345,6 +376,10 @@ export class AgentService {
         throw new AppError(500, 'INVALID_RESPONSE', 'Python API did not return agent_id');
       }
 
+      if (toolIds.length > 0) {
+        await this.enableToolNodeForAgent(agentId);
+      }
+
       // Update agent configuration in database
       // Update first_message and also set greeting_message to same value (for backward compatibility)
       if (data.first_message !== undefined) {
@@ -453,6 +488,25 @@ export class AgentService {
       }
       console.error('[Agent Service] Failed to delete agent:', error);
       throw new AppError(500, 'AGENT_DELETE_ERROR', 'Failed to delete agent');
+    }
+  }
+
+  /**
+   * Sync agent config to ElevenLabs (tool_ids + enable tool_node).
+   * Call this to fix "Unable to execute function" for existing agents.
+   */
+  async syncAgentToElevenLabs(agentId: string, userId: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const agent = await Agent.findOne({ agent_id: agentId, userId: new mongoose.Types.ObjectId(userId) });
+      if (!agent) {
+        return { success: false, message: 'Agent not found' };
+      }
+      const toolIds = await this.buildToolIds(userId);
+      await this.updateAgentToolIdsInPython(agentId, toolIds);
+      return { success: true, message: 'Agent synced to ElevenLabs (tools + tool_node enabled)' };
+    } catch (error: any) {
+      console.error('[Agent Service] syncAgentToElevenLabs failed:', error.message);
+      return { success: false, message: error.message || 'Sync failed' };
     }
   }
 

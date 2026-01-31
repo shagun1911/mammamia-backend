@@ -45,7 +45,7 @@ export class KnowledgeBaseService {
     console.log(`[KB Service] Calling both RAG API and Python API simultaneously...`);
 
     // Prepare KB name
-    const kbName = name || (source_type === 'file' ? file?.originalname : (source_type === 'url' ? url : 'Untitled Document'));
+    const kbName = (name || (source_type === 'file' ? file?.originalname : (source_type === 'url' ? url : 'Untitled Document'))) ?? 'Untitled Document';
     
     // Generate collection name from KB name (sanitize for Python/Chroma) - same logic as legacy create method
     // This ensures the collection name matches what's actually used in the RAG API
@@ -224,11 +224,11 @@ export class KnowledgeBaseService {
             collection_name: collectionName,
             source_type: source_type,
             source_payload: {
-              text: source_type === 'text' ? text : undefined,
-              url: source_type === 'url' ? url : undefined,
-              file_name: source_type === 'file' ? file?.originalname : undefined,
-              file_type: source_type === 'file' ? file?.mimetype : undefined,
-              file_size_bytes: source_type === 'file' ? file?.size : undefined,
+              text: text ?? undefined,
+              url: url ?? undefined,
+              file_name: file?.originalname,
+              file_type: file?.mimetype,
+              file_size_bytes: file?.size,
             },
             status: ragApiSucceeded ? 'ready' : 'failed',
             metadata: {},
@@ -423,13 +423,29 @@ export class KnowledgeBaseService {
 
       console.log(`[KB Service] Python API returned ${allPythonDocs.length} documents, filtered to ${filteredDocuments.length} for user`);
 
-      // Also get full details from our database for any missing fields
+      // Also get full details from our database for any missing fields or status updates
       const localDocs = await KnowledgeBaseDocument.find({ 
         userId: userObjectId,
         document_id: { $in: userDocumentIds }
       })
+        .select('document_id linked_chatbot_kb_id name source_type status created_at_unix folder_path')
         .sort({ created_at_unix: -1 })
         .lean();
+
+      // Fetch ChatbotKnowledgeBase collection_name for each linked doc (needed for chatbot config)
+      const linkedChatbotKbIds = localDocs
+        .map((d: any) => d.linked_chatbot_kb_id)
+        .filter(Boolean);
+      const chatbotKbMap = new Map<string, string>();
+      if (linkedChatbotKbIds.length > 0) {
+        const chatbotKBs = await ChatbotKnowledgeBase.find({
+          kb_id: { $in: linkedChatbotKbIds },
+          userId: userObjectId,
+        })
+          .select('kb_id collection_name')
+          .lean();
+        chatbotKBs.forEach((kb: any) => chatbotKbMap.set(kb.kb_id, kb.collection_name));
+      }
 
       // Merge Python API results with local database entries
       // Use document_id as the key to avoid duplicates
@@ -442,12 +458,18 @@ export class KnowledgeBaseService {
       
       // Add/update with local database documents (for any missing fields or status updates)
       localDocs.forEach((doc: any) => {
+        const collectionName = doc.linked_chatbot_kb_id
+          ? chatbotKbMap.get(doc.linked_chatbot_kb_id)
+          : undefined;
         const existingDoc = docMap.get(doc.document_id);
         if (existingDoc) {
-          // Merge local status if available
+          // Merge local status and collection_name (for chatbot config save)
+          const coll = collectionName || existingDoc.collection_name;
           docMap.set(doc.document_id, {
             ...existingDoc,
             status: doc.status || existingDoc.status,
+            collection_name: coll,
+            collectionName: coll, // Frontend uses camelCase
           });
         } else {
           // Document exists in DB but not in Python API response
@@ -459,6 +481,8 @@ export class KnowledgeBaseService {
             status: doc.status,
             created_at_unix: doc.created_at_unix,
             folder_path: doc.folder_path,
+            collection_name: collectionName,
+            collectionName: collectionName, // Frontend uses camelCase
           });
         }
       });
@@ -494,19 +518,38 @@ export class KnowledgeBaseService {
       
       const userObjectId = new mongoose.Types.ObjectId(userId);
       const localDocs = await KnowledgeBaseDocument.find({ userId: userObjectId })
+        .select('document_id linked_chatbot_kb_id name source_type status created_at_unix folder_path')
         .sort({ created_at_unix: -1 })
         .limit(pageSize)
         .lean();
 
-      const documents = localDocs.map((doc: any) => ({
-        id: doc.id,
-        document_id: doc.document_id,
-        name: doc.name,
-        type: doc.source_type,
-        status: doc.status,
-        created_at_unix: doc.created_at_unix,
-        folder_path: doc.folder_path,
-      }));
+      const linkedIds = localDocs.map((d: any) => d.linked_chatbot_kb_id).filter(Boolean);
+      const chatbotKbMap = new Map<string, string>();
+      if (linkedIds.length > 0) {
+        const chatbotKBs = await ChatbotKnowledgeBase.find({
+          kb_id: { $in: linkedIds },
+          userId: userObjectId,
+        })
+          .select('kb_id collection_name')
+          .lean();
+        chatbotKBs.forEach((kb: any) => chatbotKbMap.set(kb.kb_id, kb.collection_name));
+      }
+
+      const coll = (d: any) => (d.linked_chatbot_kb_id ? chatbotKbMap.get(d.linked_chatbot_kb_id) : undefined);
+      const documents = localDocs.map((doc: any) => {
+        const c = coll(doc);
+        return {
+          id: doc.id,
+          document_id: doc.document_id,
+          name: doc.name,
+          type: doc.source_type,
+          status: doc.status,
+          created_at_unix: doc.created_at_unix,
+          folder_path: doc.folder_path,
+          collection_name: c,
+          collectionName: c, // Frontend uses camelCase
+        };
+      });
 
       return {
         documents,

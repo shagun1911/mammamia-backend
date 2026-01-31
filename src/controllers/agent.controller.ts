@@ -140,6 +140,24 @@ export class AgentController {
   };
 
   /**
+   * POST /api/v1/agents/:agent_id/sync
+   * Sync agent to ElevenLabs (tool_ids + enable tool_node for tools to execute)
+   */
+  syncAgentToElevenLabs = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user!.id;
+      const agentId = req.params.agent_id; // Python API agent_id (e.g. agent_xxx)
+      const result = await agentService.syncAgentToElevenLabs(agentId, userId);
+      if (!result.success) {
+        throw new AppError(400, 'SYNC_FAILED', result.message);
+      }
+      res.json(successResponse({ synced: true }, result.message));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /**
    * DELETE /api/v1/agents/:id
    * Delete an agent
    */

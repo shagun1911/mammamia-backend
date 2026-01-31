@@ -11,6 +11,7 @@ router.use(authenticate);
 router.post('/', agentController.createAgent);
 router.get('/', agentController.getAgents);
 router.patch('/:agent_id/prompt', agentController.updateAgentPrompt); // Must come before /:id
+router.post('/:agent_id/sync', agentController.syncAgentToElevenLabs);
 router.get('/:id', agentController.getAgentById);
 router.delete('/:id', agentController.deleteAgent);
 

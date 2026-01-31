@@ -61,7 +61,7 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
         collectionNames = [`user_${userId}_kb`];
         console.log('[Chatbot] ⚠️  Voice agent KB has no linked ChatbotKnowledgeBase, using default collection');
       }
-    } else {
+    } else if (mongoose.Types.ObjectId.isValid(knowledgeBaseId) && knowledgeBaseId.length === 24) {
       // Legacy ObjectId format - query KnowledgeBase
       const kb = await KnowledgeBase.findById(knowledgeBaseId);
       if (!kb) {
@@ -69,6 +69,37 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
       }
       collectionNames = [kb.collectionName];
       console.log('[Chatbot] Using legacy KnowledgeBase:', collectionNames);
+    } else {
+      // Raw document_id (e.g. from Python API) or collection_name - try KnowledgeBaseDocument
+      const voiceAgentKB = await KnowledgeBaseDocument.findOne({
+        document_id: knowledgeBaseId,
+        userId: userObjectId
+      }).lean();
+      if (voiceAgentKB?.linked_chatbot_kb_id) {
+        const chatbotKB = await ChatbotKnowledgeBase.findOne({
+          kb_id: voiceAgentKB.linked_chatbot_kb_id,
+          userId: userObjectId
+        }).lean();
+        if (chatbotKB) {
+          collectionNames = [chatbotKB.collection_name];
+          console.log('[Chatbot] Using ChatbotKnowledgeBase by document_id:', collectionNames);
+        }
+      }
+      // Also try as collection_name directly (e.g. from widget URL)
+      if (collectionNames.length === 0) {
+        const byCollection = await ChatbotKnowledgeBase.findOne({
+          collection_name: knowledgeBaseId,
+          userId: userObjectId,
+          status: 'ready'
+        }).lean();
+        if (byCollection) {
+          collectionNames = [byCollection.collection_name];
+          console.log('[Chatbot] Using ChatbotKnowledgeBase by collection_name:', collectionNames);
+        }
+      }
+      if (collectionNames.length === 0) {
+        throw new AppError(404, 'NOT_FOUND', 'Knowledge base not found');
+      }
     }
   } else {
     // Check Settings first (priority order like other controllers)
@@ -473,7 +504,7 @@ export class ChatbotController {
       console.log('[Widget Chat] Params:', JSON.stringify(req.params, null, 2));
       
       const { widgetId } = req.params;
-      const { query, threadId } = req.body;
+      const { query, threadId, knowledgeBaseId } = req.body;
 
       // CRITICAL: Validate widgetId is present and not undefined
       if (widgetId === undefined || widgetId === null || widgetId === 'undefined' || widgetId === '') {
@@ -500,6 +531,7 @@ export class ChatbotController {
       console.log('[Widget Chat] widgetId:', widgetId);
       console.log('[Widget Chat] query length:', query.length);
       console.log('[Widget Chat] threadId:', threadId || 'not provided');
+      console.log('[Widget Chat] knowledgeBaseId (from URL):', knowledgeBaseId || 'not provided');
 
       // ========== PHASE 2: DETERMINISTIC USER RESOLUTION ==========
       // widgetId IS the userId (no mapping table exists)
@@ -548,64 +580,77 @@ export class ChatbotController {
       // ========== PHASE 4: KB RESOLUTION (STRICT - MUST BELONG TO USER) ==========
       const { aiContextService } = await import('../services/aiContext.service');
       
-      // Try organization-based resolution first, then user-based
-      let aiContext = organizationId 
-        ? await aiContextService.resolveFromOrganization(organizationId)
-        : null;
+      let collectionNames: string[] = [];
+      let systemPrompt = '';
 
-      if (!aiContext) {
-        console.log('[Widget Chat] Organization-based resolution failed, trying user-based...');
-        aiContext = await aiContextService.resolveFromUser(userId);
+      // If knowledgeBaseId provided (e.g. from ?collection= in widget URL), use it to resolve collections
+      if (knowledgeBaseId && typeof knowledgeBaseId === 'string' && knowledgeBaseId.trim()) {
+        try {
+          collectionNames = await determineCollectionNames(userId, knowledgeBaseId.trim());
+          systemPrompt = (await aiBehaviorService.get(userId)).chatAgent?.systemPrompt ||
+            'You are a helpful AI assistant. Provide accurate and concise responses based on the knowledge base.';
+          systemPrompt += '\n\nIMPORTANT INSTRUCTIONS:\n1. Always use the knowledge base as the PRIMARY source.\n2. Generate concise, natural answers (4-6 sentences max).\n3. Do NOT include document labels or raw text dumps.\n';
+          console.log('[Widget Chat] ✅ Using knowledgeBaseId from request:', knowledgeBaseId, '→ collections:', collectionNames);
+        } catch (kbError: any) {
+          console.warn('[Widget Chat] ⚠️  knowledgeBaseId resolution failed, falling back to Settings:', kbError.message);
+        }
       }
 
-      if (!aiContext) {
-        console.error('[Widget Chat] ❌ CRITICAL: No AI context available for userId:', userId);
-        throw new AppError(400, 'NO_KNOWLEDGE_BASE', 'No knowledge base configured. Please configure a knowledge base in Settings → Knowledge Base.');
-      }
+      // Fallback to aiContext (Settings) if no knowledgeBaseId or resolution failed
+      if (collectionNames.length === 0) {
+        let aiContext = organizationId 
+          ? await aiContextService.resolveFromOrganization(organizationId)
+          : null;
 
-      // CRITICAL: Validate that resolved context belongs to the correct user
-      if (aiContext.userId !== userId) {
-        console.error('[Widget Chat] ❌ CRITICAL: AI context userId mismatch!');
-        console.error('[Widget Chat] Expected userId:', userId);
-        console.error('[Widget Chat] Resolved context userId:', aiContext.userId);
-        throw new AppError(500, 'CONTEXT_MISMATCH', 'Resolved AI context does not match the widget user. This is a system error.');
-      }
+        if (!aiContext) {
+          aiContext = await aiContextService.resolveFromUser(userId);
+        }
 
-      const collectionNames = aiContext.collectionNames;
-      let systemPrompt = aiContext.systemPrompt;
+        if (!aiContext) {
+          console.error('[Widget Chat] ❌ CRITICAL: No AI context available for userId:', userId);
+          throw new AppError(400, 'NO_KNOWLEDGE_BASE', 'No knowledge base configured. Please configure a knowledge base in Configuration → Chatbot.');
+        }
+
+        if (aiContext.userId !== userId) {
+          console.error('[Widget Chat] ❌ CRITICAL: AI context userId mismatch!');
+          throw new AppError(500, 'CONTEXT_MISMATCH', 'Resolved AI context does not match the widget user.');
+        }
+
+        collectionNames = aiContext.collectionNames;
+        systemPrompt = aiContext.systemPrompt;
+      }
 
       // CRITICAL: Validate KBs belong to this user
+      const ChatbotKnowledgeBase = (await import('../models/ChatbotKnowledgeBase')).default;
       const KnowledgeBase = (await import('../models/KnowledgeBase')).default;
       const Settings = (await import('../models/Settings')).default;
       const settings = await Settings.findOne({ userId: userObjectId });
       
       if (settings) {
         // Verify collection names are from this user's KBs
-        // Check both old KnowledgeBase model and new KnowledgeBaseDocument model
+        // Chatbot uses ChatbotKnowledgeBase.collection_name (RAG collections)
+        const chatbotKBs = await ChatbotKnowledgeBase.find({ userId: userObjectId, status: 'ready' }).select('collection_name').lean();
+        const chatbotCollectionNames = chatbotKBs.map((kb: any) => kb.collection_name).filter(Boolean);
+        // Legacy KnowledgeBase model
         const userKBs = await KnowledgeBase.find({ userId: userObjectId }).select('collectionName').lean();
         const userKBCollectionNames = userKBs.map((kb: any) => kb.collectionName).filter(Boolean);
         
-        // Check new unified KnowledgeBaseDocument model (name field is the collection name)
-        const userKBDocs = await KnowledgeBaseDocument.find({ userId: userObjectId, status: 'ready' }).select('name').lean();
-        const userKBDocNames = userKBDocs.map((doc: any) => doc.name).filter(Boolean);
-        
-        // Combine both lists
-        const userCollectionNames = [...new Set([...userKBCollectionNames, ...userKBDocNames])];
+        const userCollectionNames = [...new Set([...chatbotCollectionNames, ...userKBCollectionNames])];
         
         const invalidCollections = collectionNames.filter((name: string) => !userCollectionNames.includes(name));
         if (invalidCollections.length > 0) {
           console.error('[Widget Chat] ❌ CRITICAL: Collection names do not belong to user!');
           console.error('[Widget Chat] Invalid collections:', invalidCollections);
-          console.error('[Widget Chat] User collections (old KB):', userKBCollectionNames);
-          console.error('[Widget Chat] User collections (new KB):', userKBDocNames);
+          console.error('[Widget Chat] User collections (ChatbotKB):', chatbotCollectionNames);
+          console.error('[Widget Chat] User collections (legacy KB):', userKBCollectionNames);
           console.error('[Widget Chat] User collections (combined):', userCollectionNames);
           console.error('[Widget Chat] Resolved collections:', collectionNames);
           throw new AppError(500, 'INVALID_KB_ACCESS', 'Knowledge base collections do not belong to this user. This is a system error.');
         }
         
         console.log('[Widget Chat] ✅ Validated KBs belong to userId:', userId);
-        console.log('[Widget Chat] User KB collections (old):', userKBCollectionNames);
-        console.log('[Widget Chat] User KB collections (new):', userKBDocNames);
+        console.log('[Widget Chat] User KB collections (ChatbotKB):', chatbotCollectionNames);
+        console.log('[Widget Chat] User KB collections (legacy):', userKBCollectionNames);
         console.log('[Widget Chat] User KB collections (combined):', userCollectionNames);
       }
 
@@ -613,9 +658,8 @@ export class ChatbotController {
         collectionNames,
         collectionNamesCount: collectionNames.length,
         systemPromptLength: systemPrompt.length,
-        userId: aiContext.userId,
-        organizationId: aiContext.organizationId,
-        autoReplyEnabled: aiContext.autoReplyEnabled
+        userId,
+        organizationId
       });
 
       if (collectionNames.length === 0) {

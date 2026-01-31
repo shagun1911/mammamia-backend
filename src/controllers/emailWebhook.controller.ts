@@ -1,6 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import EmailTemplate from '../models/EmailTemplate';
+import SocialIntegration from '../models/SocialIntegration';
+import User from '../models/User';
 import { emailService } from '../services/email.service';
+import gmailOAuthService from '../services/gmailOAuth.service';
 import { AppError } from '../middleware/error.middleware';
 
 /**
@@ -60,19 +63,56 @@ export class EmailWebhookController {
       const subject = renderTemplate((template as any).subject_template, params);
       const bodyText = renderTemplate((template as any).body_template, params);
 
-      console.log('[Email Webhook] Sending email:', {
-        templateId,
-        to: recipientEmail,
-        subject: subject.substring(0, 50),
-        conversation_id
-      });
+      // Use Gmail from Social Integrations (Settings → Socials) if connected
+      const templateUserId = (template as any).userId;
+      let gmailIntegration = null;
+      if (templateUserId) {
+        // Try by userId first
+        gmailIntegration = await SocialIntegration.findOne({
+          userId: templateUserId,
+          platform: 'gmail',
+          status: 'connected'
+        });
+        // Fallback: try by organizationId (Gmail is one per org)
+        if (!gmailIntegration) {
+          const user = await User.findById(templateUserId).select('organizationId').lean();
+          const orgId = (user as any)?.organizationId;
+          if (orgId) {
+            gmailIntegration = await SocialIntegration.findOne({
+              organizationId: orgId,
+              platform: 'gmail',
+              status: 'connected'
+            });
+          }
+        }
+      }
 
-      await emailService.sendEmail({
-        to: recipientEmail,
-        subject,
-        text: bodyText,
-        html: bodyText.replace(/\n/g, '<br>')
-      });
+      if (gmailIntegration) {
+        const senderEmail = gmailIntegration.getDecryptedApiKey();
+        console.log('[Email Webhook] Sending via Gmail (Social):', {
+          templateId,
+          from: senderEmail,
+          to: recipientEmail,
+          subject: subject.substring(0, 50)
+        });
+        await gmailOAuthService.sendEmail(senderEmail, {
+          to: recipientEmail,
+          subject,
+          body: bodyText
+        });
+      } else {
+        console.log('[Email Webhook] Sending via SMTP (no Gmail connected):', {
+          templateId,
+          to: recipientEmail,
+          subject: subject.substring(0, 50)
+        });
+        await emailService.sendEmail({
+          to: recipientEmail,
+          subject,
+          text: bodyText,
+          html: bodyText.replace(/\n/g, '<br>')
+        });
+      }
 
       res.status(200).json({ success: true, message: 'Email sent successfully' });
     } catch (error) {

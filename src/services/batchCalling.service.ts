@@ -94,36 +94,33 @@ export class BatchCallingService {
       const phoneNumberId = String(data.phone_number_id).trim();
       
       // Format recipients with dynamic_variables structure
+      // CRITICAL: ElevenLabs needs name, customer_name, email for first_message and appointment/booking tools
       const formattedRecipients = data.recipients.map((recipient, index) => {
         const formatted: any = {
           phone_number: recipient.phone_number,
-          name: recipient.name
+          name: recipient.name || 'Customer'
         };
         
         if (recipient.email) {
           formatted.email = recipient.email;
         }
         
-        // PRIORITY: If dynamic_variables is explicitly provided from frontend, use it
+        let dynamicVars: Record<string, any> = {};
         if (recipient.dynamic_variables && typeof recipient.dynamic_variables === 'object') {
-          formatted.dynamic_variables = recipient.dynamic_variables;
-          console.log(`[Batch Calling Service] ✅ Using explicit dynamic_variables for recipient ${index + 1}:`, formatted.dynamic_variables);
+          dynamicVars = { ...recipient.dynamic_variables };
         } else {
-          // Fallback: Extract dynamic_variables from recipient (any fields that aren't phone_number, name, or email)
-          const dynamicVars: Record<string, any> = {};
           Object.keys(recipient).forEach(key => {
             if (key !== 'phone_number' && key !== 'name' && key !== 'email' && key !== 'dynamic_variables') {
               dynamicVars[key] = (recipient as any)[key];
             }
           });
-          
-          if (Object.keys(dynamicVars).length > 0) {
-            formatted.dynamic_variables = dynamicVars;
-            console.log(`[Batch Calling Service] ✅ Extracted dynamic_variables for recipient ${index + 1}:`, formatted.dynamic_variables);
-          } else {
-            console.log(`[Batch Calling Service] ⚠️  No dynamic_variables found for recipient ${index + 1}. Available keys:`, Object.keys(recipient));
-          }
         }
+        const safeName = (recipient.name || formatted.name || 'there').trim() || 'there';
+        const safeEmail = String(recipient.email || formatted.email || '').trim();
+        dynamicVars.name = dynamicVars.name ?? safeName;
+        dynamicVars.customer_name = dynamicVars.customer_name ?? safeName;
+        dynamicVars.email = dynamicVars.email ?? safeEmail;
+        formatted.dynamic_variables = dynamicVars;
         
         return formatted;
       });

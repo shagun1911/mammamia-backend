@@ -6,19 +6,33 @@ import mongoose from 'mongoose';
 const PYTHON_API_BASE_URL = process.env.PYTHON_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
 
 /**
- * Base URL for the email webhook - the Python API calls this when the agent invokes the email tool.
- * Priority: TEMPLATE_WEBHOOK_ENDPOINT > NGROK_BASE_URL > BACKEND_URL > localhost
- * For local dev: use NGROK_BASE_URL (e.g. https://xxx.ngrok-free.app) so the Python API on Render can reach your backend.
+ * Base URL for the email webhook - the Python/ElevenLabs API calls this when the agent invokes the email tool.
+ * 
+ * IMPORTANT: For Gmail from Socials to work, webhook MUST reach our backend. Set TEMPLATE_WEBHOOK_ENDPOINT
+ * to your deployed backend URL (e.g. https://aisteinai-backend-2026.onrender.com). Then recreate the template.
+ * 
+ * Priority: TEMPLATE_WEBHOOK_ENDPOINT > NGROK_BASE_URL > BACKEND_URL > PYTHON_API_URL (fallback, uses SMTP)
  */
 function getTemplateWebhookEndpoint(): string {
   const explicit = process.env.TEMPLATE_WEBHOOK_ENDPOINT?.trim();
-  if (explicit) return explicit.endsWith('/api/v1') ? explicit : `${explicit.replace(/\/$/, '')}/api/v1`;
+  if (explicit) {
+    const url = explicit.endsWith('/api/v1') ? explicit : `${explicit.replace(/\/$/, '')}/api/v1`;
+    console.log('[EmailTemplate Service] Using TEMPLATE_WEBHOOK_ENDPOINT (Gmail from Socials will work):', url);
+    return url;
+  }
+  
   const ngrok = process.env.NGROK_BASE_URL?.trim();
   if (ngrok) return ngrok.endsWith('/api/v1') ? ngrok : `${ngrok.replace(/\/$/, '')}/api/v1`;
+  
   const backend = process.env.BACKEND_URL?.trim();
-  if (backend) return backend.endsWith('/api/v1') ? backend : `${backend.replace(/\/$/, '')}/api/v1`;
-  const port = process.env.PORT || '5001';
-  return `http://localhost:${port}/api/v1`;
+  if (backend && !backend.includes('localhost') && !backend.includes('127.0.0.1')) {
+    return backend.endsWith('/api/v1') ? backend : `${backend.replace(/\/$/, '')}/api/v1`;
+  }
+  
+  const pythonUrl = (process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com').replace(/\/$/, '');
+  const pythonBase = pythonUrl.endsWith('/api/v1') ? pythonUrl : `${pythonUrl}/api/v1`;
+  console.log('[EmailTemplate Service] Using PYTHON_API_URL for webhook - Gmail from Socials will NOT work (use TEMPLATE_WEBHOOK_ENDPOINT)');
+  return pythonBase;
 }
 
 export interface CreateEmailTemplateRequest {
