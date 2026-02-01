@@ -8,6 +8,7 @@ export interface IPhoneNumber extends Document {
   token: string;
   provider?: string;
   organizationId?: mongoose.Types.ObjectId;
+  userId?: mongoose.Types.ObjectId;
   created_at_unix?: number;
   supports_inbound?: boolean;
   supports_outbound?: boolean;
@@ -65,6 +66,11 @@ const PhoneNumberSchema = new Schema<IPhoneNumber>({
   organizationId: {
     type: Schema.Types.ObjectId,
     ref: 'Organization'
+  },
+  userId: {
+    type: Schema.Types.ObjectId,
+    ref: 'User',
+    index: true
   },
   created_at_unix: {
     type: Number,

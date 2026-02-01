@@ -324,7 +324,8 @@ export class BatchCallingController {
             agent_name: result.agent_name,
             call_name: call_name,
             recipients_count: recipients.length,
-            sender_email: sender_email || undefined
+            sender_email: sender_email || undefined,
+            conversations_synced: false // Track if conversations have been created
           });
           
           console.log('[Batch Calling Controller] ✅ Batch call stored in database with ID:', result.id);
@@ -393,8 +394,9 @@ export class BatchCallingController {
       const result = await batchCallingService.getBatchJobStatus(jobId);
 
       // Update database with latest status
+      let updatedBatchCall: any = null;
       try {
-        await BatchCall.updateOne(
+        updatedBatchCall = await BatchCall.findOneAndUpdate(
           { batch_call_id: jobId },
           {
             $set: {
@@ -404,11 +406,23 @@ export class BatchCallingController {
               total_calls_finished: result.total_calls_finished,
               last_updated_at_unix: result.last_updated_at_unix
             }
-          }
+          },
+          { new: true }
         );
       } catch (dbError: any) {
         console.warn('[Batch Calling Controller] ⚠️ Failed to update batch call status in database:', dbError.message);
         // Don't fail the request if database update fails
+      }
+
+      // If batch call is completed and conversations haven't been synced, fetch results and create conversations
+      if (result.status === 'completed' && updatedBatchCall && !updatedBatchCall.conversations_synced) {
+        console.log('[Batch Calling Controller] 🚀 Batch call completed! Fetching results and creating conversations...');
+        
+        // Process results asynchronously (don't block the response)
+        batchCallingService.syncBatchCallConversations(jobId, organizationId.toString()).catch((error: any) => {
+          console.error('[Batch Calling Controller] ❌ Failed to sync batch call conversations:', error.message);
+          // Don't throw - we don't want to fail the status request
+        });
       }
 
       res.status(200).json(result);
@@ -632,6 +646,75 @@ export class BatchCallingController {
         success: true,
         data: result
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get batch job results with transcripts
+   * GET /api/v1/batch-calling/:jobId/results
+   */
+  async getBatchJobResults(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { jobId } = req.params;
+      const { include_transcript } = req.query;
+      
+      if (!jobId) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MISSING_JOB_ID',
+            message: 'Job ID is required'
+          }
+        });
+      }
+
+      // Verify the batch call belongs to the user's organization
+      const BatchCall = (await import('../models/BatchCall')).default;
+      const organizationId = req.user?.organizationId || req.user?._id;
+      
+      if (!organizationId) {
+        return res.status(401).json({
+          success: false,
+          error: "Unauthorized",
+          detail: "Organization ID or User ID not found"
+        });
+      }
+
+      const batchCall = await BatchCall.findOne({
+        batch_call_id: jobId,
+        organizationId: organizationId instanceof mongoose.Types.ObjectId 
+          ? organizationId 
+          : new mongoose.Types.ObjectId(organizationId.toString())
+      }).lean();
+
+      if (!batchCall) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'BATCH_CALL_NOT_FOUND',
+            message: 'Batch call not found or does not belong to your organization'
+          }
+        });
+      }
+
+      // Parse include_transcript query parameter (default: true)
+      let includeTranscript = true; // Default to true
+      if (include_transcript !== undefined) {
+        if (typeof include_transcript === 'string') {
+          includeTranscript = include_transcript.toLowerCase() === 'true';
+        } else if (Array.isArray(include_transcript)) {
+          includeTranscript = include_transcript[0]?.toString().toLowerCase() === 'true';
+        } else {
+          includeTranscript = String(include_transcript).toLowerCase() === 'true';
+        }
+      }
+
+      // Fetch results with transcripts from Python API
+      const result = await batchCallingService.getBatchJobResults(jobId, includeTranscript);
+
+      res.status(200).json(result);
     } catch (error) {
       next(error);
     }

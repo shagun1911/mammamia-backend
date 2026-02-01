@@ -22,6 +22,8 @@ export interface IBatchCall extends Document {
   call_name: string;
   recipients_count: number;
   sender_email?: string;
+  resultsProcessed?: boolean; // Track if conversations have been created from results
+  conversations_synced?: boolean; // Track if conversations have been synced to Conversations
   createdAt: Date;
   updatedAt: Date;
 }
@@ -112,6 +114,14 @@ const BatchCallSchema = new Schema<IBatchCall>({
   },
   sender_email: {
     type: String
+  },
+  resultsProcessed: {
+    type: Boolean,
+    default: false
+  },
+  conversations_synced: {
+    type: Boolean,
+    default: false
   }
 }, { timestamps: true });
 

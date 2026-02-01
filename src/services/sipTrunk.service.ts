@@ -668,6 +668,88 @@ export class SipTrunkService {
   }
 
   /**
+   * Update phone number in ElevenLabs API
+   * PATCH /api/v1/phone-numbers/{phone_number_id}
+   * Updates phone number configuration (e.g., assign agent, update SIP trunk settings)
+   */
+  async updatePhoneNumberInElevenLabs(
+    phone_number_id: string,
+    updateData: {
+      label?: string;
+      agent_id?: string | null;
+      supports_inbound?: boolean;
+      supports_outbound?: boolean;
+      inbound_trunk_config?: {
+        address: string;
+        credentials: {
+          username: string;
+          password: string;
+        };
+        media_encryption?: string;
+        transport?: string;
+      };
+      outbound_trunk_config?: {
+        address: string;
+        credentials: {
+          username: string;
+          password: string;
+        };
+        media_encryption?: string;
+        transport?: string;
+      };
+    }
+  ): Promise<any> {
+    try {
+      const pythonUrl = `${COMM_API_URL}/api/v1/phone-numbers/${encodeURIComponent(phone_number_id)}`;
+
+      console.log('[SIP Trunk Service] ===== UPDATING PHONE NUMBER IN ELEVENLABS =====');
+      console.log('[SIP Trunk Service] ElevenLabs API URL:', pythonUrl);
+      console.log('[SIP Trunk Service] Request payload:', {
+        ...updateData,
+        ...(updateData.inbound_trunk_config && {
+          inbound_trunk_config: {
+            ...updateData.inbound_trunk_config,
+            credentials: {
+              ...updateData.inbound_trunk_config.credentials,
+              password: '***hidden***'
+            }
+          }
+        }),
+        ...(updateData.outbound_trunk_config && {
+          outbound_trunk_config: {
+            ...updateData.outbound_trunk_config,
+            credentials: {
+              ...updateData.outbound_trunk_config.credentials,
+              password: '***hidden***'
+            }
+          }
+        })
+      });
+
+      const response = await axios.patch<any>(
+        pythonUrl,
+        updateData,
+        {
+          timeout: 60000 // 60 seconds timeout
+        }
+      );
+
+      console.log('[SIP Trunk Service] ✅ Phone number updated in ElevenLabs successfully');
+      console.log('[SIP Trunk Service] Response status:', response.status);
+      console.log('[SIP Trunk Service] Response body:', JSON.stringify(response.data, null, 2));
+
+      return response.data;
+    } catch (error: any) {
+      console.error('[SIP Trunk Service] ❌ Failed to update phone number in ElevenLabs:', error.response?.data || error.message);
+      throw new AppError(
+        error.response?.status || 500,
+        'PHONE_NUMBER_UPDATE_ERROR',
+        error.response?.data?.message || error.response?.data?.detail || `Failed to update phone number ${phone_number_id} in ElevenLabs`
+      );
+    }
+  }
+
+  /**
    * Get phone number ID from ElevenLabs API by phone number string
    * GET /api/v1/phone-numbers and find matching phone_number
    */

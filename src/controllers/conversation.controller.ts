@@ -23,6 +23,49 @@ export class ConversationController {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID or User ID not found');
       }
       
+      // Sync pending batch call conversations before returning list
+      // This ensures conversations are always materialized even if background sync failed
+      try {
+        const BatchCall = (await import('../models/BatchCall')).default;
+        const { batchCallingService } = await import('../services/batchCalling.service');
+        const mongoose = (await import('mongoose')).default;
+        const userId = req.user?._id;
+        
+        // Find completed batch calls that haven't been synced
+        const pendingBatches = await BatchCall.find({
+          $or: [
+            { userId: userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId.toString()) },
+            { organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString()) }
+          ],
+          status: 'completed',
+          conversations_synced: { $ne: true }
+        }).lean();
+
+        if (pendingBatches.length > 0) {
+          console.log(`[Conversation Controller] 🔄 Found ${pendingBatches.length} pending batch calls to sync`);
+          
+          // Sync each batch call (non-blocking, failures don't block UI)
+          for (const batch of pendingBatches) {
+            try {
+              await batchCallingService.syncBatchCallConversations(
+                batch.batch_call_id,
+                organizationId.toString()
+              );
+              console.log(`[Conversation Controller] ✅ Synced batch call ${batch.batch_call_id}`);
+            } catch (err: any) {
+              console.error(
+                `[Conversation Controller] ❌ Failed to sync batch call ${batch.batch_call_id}:`,
+                err.message
+              );
+              // Continue with other batches - don't block UI
+            }
+          }
+        }
+      } catch (syncError: any) {
+        // Don't fail the request if batch sync fails
+        console.error('[Conversation Controller] ⚠️ Batch sync error (non-blocking):', syncError.message);
+      }
+      
       const orgFilters: any = {
         ...filters,
         organizationId: organizationId.toString() // ALWAYS set organizationId

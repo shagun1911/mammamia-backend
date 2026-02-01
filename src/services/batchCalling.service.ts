@@ -387,6 +387,237 @@ export class BatchCallingService {
       );
     }
   }
+
+  /**
+   * Get batch job results with transcripts
+   * Calls Python /api/v1/batch-calling/{job_id}/results endpoint
+   */
+  async getBatchJobResults(
+    jobId: string,
+    includeTranscript: boolean = true
+  ): Promise<any> {
+    try {
+      const pythonUrl = `${COMM_API_URL}/api/v1/batch-calling/${jobId}/results`;
+      
+      console.log('[Batch Calling Service] ===== GETTING BATCH JOB RESULTS =====');
+      console.log('[Batch Calling Service] Python API URL:', pythonUrl);
+      console.log('[Batch Calling Service] Job ID:', jobId);
+      console.log('[Batch Calling Service] Include Transcript:', includeTranscript);
+      
+      const params: Record<string, any> = {};
+      if (includeTranscript !== undefined) {
+        params.include_transcript = includeTranscript;
+      }
+      
+      const response = await axios.get<any>(
+        pythonUrl,
+        {
+          params,
+          timeout: 60000, // 60 seconds timeout (transcripts can be large)
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      console.log('[Batch Calling Service] ✅ Batch job results fetched successfully');
+      console.log('[Batch Calling Service] Response status:', response.status);
+      
+      return response.data;
+    } catch (error: any) {
+      console.error('[Batch Calling Service] ❌ Failed to get batch job results:', error.response?.data || error.message);
+      throw new AppError(
+        error.response?.status || 500,
+        'BATCH_CALL_ERROR',
+        error.response?.data?.message || error.response?.data?.detail || 'Failed to get batch job results'
+      );
+    }
+  }
+
+  /**
+   * Sync batch call results to Conversations
+   * Creates Conversation records for each call result
+   * Idempotent - safe to call multiple times
+   */
+  async syncBatchCallConversations(jobId: string, organizationId: string): Promise<void> {
+    try {
+      console.log('[Batch Calling Service] ===== SYNCING BATCH CALL CONVERSATIONS =====');
+      console.log('[Batch Calling Service] Job ID:', jobId);
+      
+      // Fetch results with transcripts from Python API
+      const results = await this.getBatchJobResults(jobId, true);
+      
+      if (!results.results || !Array.isArray(results.results)) {
+        console.warn('[Batch Calling Service] ⚠️ No results found in response');
+        return;
+      }
+
+      const Conversation = (await import('../models/Conversation')).default;
+      const Customer = (await import('../models/Customer')).default;
+      const Message = (await import('../models/Message')).default;
+      const BatchCall = (await import('../models/BatchCall')).default;
+      const mongoose = (await import('mongoose')).default;
+
+      // Get batch call info for userId
+      const batchCall = await BatchCall.findOne({ batch_call_id: jobId }).lean();
+      if (!batchCall) {
+        console.error('[Batch Calling Service] ❌ Batch call not found in database');
+        return;
+      }
+
+      const orgObjectId = new mongoose.Types.ObjectId(organizationId);
+      const userId = batchCall.userId?.toString() || organizationId;
+
+      let conversationsCreated = 0;
+      let conversationsSkipped = 0;
+
+      // Process each call result
+      for (const callResult of results.results) {
+        try {
+          const phoneNumber = callResult.phone_number;
+          const dynamicVars = callResult.dynamic_variables || {};
+          const customerName = dynamicVars.name || dynamicVars.customer_name || 'Unknown';
+          const customerEmail = dynamicVars.email;
+          const conversationId = callResult.conversation_id;
+          const transcript = callResult.transcript;
+
+          // CRITICAL: Prevent duplicates - check if conversation already exists
+          const exists = await Conversation.findOne({
+            organizationId: orgObjectId,
+            channel: 'phone',
+            'metadata.batch_call_id': jobId,
+            'metadata.phone_number': phoneNumber
+          });
+
+          if (exists) {
+            console.log(`[Batch Calling Service] ⚠️ Conversation already exists for ${phoneNumber}, skipping`);
+            conversationsSkipped++;
+            continue;
+          }
+
+          // Find or create customer
+          let customer = await Customer.findOne({
+            phone: phoneNumber,
+            organizationId: orgObjectId
+          });
+
+          if (!customer) {
+            customer = await Customer.create({
+              name: customerName,
+              phone: phoneNumber,
+              email: customerEmail,
+              organizationId: orgObjectId,
+              source: 'phone',
+              color: `#${Math.floor(Math.random() * 16777215).toString(16)}`
+            });
+            console.log(`[Batch Calling Service] ✅ Created customer: ${customer.name} (${customer.phone})`);
+          } else {
+            // Update customer info if we have better data
+            if (customerName !== 'Unknown' && customer.name === 'Unknown') {
+              customer.name = customerName;
+            }
+            if (customerEmail && !customer.email) {
+              customer.email = customerEmail;
+            }
+            await customer.save();
+          }
+
+          // Create conversation using the same pattern as outbound calls
+          const conversation = await Conversation.create({
+            organizationId: orgObjectId,
+            customerId: customer._id,
+            channel: 'phone',
+            status: callResult.call_successful ? 'closed' : 'open',
+            transcript: transcript || undefined,
+            isAiManaging: true,
+            unread: false,
+            metadata: {
+              batch_call_id: jobId,
+              conversation_id: conversationId,
+              recipient_id: callResult.recipient_id,
+              phone_number: phoneNumber,
+              callerId: conversationId, // For transcript polling compatibility
+              duration_seconds: callResult.duration_seconds,
+              call_successful: callResult.call_successful,
+              end_reason: callResult.end_reason,
+              callInitiated: new Date(callResult.duration_seconds ? Date.now() - (callResult.duration_seconds * 1000) : Date.now()),
+              callCompletedAt: new Date(),
+              source: 'batch'
+            }
+          });
+
+          console.log(`[Batch Calling Service] ✅ Created conversation ${conversation._id} for ${customerName}`);
+
+          // Create messages from transcript if available
+          if (transcript && Array.isArray(transcript) && transcript.length > 0) {
+            const messages: any[] = [];
+            for (const transcriptEntry of transcript) {
+              const role = transcriptEntry.role;
+              const messageText = transcriptEntry.message;
+
+              if (!messageText || !messageText.trim()) {
+                continue;
+              }
+
+              // Map roles: 'agent' -> 'ai', 'user' -> 'customer'
+              let sender: 'customer' | 'ai' = 'customer';
+              if (role === 'agent' || role === 'assistant') {
+                sender = 'ai';
+              } else if (role === 'user' || role === 'customer') {
+                sender = 'customer';
+              }
+
+              messages.push({
+                conversationId: conversation._id,
+                sender,
+                text: messageText.trim(),
+                type: 'message',
+                attachments: [],
+                sourcesUsed: [],
+                topics: [],
+                timestamp: new Date(),
+                metadata: {
+                  transcriptItemId: `${callResult.recipient_id}_${messages.length}`,
+                  fromBatchCall: true
+                }
+              });
+            }
+
+            // Save all messages
+            if (messages.length > 0) {
+              await Message.insertMany(messages);
+              console.log(`[Batch Calling Service] ✅ Created ${messages.length} messages for conversation ${conversation._id}`);
+            }
+          } else {
+            // Add internal note if no transcript available
+            await Message.create({
+              conversationId: conversation._id,
+              type: 'internal_note',
+              text: `Batch call completed to ${customerName} (${phoneNumber}). ${callResult.call_successful ? 'Call was successful.' : 'Call failed.'}`,
+              sender: 'ai',
+              timestamp: new Date()
+            });
+          }
+
+          conversationsCreated++;
+        } catch (resultError: any) {
+          console.error(`[Batch Calling Service] ❌ Failed to create conversation for ${callResult.phone_number}:`, resultError.message);
+          // Continue processing other results
+        }
+      }
+
+      // Mark batch call as synced
+      await BatchCall.updateOne(
+        { batch_call_id: jobId },
+        { $set: { conversations_synced: true } }
+      );
+
+      console.log(`[Batch Calling Service] ✅ Synced batch call conversations: ${conversationsCreated} created, ${conversationsSkipped} skipped`);
+    } catch (error: any) {
+      console.error('[Batch Calling Service] ❌ Error syncing batch call conversations:', error.message);
+      throw error; // Re-throw so caller can handle
+    }
+  }
 }
 
 export const batchCallingService = new BatchCallingService();

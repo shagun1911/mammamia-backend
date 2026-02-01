@@ -263,6 +263,7 @@ export class PhoneNumberController {
       // Create phone number with SIP trunk config
       // NO AGENT CONFIG, NO PHONE SETTINGS UPDATE
       const organizationId = req.user?.organizationId || req.user?._id;
+      const userId = req.user?._id || req.user?.id;
       if (!organizationId) {
         return res.status(401).json({
           success: false,
@@ -279,6 +280,7 @@ export class PhoneNumberController {
         sid: '', // Not used for SIP trunk
         token: '', // Not used for SIP trunk
         organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString()),
+        userId: userId ? (userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId.toString())) : undefined,
         created_at_unix: Math.floor(Date.now() / 1000),
         supports_inbound,
         supports_outbound,
@@ -551,11 +553,19 @@ export class PhoneNumberController {
   /**
    * Update phone number
    * PATCH /api/v1/phone-numbers/:phone_number_id
+   * Updates phone number configuration (e.g., assign agent, update SIP trunk settings)
    */
   update = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const { phone_number_id } = req.params;
-      const { label, agent_id } = req.body;
+      const {
+        label,
+        agent_id,
+        supports_inbound,
+        supports_outbound,
+        inbound_trunk_config,
+        outbound_trunk_config
+      } = req.body;
       const userId = req.user?.id || req.user?._id;
       const organizationId = req.user?.organizationId || req.user?._id;
 
@@ -622,24 +632,82 @@ export class PhoneNumberController {
         }
       }
 
-      // Update fields if provided
+      // Update local database fields if provided
       if (label !== undefined) {
         phoneNumber.label = label;
       }
       if (agent_id !== undefined) {
         phoneNumber.agent_id = agent_id || undefined; // Convert empty string to undefined
       }
+      if (supports_inbound !== undefined) {
+        phoneNumber.supports_inbound = supports_inbound;
+      }
+      if (supports_outbound !== undefined) {
+        phoneNumber.supports_outbound = supports_outbound;
+      }
+      if (inbound_trunk_config !== undefined) {
+        phoneNumber.inbound_trunk_config = inbound_trunk_config;
+      }
+      if (outbound_trunk_config !== undefined) {
+        phoneNumber.outbound_trunk_config = outbound_trunk_config;
+      }
 
+      // Update ElevenLabs API if phone number is registered
+      if (phoneNumber.elevenlabs_phone_number_id) {
+        console.log('[PhoneNumber Controller] Updating phone number in ElevenLabs API...');
+        try {
+          const { sipTrunkService } = await import('../services/sipTrunk.service');
+          
+          // Build update payload for ElevenLabs API
+          const updatePayload: any = {};
+          if (label !== undefined) updatePayload.label = label;
+          if (agent_id !== undefined) updatePayload.agent_id = agent_id || null;
+          if (supports_inbound !== undefined) updatePayload.supports_inbound = supports_inbound;
+          if (supports_outbound !== undefined) updatePayload.supports_outbound = supports_outbound;
+          if (inbound_trunk_config !== undefined) updatePayload.inbound_trunk_config = inbound_trunk_config;
+          if (outbound_trunk_config !== undefined) updatePayload.outbound_trunk_config = outbound_trunk_config;
+
+          // Call ElevenLabs PATCH endpoint
+          const elevenLabsResponse = await sipTrunkService.updatePhoneNumberInElevenLabs(
+            phoneNumber.elevenlabs_phone_number_id,
+            updatePayload
+          );
+
+          console.log('[PhoneNumber Controller] ✅ Phone number updated in ElevenLabs API');
+          console.log('[PhoneNumber Controller] ElevenLabs response:', JSON.stringify(elevenLabsResponse, null, 2));
+        } catch (elevenLabsError: any) {
+          console.error('[PhoneNumber Controller] ⚠️ Failed to update phone number in ElevenLabs API:', elevenLabsError.message);
+          // Continue with local database update even if ElevenLabs update fails
+          // User can retry later
+        }
+      }
+
+      // Save to local database
       await phoneNumber.save();
 
-      return res.json({
+      // Build response matching API spec
+      const response: any = {
         phone_number_id: phoneNumber.phone_number_id,
         phone_number: phoneNumber.phone_number,
         label: phoneNumber.label,
         provider: phoneNumber.provider,
-        created_at_unix: phoneNumber.created_at_unix,
-        agent_id: phoneNumber.agent_id || undefined
-      });
+        supports_inbound: phoneNumber.supports_inbound || false,
+        supports_outbound: phoneNumber.supports_outbound || false
+      };
+
+      if (phoneNumber.agent_id) {
+        response.agent_id = phoneNumber.agent_id;
+      }
+
+      if (phoneNumber.inbound_trunk_config) {
+        response.inbound_trunk_config = phoneNumber.inbound_trunk_config;
+      }
+
+      if (phoneNumber.outbound_trunk_config) {
+        response.outbound_trunk_config = phoneNumber.outbound_trunk_config;
+      }
+
+      return res.json(response);
     } catch (err: any) {
       console.error('[PhoneNumber Controller] Update Error:', err);
       return res.status(500).json({

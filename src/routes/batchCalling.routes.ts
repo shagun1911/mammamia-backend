@@ -16,6 +16,9 @@ router.post('/submit', batchCallingController.submitBatchCall);
 // GET /api/v1/batch-calling/:jobId/calls - Get batch job calls (must be before /:jobId)
 router.get('/:jobId/calls', batchCallingController.getBatchJobCalls);
 
+// GET /api/v1/batch-calling/:jobId/results - Get batch job results with transcripts (must be before /:jobId)
+router.get('/:jobId/results', batchCallingController.getBatchJobResults);
+
 // GET /api/v1/batch-calling/:jobId - Get batch job status
 router.get('/:jobId', batchCallingController.getBatchJobStatus);
 
