@@ -10,7 +10,7 @@ export class PhoneSettingsService {
    */
   async get(userId: string) {
     // Convert userId to ObjectId for query
-    const userObjectId = userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId);
+    const userObjectId = (userId as any) instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId);
     
     let settings = await PhoneSettings.findOne({ userId: userObjectId });
     

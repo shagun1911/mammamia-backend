@@ -27,7 +27,7 @@ export class InboundAgentConfigService {
     const User = (await import('../models/User')).default;
     const mongoose = (await import('mongoose')).default;
     
-    const userObjectId = userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId.toString());
+    const userObjectId = (userId as any) instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId.toString());
     
     // Get user's organizationId for proper phone number lookup
     const user = await User.findById(userObjectId).lean();

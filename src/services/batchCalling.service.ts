@@ -109,7 +109,7 @@ export class BatchCallingService {
         }
         
         // Build dynamic_variables by merging customer_info (name, email) and explicit dynamic_variables
-        const customerInfo = {
+        const customerInfo: Record<string, any> = {
           name: recipient.name,
           email: recipient.email
         };
