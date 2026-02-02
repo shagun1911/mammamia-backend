@@ -84,6 +84,9 @@ export class ConversationService {
 
         return {
           ...conv,
+          // CRITICAL: Include transcript and metadata for phone calls
+          transcript: conv.transcript || null,
+          metadata: conv.metadata || {},
           lastMessage: lastMessage ? {
             id: lastMessage._id,
             text: lastMessage.text,
@@ -110,7 +113,7 @@ export class ConversationService {
   // Get conversation by ID with all messages
   async findById(conversationId: string, organizationId: string) {
     console.log(`[Conversation Service] Fetching conversation: ${conversationId}`);
-    
+
     const conversation = await Conversation.findById(conversationId)
       .populate('customerId', 'name email phone avatar color customProperties')
       .populate('assignedOperatorId', 'firstName lastName avatar')
@@ -123,7 +126,7 @@ export class ConversationService {
     // CRITICAL: Verify ownership - conversation must belong to user's organization
     const convOrgId = (conversation as any).organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (convOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
@@ -133,8 +136,8 @@ export class ConversationService {
     console.log(`[Conversation Service] Metadata:`, JSON.stringify((conversation as any).metadata, null, 2));
 
     // Query messages using both _id and string id to handle any format
-    const messages = await Message.find({ 
-      conversationId: (conversation as any)._id 
+    const messages = await Message.find({
+      conversationId: (conversation as any)._id
     })
       .populate('operatorId', 'firstName lastName avatar')
       .sort({ timestamp: 1 })
@@ -150,10 +153,10 @@ export class ConversationService {
       // Debug: Check if any messages exist in the collection
       const totalMessages = await Message.countDocuments({});
       console.log(`[Conversation Service] ⚠️ No messages found. Total messages in DB: ${totalMessages}`);
-      
+
       // Check with string comparison
-      const messagesWithString = await Message.find({ 
-        conversationId: conversationId 
+      const messagesWithString = await Message.find({
+        conversationId: conversationId
       }).lean();
       console.log(`[Conversation Service] Messages found with string query: ${messagesWithString.length}`);
     }
@@ -175,7 +178,7 @@ export class ConversationService {
     // CRITICAL: Verify ownership - conversation must belong to user's organization
     const convOrgId = conversation.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (convOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
@@ -197,7 +200,7 @@ export class ConversationService {
     if (messageData.type === 'message') {
       try {
         const { emitToConversation, emitToOrganization } = await import('../config/socket');
-        
+
         const messagePayload = {
           id: message._id.toString(),
           conversationId: conversationId.toString(),
@@ -210,7 +213,7 @@ export class ConversationService {
 
         // Emit to conversation room
         emitToConversation(conversationId.toString(), 'message-received', messagePayload);
-        
+
         // Emit to organization room
         emitToOrganization(
           conversation.organizationId.toString(),
@@ -244,7 +247,7 @@ export class ConversationService {
     // CRITICAL: Verify ownership - conversation must belong to user's organization
     const convOrgId = (conversation as any).organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (convOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
@@ -282,36 +285,36 @@ export class ConversationService {
         if (!instagramId) {
           throw new AppError(400, 'INVALID_CUSTOMER', 'Instagram ID not found for customer');
         }
-        
+
         // Find integration to get page access token
         const SocialIntegration = (await import('../models/SocialIntegration')).default;
         const instagramAccountId = metadata.instagramAccountId;
-        
+
         if (!instagramAccountId) {
           throw new AppError(400, 'INVALID_CONVERSATION', 'Instagram Account ID not found in conversation metadata');
         }
-        
+
         const integration = await SocialIntegration.findOne({
           'credentials.instagramAccountId': instagramAccountId,
           platform: 'instagram',
           organizationId: conversation.organizationId,
           status: 'connected'
         });
-        
+
         if (!integration) {
           throw new AppError(404, 'INTEGRATION_NOT_FOUND', 'Instagram integration not found');
         }
-        
+
         // Get page access token (Instagram uses the connected Facebook Page's access token)
         let pageAccessToken = integration.credentials?.pageAccessToken;
         if (!pageAccessToken) {
           pageAccessToken = (integration as any).getDecryptedApiKey?.();
         }
-        
+
         if (!pageAccessToken) {
           throw new AppError(400, 'INVALID_TOKEN', 'Page access token not found');
         }
-        
+
         // Use Meta Graph API to send message to Instagram
         const axios = (await import('axios')).default;
         await axios.post(
@@ -333,43 +336,43 @@ export class ConversationService {
         if (!facebookId) {
           throw new AppError(400, 'INVALID_CUSTOMER', 'Facebook ID not found for customer');
         }
-        
+
         // Find integration to get page access token
         const SocialIntegration = (await import('../models/SocialIntegration')).default;
         const pageId = metadata.facebookPageId;
-        
+
         if (!pageId) {
           throw new AppError(400, 'INVALID_CONVERSATION', 'Facebook Page ID not found in conversation metadata');
         }
-        
+
         const integration = await SocialIntegration.findOne({
           'credentials.facebookPageId': pageId,
           platform: 'facebook',
           organizationId: conversation.organizationId,
           status: 'connected'
         });
-        
+
         if (!integration) {
           throw new AppError(404, 'INTEGRATION_NOT_FOUND', 'Facebook integration not found');
         }
-        
+
         const pageAccessToken = integration.credentials?.pageAccessToken;
         if (!pageAccessToken) {
           throw new AppError(400, 'INVALID_TOKEN', 'Page access token not found');
         }
-        
+
         // Use Meta Graph API to send message
         const { MetaOAuthService } = await import('../services/metaOAuth.service');
         const metaAppId = process.env.META_APP_ID || '';
         const metaAppSecret = process.env.META_APP_SECRET || '';
         const backendUrl = process.env.BACKEND_URL || '';
-        
+
         const metaOAuth = new MetaOAuthService({
           appId: metaAppId,
           appSecret: metaAppSecret,
           redirectUri: `${backendUrl}/api/v1/social-integrations/facebook/oauth/callback`
         });
-        
+
         await metaOAuth.sendMessengerMessage(
           pageId,
           pageAccessToken,
@@ -405,7 +408,7 @@ export class ConversationService {
     // Emit Socket.io events for real-time updates
     try {
       const { emitToConversation, emitToOrganization } = await import('../config/socket');
-      
+
       const messageData = {
         id: message._id.toString(),
         conversationId: conversationId.toString(),
@@ -418,7 +421,7 @@ export class ConversationService {
 
       // Emit to conversation room
       emitToConversation(conversationId.toString(), 'message-received', messageData);
-      
+
       // Emit to organization room
       emitToOrganization(
         conversation.organizationId.toString(),
@@ -449,7 +452,7 @@ export class ConversationService {
     // CRITICAL: Verify ownership - conversation must belong to user's organization
     const convOrgId = conversation.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (convOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
@@ -477,7 +480,7 @@ export class ConversationService {
     // CRITICAL: Verify ownership - conversation must belong to user's organization
     const convOrgId = conversation.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (convOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
@@ -502,7 +505,7 @@ export class ConversationService {
     // CRITICAL: Verify ownership - conversation must belong to user's organization
     const convOrgId = conversation.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (convOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
@@ -527,7 +530,7 @@ export class ConversationService {
     // CRITICAL: Verify ownership - conversation must belong to user's organization
     const convOrgId = conversation.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (convOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
@@ -552,7 +555,7 @@ export class ConversationService {
     // CRITICAL: Verify ownership - conversation must belong to user's organization
     const convOrgId = conversation.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (convOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
@@ -580,7 +583,7 @@ export class ConversationService {
     // CRITICAL: Verify ownership - conversation must belong to user's organization
     const convOrgId = conversation.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (convOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
@@ -605,7 +608,7 @@ export class ConversationService {
     // CRITICAL: Verify ownership - conversation must belong to user's organization
     const convOrgId = conversation.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (convOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
@@ -630,7 +633,7 @@ export class ConversationService {
     // CRITICAL: Verify ownership - conversation must belong to user's organization
     const convOrgId = conversation.organizationId?.toString();
     const userOrgId = organizationId.toString();
-    
+
     if (convOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this conversation');
     }
@@ -653,7 +656,7 @@ export class ConversationService {
     try {
       // Find or create customer
       let customer = await Customer.findOne({ phone: data.phone });
-      
+
       if (!customer) {
         customer = await Customer.create({
           name: data.name,
@@ -687,7 +690,7 @@ export class ConversationService {
 
       console.log(`[Conversation Service] Created conversation for outbound call: ${conversation._id}`);
       console.log(`[Conversation Service] Metadata saved:`, JSON.stringify(conversation.metadata, null, 2));
-      
+
       return conversation;
     } catch (error: any) {
       console.error('[Conversation Service] Failed to create conversation for outbound call:', error);
@@ -699,13 +702,13 @@ export class ConversationService {
   async fetchTranscriptByCallerId(callerId: string) {
     try {
       // Find conversation by callerId or conversation_id
-      const conversation = await Conversation.findOne({ 
+      const conversation = await Conversation.findOne({
         $or: [
           { 'metadata.callerId': callerId },
           { 'metadata.conversation_id': callerId }
         ]
       });
-      
+
       if (!conversation) {
         throw new AppError(404, 'NOT_FOUND', 'Conversation not found for this call');
       }
@@ -717,15 +720,15 @@ export class ConversationService {
           console.log(`[Conversation Service] Attempting to fetch transcript from Python API for conversation_id: ${pythonConversationId}`);
           const COMM_API_URL = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
           const axios = (await import('axios')).default;
-          
+
           // Fetch conversation details from Python API
           const pythonResponse = await axios.get(`${COMM_API_URL}/api/v1/conversations/${pythonConversationId}`, {
             timeout: 30000
           });
-          
+
           if (pythonResponse.data) {
             console.log(`[Conversation Service] ✅ Fetched conversation from Python API`);
-            
+
             // Update conversation with transcript and metadata from Python API
             const pythonData = pythonResponse.data;
             conversation.transcript = pythonData.transcript || conversation.transcript;
@@ -737,23 +740,23 @@ export class ConversationService {
               duration: pythonData.duration,
               recording_url: pythonData.recording_url || pythonData.audio_url
             };
-            
+
             // Update status if call is completed
             if (pythonData.status === 'completed' || pythonData.status === 'ended') {
               conversation.status = 'closed';
             }
-            
+
             await conversation.save();
-            
+
             // Convert transcript items to messages if available
             if (pythonData.transcript?.items) {
               const Message = (await import('../models/Message')).default;
               // Delete existing transcript messages to avoid duplicates
-              await Message.deleteMany({ 
-                conversationId: conversation._id, 
-                'metadata.transcriptItemId': { $exists: true } 
+              await Message.deleteMany({
+                conversationId: conversation._id,
+                'metadata.transcriptItemId': { $exists: true }
               });
-              
+
               for (const item of pythonData.transcript.items) {
                 if (item.type === 'message' || item.role) {
                   await Message.create({
@@ -771,9 +774,9 @@ export class ConversationService {
                 }
               }
             }
-            
+
             console.log(`[Conversation Service] Updated conversation ${conversation._id} with transcript from Python API`);
-            
+
             // Emit WebSocket event
             try {
               const { emitToOrganization } = await import('../config/socket');
@@ -790,7 +793,7 @@ export class ConversationService {
             } catch (socketError: any) {
               console.error('[Conversation Service] Failed to emit WebSocket event:', socketError.message);
             }
-            
+
             return {
               conversation,
               transcript: conversation.transcript,
@@ -802,19 +805,19 @@ export class ConversationService {
           // Fall through to MongoDB lookup
         }
       }
-      
+
       // Fallback: Try MongoDB transcripts collection
       const db = mongoose.connection.db;
       console.log(`[Conversation Service] Searching for transcript in MongoDB with caller_id: ${callerId}`);
-      
+
       // Fetch the call transcript document from MongoDB
       const callDocument = await db?.collection('transcripts').findOne({ caller_id: callerId });
-      
+
       if (!callDocument) {
         console.log(`[Conversation Service] ❌ No document found with caller_id: ${callerId}`);
         throw new AppError(404, 'NOT_FOUND', 'Call transcript not found');
       }
-      
+
       console.log(`[Conversation Service] ✅ Found transcript document for caller_id: ${callerId}`);
 
       // Conversation was already found at the beginning of the function
@@ -832,9 +835,9 @@ export class ConversationService {
       await conversation.save();
 
       // Delete existing transcript messages to avoid duplicates on refresh
-      await Message.deleteMany({ 
-        conversationId: conversation._id, 
-        'metadata.transcriptItemId': { $exists: true } 
+      await Message.deleteMany({
+        conversationId: conversation._id,
+        'metadata.transcriptItemId': { $exists: true }
       });
 
       // Convert transcript items to messages
@@ -858,14 +861,14 @@ export class ConversationService {
       }
 
       console.log(`[Conversation Service] Updated conversation ${conversation._id} with transcript`);
-      
+
       // Emit WebSocket event to notify frontend that transcript is ready
       try {
         const { emitToOrganization } = await import('../config/socket');
         const populatedConversation = await Conversation.findById(conversation._id)
           .populate('customerId')
           .lean();
-        
+
         emitToOrganization(
           conversation.organizationId.toString(),
           'conversation:transcript-updated',
@@ -882,7 +885,7 @@ export class ConversationService {
         console.error('[Conversation Service] Failed to emit WebSocket event:', socketError.message);
         // Don't throw - the transcript was fetched successfully
       }
-      
+
       return {
         conversation,
         transcript: callDocument.transcript,
@@ -901,10 +904,10 @@ export class ConversationService {
   async fetchAudioByConversationId(conversationId: string, organizationId: string): Promise<{ audioBuffer: Buffer; contentType: string }> {
     try {
       // Find conversation to get Python API conversation_id
-      const orgObjectId = (organizationId as any) instanceof mongoose.Types.ObjectId 
-        ? organizationId 
+      const orgObjectId = (organizationId as any) instanceof mongoose.Types.ObjectId
+        ? organizationId
         : new mongoose.Types.ObjectId(organizationId as string);
-      
+
       const conversation = await Conversation.findOne({
         _id: conversationId,
         organizationId: orgObjectId
@@ -916,7 +919,7 @@ export class ConversationService {
 
       // Get Python API conversation_id from metadata
       const pythonConversationId = conversation.metadata?.conversation_id;
-      
+
       if (!pythonConversationId) {
         throw new AppError(404, 'NOT_FOUND', 'Conversation ID not found in metadata. This conversation may not have an audio recording.');
       }
@@ -926,7 +929,7 @@ export class ConversationService {
       // Call Python API to fetch audio
       const COMM_API_URL = process.env.PYTHON_API_URL || process.env.COMM_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
       const axios = (await import('axios')).default;
-      
+
       try {
         const response = await axios.get(`${COMM_API_URL}/api/v1/conversations/${pythonConversationId}/audio`, {
           responseType: 'arraybuffer', // Get binary data
@@ -940,7 +943,7 @@ export class ConversationService {
 
         // Determine content type from response headers or default to audio/mpeg
         const contentType = response.headers['content-type'] || 'audio/mpeg';
-        
+
         return {
           audioBuffer: Buffer.from(response.data),
           contentType
@@ -1106,14 +1109,14 @@ export class ConversationService {
         name: data.name,
         threadId: data.threadId
       });
-      
+
       // Find or create customer by name WITH organizationId (strict isolation)
       const orgObjectId = new mongoose.Types.ObjectId(organizationId);
-      let customer = await Customer.findOne({ 
+      let customer = await Customer.findOne({
         name: data.name,
         organizationId: orgObjectId // CRITICAL: Scoped to organization
       });
-      
+
       if (!customer) {
         console.log('[Widget Conversation] Creating new customer:', data.name);
         customer = await Customer.create({
@@ -1131,7 +1134,7 @@ export class ConversationService {
       }
 
       // Find existing conversation by threadId AND organizationId (strict isolation)
-      let conversation = await Conversation.findOne({ 
+      let conversation = await Conversation.findOne({
         'metadata.threadId': data.threadId,
         organizationId: orgObjectId // CRITICAL: Scoped to organization
       });
@@ -1149,7 +1152,7 @@ export class ConversationService {
             collection: data.collection
           }
         };
-        
+
         conversation = await Conversation.create(conversationData);
 
         // Track chat conversation usage for the resolved userId
@@ -1183,8 +1186,8 @@ export class ConversationService {
     } catch (error: any) {
       console.error('[Widget Conversation] ❌ Error saving conversation:', error);
       throw new AppError(
-        500, 
-        'SAVE_ERROR', 
+        500,
+        'SAVE_ERROR',
         `Failed to save widget conversation: ${error.message}`
       );
     }

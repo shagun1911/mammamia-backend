@@ -181,13 +181,167 @@ export class AutomationController {
       }
 
       const contactIds = members.map(m => m.contactId.toString());
+      const Customer = (await import('../models/Customer')).default;
+      const contacts = await Customer.find({ _id: { $in: contactIds } });
 
-      // Trigger automation system with batch_call event
+      const { automationId } = req.body;
+      let agentId = process.env.DEFAULT_AGENT_ID;
+      let phoneNumberId = process.env.DEFAULT_PHONE_NUMBER_ID;
+      let automationName = 'Manual Batch';
+      let sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
+
+      if (automationId) {
+        const Automation = (await import('../models/Automation')).default;
+        const automation = await Automation.findById(automationId).lean();
+        if (automation) {
+          automationName = automation.name;
+          const triggerNode = automation.nodes.find(n => n.service === 'batch_call' || n.service === 'keplero_mass_sending');
+          if (triggerNode?.config) {
+            const config = triggerNode.config as any;
+            if (config.agent_id) agentId = config.agent_id;
+            if (config.phone_number_id) phoneNumberId = config.phone_number_id;
+          }
+        }
+      }
+
+      // Resolve Phone Number to ElevenLabs ID (CRITICAL FIX)
+      const PhoneNumber = (await import('../models/PhoneNumber')).default;
+      const phoneNumberDoc = await PhoneNumber.findOne({
+        $or: [
+          { phone_number_id: phoneNumberId },
+          { elevenlabs_phone_number_id: phoneNumberId }
+        ],
+        organizationId: new (await import('mongoose')).default.Types.ObjectId(organizationId.toString())
+      }).lean();
+
+      let elevenlabsPhoneNumberId = phoneNumberId;
+      if (phoneNumberDoc) {
+        elevenlabsPhoneNumberId = phoneNumberDoc.elevenlabs_phone_number_id || phoneNumberId;
+      }
+
+      // Resolve Sender Email (copied from BatchCallingController for consistency)
+      try {
+        const GoogleIntegration = (await import('../models/GoogleIntegration')).default;
+        const googleIntegration = await GoogleIntegration.findOne({
+          organizationId: new (await import('mongoose')).default.Types.ObjectId(organizationId.toString()),
+          'services.gmail': true,
+          status: 'active'
+        }).lean();
+
+        if (googleIntegration?.googleProfile?.email) {
+          sender_email = googleIntegration.googleProfile.email;
+        } else {
+          const SocialIntegration = (await import('../models/SocialIntegration')).default;
+          const socialIntegration = await SocialIntegration.findOne({
+            organizationId: new (await import('mongoose')).default.Types.ObjectId(organizationId.toString()),
+            platform: 'gmail',
+            status: 'connected'
+          }).lean();
+
+          if (socialIntegration) {
+            sender_email = socialIntegration.credentials?.email || socialIntegration.metadata?.email || sender_email;
+          }
+        }
+      } catch (emailError: any) {
+        console.warn('[Automation Controller] Error resolving sender email:', emailError.message);
+      }
+
+      if (!agentId || !elevenlabsPhoneNumberId) {
+        return res.status(400).json({ message: 'Agent ID and Phone Number ID are required. Please configure the trigger node correctly.' });
+      }
+
+      console.log(`[Automation Controller] Running batch for automation: ${automationName}`, {
+        agentId,
+        phoneNumberId,
+        elevenlabsPhoneNumberId,
+        sender_email
+      });
+
+      // 1. Submit to Batch Calling Service (ElevenLabs)
+      const { batchCallingService } = await import('../services/batchCalling.service');
+      const batchParams = {
+        agent_id: agentId,
+        call_name: `${automationName} - ${new Date().toLocaleDateString()}`,
+        recipients: contacts
+          .filter(c => !!c.phone)
+          .map(c => ({
+            phone_number: c.phone!,
+            name: String(c.name || 'Customer'),
+            email: c.email,
+            dynamic_variables: {
+              name: String(c.name || 'Customer'),
+              email: c.email
+            }
+          })),
+        phone_number_id: elevenlabsPhoneNumberId,
+        sender_email: sender_email
+      };
+
+      let batchResult;
+      try {
+        batchResult = await batchCallingService.submitBatchCall(batchParams);
+      } catch (submitError: any) {
+        // If 404, try re-registering the phone number
+        if (submitError.statusCode === 404 && phoneNumberDoc && phoneNumberDoc.provider === 'twilio' && phoneNumberDoc.sid && phoneNumberDoc.token) {
+          console.log('[Automation Controller] Phone number not found in API (404), attempting re-registration...');
+          const { sipTrunkService } = await import('../services/sipTrunk.service');
+          const reg = await sipTrunkService.registerTwilioPhoneNumberWithElevenLabs({
+            label: phoneNumberDoc.label,
+            phone_number: phoneNumberDoc.phone_number,
+            sid: phoneNumberDoc.sid,
+            token: phoneNumberDoc.token,
+            supports_inbound: phoneNumberDoc.supports_inbound || false,
+            supports_outbound: phoneNumberDoc.supports_outbound || false
+          });
+
+          // Update DB with new ID
+          const PhoneNumber = (await import('../models/PhoneNumber')).default;
+          await PhoneNumber.updateOne(
+            { _id: phoneNumberDoc._id },
+            { $set: { elevenlabs_phone_number_id: reg.phone_number_id } }
+          );
+
+          // Retry with new ID
+          batchParams.phone_number_id = reg.phone_number_id;
+          elevenlabsPhoneNumberId = reg.phone_number_id; // Keep updated for trigger event
+          batchResult = await batchCallingService.submitBatchCall(batchParams);
+          console.log('[Automation Controller] ✅ Batch call succeeded after re-registration');
+        } else {
+          throw submitError;
+        }
+      }
+
+      // 2. Save BatchCall record
+      const BatchCall = (await import('../models/BatchCall')).default;
+      await BatchCall.create({
+        userId: req.user?._id,
+        organizationId: new (await import('mongoose')).default.Types.ObjectId(organizationId.toString()),
+        batch_call_id: batchResult.id,
+        name: batchResult.name,
+        agent_id: agentId,
+        status: batchResult.status,
+        phone_number_id: elevenlabsPhoneNumberId,
+        phone_provider: batchResult.phone_provider || 'elevenlabs',
+        created_at_unix: batchResult.created_at_unix,
+        scheduled_time_unix: batchResult.scheduled_time_unix,
+        total_calls_scheduled: contacts.length,
+        last_updated_at_unix: Date.now() / 1000,
+        agent_name: batchResult.agent_name || 'AI Assistant',
+        call_name: batchResult.name,
+        recipients_count: contacts.length,
+        automation_id: automationId ? new (await import('mongoose')).default.Types.ObjectId(automationId.toString()) : undefined
+      });
+
+      // 3. Trigger automation system with batch_call event (for legacy compatibility)
+
       await this.automationService.triggerByEvent('batch_call', {
         event: 'batch_call',
         source: 'list',
         listId,
         contactIds,
+        agent_id: agentId,
+        phone_number_id: elevenlabsPhoneNumberId,
+        batch_id: batchResult.id,
         userId: req.user?._id,
         organizationId: organizationId.toString()
       }, {
@@ -195,7 +349,40 @@ export class AutomationController {
         organizationId: organizationId.toString()
       });
 
-      res.json({ success: true, contactCount: contactIds.length });
+      res.json({ success: true, contactCount: contactIds.length, batchId: batchResult.id });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /**
+   * Extract structured data from conversation using LLM
+   * POST /api/v1/automation/extract-data
+   * Body: { conversation_id: string, extraction_type: 'appointment' | 'lead' }
+   */
+  extractData = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { conversation_id, extraction_type = 'appointment' } = req.body;
+      const organizationId = req.user?.organizationId || req.user?._id;
+
+      if (!conversation_id) {
+        return res.status(400).json({
+          success: false,
+          error: 'conversation_id is required'
+        });
+      }
+
+      if (!organizationId) {
+        throw new Error('Organization ID not found');
+      }
+
+      const result = await this.automationService.extractConversationData(
+        conversation_id,
+        extraction_type,
+        organizationId.toString()
+      );
+
+      res.json(result);
     } catch (error) {
       next(error);
     }
@@ -203,4 +390,3 @@ export class AutomationController {
 }
 
 export const automationController = new AutomationController();
-

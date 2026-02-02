@@ -167,7 +167,7 @@ export class AIBehaviorController {
 
       // Import axios for making HTTP requests
       const axios = (await import('axios')).default;
-      
+
       // Get voice agent settings
       const aiBehavior = await aiBehaviorService.get(userId);
       const voiceAgentPrompt = aiBehavior.voiceAgent.systemPrompt || 'You are a helpful AI voice assistant.';
@@ -178,7 +178,7 @@ export class AIBehaviorController {
       // Get phone settings
       const { phoneSettingsService } = await import('../services/phoneSettings.service');
       const phoneSettings = await phoneSettingsService.get(userId);
-      
+
       // Also check if user has phone numbers in the new PhoneNumber collection
       const mongoose = (await import('mongoose')).default;
       const PhoneNumber = (await import('../models/PhoneNumber')).default;
@@ -189,11 +189,11 @@ export class AIBehaviorController {
           { organizationId: req.user?._id }
         ]
       }) : 0;
-      
+
       // Check if configured via old system OR new system
       const isConfiguredOldSystem = phoneSettings?.isConfigured;
       const isConfiguredNewSystem = phoneNumbersCount > 0 && phoneSettings?.selectedVoice;
-      
+
       if (!phoneSettings || (!isConfiguredOldSystem && !isConfiguredNewSystem)) {
         return res.status(400).json({
           success: false,
@@ -235,16 +235,16 @@ export class AIBehaviorController {
         'archie': 'kmSVBPu7loj4ayNinwWM',
         'adam': 'pNInz6obpgDQGcFmaJgB', // fallback
       };
-      
+
       // Use customVoiceId if provided, otherwise use the mapped voice ID
       const voiceId = phoneSettings.customVoiceId || VOICE_ID_MAP[phoneSettings.selectedVoice] || VOICE_ID_MAP['adam'];
-      
+
       console.log('📢 [AI Behavior Test] Voice Mapping:', {
         selectedVoice: phoneSettings.selectedVoice,
         customVoiceId: phoneSettings.customVoiceId,
         mappedVoiceId: voiceId
       });
-      
+
       // Normalize phone number
       const normalizedPhone = phoneNumber.startsWith('+') ? phoneNumber : '+' + phoneNumber;
 
@@ -254,7 +254,7 @@ export class AIBehaviorController {
         const Settings = (await import('../models/Settings')).default;
         const KnowledgeBase = (await import('../models/KnowledgeBase')).default;
         const settings = await Settings.findOne({ userId: req.user!.id });
-        
+
         if (settings) {
           // Priority 1: Use collection names from Settings (new format - multiple KBs)
           if (settings.defaultKnowledgeBaseNames && settings.defaultKnowledgeBaseNames.length > 0) {
@@ -263,8 +263,8 @@ export class AIBehaviorController {
           }
           // Priority 2: Resolve knowledge base IDs from Settings to collection names
           else if (settings.defaultKnowledgeBaseIds && settings.defaultKnowledgeBaseIds.length > 0) {
-            const knowledgeBases = await KnowledgeBase.find({ 
-              _id: { $in: settings.defaultKnowledgeBaseIds } 
+            const knowledgeBases = await KnowledgeBase.find({
+              _id: { $in: settings.defaultKnowledgeBaseIds }
             }).select('collectionName').lean();
             collectionNames = knowledgeBases.map((kb: any) => kb.collectionName).filter(Boolean);
             console.log(`[Test Call] Resolved knowledge base IDs to collection names:`, collectionNames);
@@ -283,7 +283,7 @@ export class AIBehaviorController {
             }
           }
         }
-        
+
         // Priority 5: Use knowledge base from AI Behavior (if settings didn't have one)
         if (collectionNames.length === 0 && aiBehavior.knowledgeBaseId) {
           const kb = await KnowledgeBase.findById(aiBehavior.knowledgeBaseId).select('collectionName').lean();
@@ -292,7 +292,7 @@ export class AIBehaviorController {
             console.log(`[Test Call] Using knowledge base from AI Behavior:`, collectionNames);
           }
         }
-        
+
         // CRITICAL: Fail loudly if no KB found - NO DEFAULT FALLBACK
         if (collectionNames.length === 0) {
           throw new AppError(400, 'NO_KNOWLEDGE_BASE', 'No knowledge base configured. Please configure a knowledge base in Settings → Knowledge Base.');
@@ -318,17 +318,17 @@ export class AIBehaviorController {
       if (testGreetingMessage && (testGreetingMessage.includes('{{name}}') || testGreetingMessage.includes('{{email}}') || testGreetingMessage.includes('{{phone}}'))) {
         try {
           const { renderGreeting, getDefaultGreeting } = await import('../utils/greetingRenderer');
-          
+
           // Prepare test contact data
           const testContactData = {
             name: 'Test User',
             email: 'test@example.com',
             phone: normalizedPhone || ''
           };
-          
+
           // Render the greeting template with test contact data
           const renderingResult = renderGreeting(testGreetingMessage, testContactData, 'Test User');
-          
+
           if (renderingResult.success) {
             renderedGreetingMessage = renderingResult.rendered;
             console.log(`[Test Call] ✅ Greeting rendered: "${testGreetingMessage}" -> "${renderedGreetingMessage}"`);
@@ -370,7 +370,7 @@ export class AIBehaviorController {
       if (ecommerceCredentials) {
         callRequestBody.ecommerce_credentials = ecommerceCredentials;
       }
-      
+
       console.log('📝 [Test Call] Call Configuration:');
       console.log('   - Greeting:', callRequestBody.greeting_message);
       console.log('   - Knowledge Bases (collection_names):', JSON.stringify(callRequestBody.collection_names));
@@ -385,7 +385,7 @@ export class AIBehaviorController {
       }
 
       const callUrl = `${COMM_API}/calls/outbound`;
-      
+
       console.log('\n========== TEST VOICE AGENT - OUTBOUND CALL ==========');
       console.log('📞 [AI Behavior Test] URL:', callUrl);
       console.log('📦 [AI Behavior Test] Request Summary:');
@@ -416,16 +416,16 @@ export class AIBehaviorController {
       if (callResponse.data.status === 'success' && callResponse.data.details?.caller_id) {
         try {
           const { conversationService } = await import('../services/conversation.service');
-          
+
           // Get organizationId - fallback to userId if not set
-          const organizationId = req.user!.organizationId 
-            ? (typeof req.user!.organizationId === 'string' 
-                ? req.user!.organizationId 
-                : req.user!.organizationId.toString())
+          const organizationId = req.user!.organizationId
+            ? (typeof req.user!.organizationId === 'string'
+              ? req.user!.organizationId
+              : req.user!.organizationId.toString())
             : req.user!.id;
-          
+
           console.log(`[Test Call] Creating conversation with organizationId: ${organizationId}`);
-          
+
           const conversation = await conversationService.createForOutboundCall({
             userId: req.user!.id,
             organizationId: organizationId,
@@ -455,13 +455,13 @@ export class AIBehaviorController {
       });
     } catch (error: any) {
       console.error('[AI Behavior] Test voice agent error:', error);
-      
+
       // Return JSON error response instead of HTML
-      const errorMessage = error.response?.data?.detail 
-        || error.response?.data?.message 
-        || error.message 
+      const errorMessage = error.response?.data?.detail
+        || error.response?.data?.message
+        || error.message
         || 'Failed to initiate test call';
-      
+
       return res.status(error.response?.status || 500).json({
         success: false,
         error: {

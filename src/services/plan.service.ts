@@ -112,93 +112,70 @@ export class PlanService {
   }
 
   /**
-   * Assign plan to individual user (user-based system)
+   * Assign plan to organization (or user's organization)
    */
-  async assignPlanToOrganization(organizationIdOrUserId: string, planIdOrSlug: string) {
+  async assignPlanToOrganization(orgIdOrUserId: string, planIdOrSlug: string) {
     try {
-      // Try to find by ID if it's a valid ObjectId, otherwise find by slug
+      // 1. Find Plan
       let plan;
       if (mongoose.Types.ObjectId.isValid(planIdOrSlug)) {
         plan = await Plan.findById(planIdOrSlug);
       }
-
       if (!plan) {
         plan = await Plan.findOne({ slug: planIdOrSlug });
       }
+      if (!plan) throw new Error('Plan not found');
 
-      if (!plan) {
-        throw new Error('Plan not found');
+      // 2. Resolve Organization
+      let orgId = orgIdOrUserId;
+      if (mongoose.Types.ObjectId.isValid(orgIdOrUserId)) {
+        const user = await User.findById(orgIdOrUserId);
+        if (user && user.organizationId) {
+          orgId = user.organizationId.toString();
+          // Update user legacy field
+          user.selectedProfile = plan.slug;
+          await user.save();
+        } else if (user) {
+          // User has no org?
+          throw new Error('User has no organization');
+        }
       }
 
-      // Find the specific user (NOT organization)
-      const user = await User.findById(organizationIdOrUserId);
+      const org = await Organization.findById(orgId);
+      if (!org) throw new Error('Organization not found');
 
-      if (!user) {
-        throw new Error('User not found');
-      }
+      // 3. Update Organization
+      org.plan = plan.slug;
+      org.planId = plan._id as mongoose.Types.ObjectId;
+      await org.save();
 
-      // Update ONLY this user's plan (not all users)
-      user.selectedProfile = plan.slug;
-      await user.save();
+      logger.info(`✅ Assigned plan ${plan.name} to Org ${org._id}`);
 
-      logger.info(`✅ Assigned plan ${plan.name} to user ${user.email} ONLY`);
-
-      // Update or create profile for THIS USER ONLY
-
-      const now = new Date();
-      const billingCycleEnd = new Date(now);
-      billingCycleEnd.setMonth(billingCycleEnd.getMonth() + 1);
-
-      // Update or create profile for THIS USER ONLY
-      let profile = await Profile.findOne({ userId: user._id });
-
+      // 4. Ensure Profile (Usage Tracker) exists
+      let profile = await Profile.findOne({ organizationId: org._id });
       if (!profile) {
+        const now = new Date();
+        const end = new Date(now);
+        end.setMonth(end.getMonth() + 1);
         profile = await Profile.create({
-          userId: user._id,
-          profileType: plan.slug as any,
-          chatConversationsLimit: plan.features.chatConversations,
-          voiceMinutesLimit: plan.features.callMinutes,
-          automationsLimit: plan.features.automations,
-          chatConversationsUsed: 0,
-          voiceMinutesUsed: 0,
-          automationsUsed: 0,
+          organizationId: org._id,
           billingCycleStart: now,
-          billingCycleEnd,
+          billingCycleEnd: end,
           isActive: true
         });
-        logger.info(`✅ Created new profile for ${user.email}`);
-      } else {
-        profile.profileType = plan.slug as any;
-        profile.chatConversationsLimit = plan.features.chatConversations;
-        profile.voiceMinutesLimit = plan.features.callMinutes;
-        profile.automationsLimit = plan.features.automations;
-        profile.billingCycleStart = now;
-        profile.billingCycleEnd = billingCycleEnd;
-        profile.isActive = true;
-        await profile.save();
-        logger.info(`✅ Updated profile for ${user.email}`);
       }
 
       return {
-        message: 'Plan assigned successfully to individual user',
-        user: {
-          _id: user._id,
-          email: user.email,
-          name: `${user.firstName} ${user.lastName}`,
-          plan: user.selectedProfile
+        message: 'Plan assigned successfully',
+        organization: {
+          _id: org._id,
+          name: org.name,
+          plan: org.plan
         },
         plan: {
           _id: plan._id,
           name: plan.name,
-          slug: plan.slug,
-          features: plan.features
-        },
-        profile: {
-          _id: profile._id,
-          limits: {
-            calls: profile.voiceMinutesLimit,
-            chats: profile.chatConversationsLimit
-          }
+          slug: plan.slug
         }
       };
     } catch (error: any) {

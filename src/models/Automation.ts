@@ -2,7 +2,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 
 export interface IAutomationNode {
   id: string;
-  type: 'trigger' | 'delay' | 'action';
+  type: 'trigger' | 'delay' | 'action' | 'condition';
   service: string;
   config: Record<string, any>;
   position: number;
@@ -40,7 +40,7 @@ const AutomationSchema = new Schema<IAutomation>({
     id: { type: String, required: true },
     type: {
       type: String,
-      enum: ['trigger', 'delay', 'action'],
+      enum: ['trigger', 'delay', 'action', 'condition'],
       required: true
     },
     service: { type: String, required: true },

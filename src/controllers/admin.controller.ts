@@ -224,7 +224,7 @@ export class AdminController {
         });
       }
 
-      const result = await this.adminService.upgradeUserPlan(userId, profileType, organizationPlan);
+      const result = await this.adminService.upgradeUserPlan(userId, profileType);
       res.json(successResponse(result));
     } catch (error: any) {
       next(error);

@@ -24,6 +24,8 @@ export interface IBatchCall extends Document {
   sender_email?: string;
   resultsProcessed?: boolean; // Track if conversations have been created from results
   conversations_synced?: boolean; // Track if conversations have been synced to Conversations
+  automation_id?: mongoose.Types.ObjectId; // Link to automation that triggered this batch
+  syncErrorCount?: number; // Number of times sync has failed
   createdAt: Date;
   updatedAt: Date;
 }
@@ -122,6 +124,15 @@ const BatchCallSchema = new Schema<IBatchCall>({
   conversations_synced: {
     type: Boolean,
     default: false
+  },
+  automation_id: {
+    type: Schema.Types.ObjectId,
+    ref: 'Automation',
+    index: true
+  },
+  syncErrorCount: {
+    type: Number,
+    default: 0
   }
 }, { timestamps: true });
 

@@ -25,4 +25,7 @@ router.get('/:jobId', batchCallingController.getBatchJobStatus);
 // POST /api/v1/batch-calling/:jobId/cancel - Cancel batch job
 router.post('/:jobId/cancel', batchCallingController.cancelBatchJob);
 
+// POST /api/v1/batch-calling/:jobId/sync - Manually sync batch call conversations
+router.post('/:jobId/sync', batchCallingController.syncBatchCallConversations);
+
 export default router;

@@ -53,21 +53,24 @@ export class GoogleCalendarService {
     event: CalendarEvent,
     calendarId: string = 'primary'
   ): Promise<{ eventId: string; htmlLink: string; hangoutLink?: string }> {
+    // 🛡️ Strict Unit-Level Validation
+    if (!event.start?.dateTime || isNaN(new Date(event.start.dateTime).getTime())) {
+      throw new AppError(400, 'VALIDATION_ERROR', `Invalid start dateTime: ${event.start?.dateTime}`);
+    }
+    if (!event.end?.dateTime || isNaN(new Date(event.end.dateTime).getTime())) {
+      throw new AppError(400, 'VALIDATION_ERROR', `Invalid end dateTime: ${event.end?.dateTime}`);
+    }
+
     try {
-      // Get integration - prioritize user-level lookup
       const query: any = {
         userId,
         status: 'active',
         'services.calendar': true
       };
 
-      // Only include organizationId if provided, though userId should be enough for "user-level"
-      if (organizationId) {
-        query.organizationId = organizationId;
-      }
+      if (organizationId) query.organizationId = organizationId;
 
       const integration = await GoogleIntegration.findOne(query);
-
       if (!integration) {
         throw new AppError(404, 'NOT_FOUND', 'Google Calendar integration not found');
       }
@@ -78,10 +81,9 @@ export class GoogleCalendarService {
       const response = await calendar.events.insert({
         calendarId,
         requestBody: event,
-        conferenceDataVersion: 1 // Enable Google Meet
+        conferenceDataVersion: 1
       });
 
-      // Update last synced
       integration.lastSyncedAt = new Date();
       await integration.save();
 
@@ -124,8 +126,8 @@ export class GoogleCalendarService {
 
       const response = await calendar.events.list({
         calendarId,
-        timeMin: timeMin ? timeMin.toISOString() : new Date().toISOString(),
-        timeMax: timeMax?.toISOString(),
+        timeMin: timeMin && !isNaN(timeMin.getTime()) ? timeMin.toISOString() : new Date().toISOString(),
+        timeMax: timeMax && !isNaN(timeMax.getTime()) ? timeMax.toISOString() : undefined,
         maxResults,
         singleEvents: true,
         orderBy: 'startTime'
@@ -254,6 +256,16 @@ export class GoogleCalendarService {
     timeMax: Date,
     calendarIds: string[] = ['primary']
   ): Promise<any> {
+    // 🛡️ Strict Defensive Guard
+    if (!(timeMin instanceof Date) || isNaN(timeMin.getTime())) {
+      console.warn(`[Google Calendar] ⚠️  Invalid timeMin for user ${userId}`);
+      return null;
+    }
+    if (!(timeMax instanceof Date) || isNaN(timeMax.getTime())) {
+      console.warn(`[Google Calendar] ⚠️  Invalid timeMax for user ${userId}`);
+      return null;
+    }
+
     try {
       const integration = await GoogleIntegration.findOne({
         userId,
@@ -286,4 +298,3 @@ export class GoogleCalendarService {
 }
 
 export const googleCalendarService = new GoogleCalendarService();
-

@@ -204,8 +204,8 @@ export class BatchCallingController {
       }
 
       // Helper to submit batch call (used for initial attempt and retry after re-register)
-      const doSubmit = (elevenLabsId: string) =>
-        batchCallingService.submitBatchCall({
+      const doSubmit = (elevenLabsId: string) => {
+        const payload = {
           agent_id,
           call_name,
           recipients: recipients.map((r: any) => ({
@@ -218,7 +218,23 @@ export class BatchCallingController {
           sender_email,
           phone_number_id: elevenLabsId,
           ecommerce_credentials
-        });
+        };
+
+        // Log complete payload before submitting
+        console.log('\n========================================');
+        console.log('[Batch Calling Controller] 📋 COMPLETE REQUEST PAYLOAD:');
+        console.log('========================================');
+        console.log(JSON.stringify(payload, null, 2));
+        console.log('========================================');
+        console.log('Recipients count:', payload.recipients.length);
+        console.log('Agent ID:', payload.agent_id);
+        console.log('Phone Number ID:', payload.phone_number_id);
+        console.log('Sender Email:', payload.sender_email || 'not provided');
+        console.log('Has Ecommerce:', !!payload.ecommerce_credentials);
+        console.log('========================================\n');
+
+        return batchCallingService.submitBatchCall(payload);
+      };
 
       // Call Python service to submit batch call
       console.log('[Batch Calling Controller] Calling Python service...');
@@ -645,6 +661,67 @@ export class BatchCallingController {
       res.status(200).json({
         success: true,
         data: result
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Manually sync batch call conversations
+   * POST /api/v1/batch-calling/:jobId/sync
+   */
+  async syncBatchCallConversations(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { jobId } = req.params;
+      
+      if (!jobId) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MISSING_JOB_ID',
+            message: 'Job ID is required'
+          }
+        });
+      }
+
+      // Verify the batch call belongs to the user's organization
+      const BatchCall = (await import('../models/BatchCall')).default;
+      const organizationId = req.user?.organizationId || req.user?._id;
+      
+      if (!organizationId) {
+        return res.status(401).json({
+          success: false,
+          error: "Unauthorized",
+          detail: "Organization ID or User ID not found"
+        });
+      }
+
+      const batchCall = await BatchCall.findOne({
+        batch_call_id: jobId,
+        organizationId: organizationId instanceof mongoose.Types.ObjectId 
+          ? organizationId 
+          : new mongoose.Types.ObjectId(organizationId.toString())
+      }).lean();
+
+      if (!batchCall) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'BATCH_CALL_NOT_FOUND',
+            message: 'Batch call not found or does not belong to your organization'
+          }
+        });
+      }
+
+      console.log(`[Batch Calling Controller] 🔄 Manually syncing conversations for batch call: ${jobId}`);
+
+      // Sync conversations
+      await batchCallingService.syncBatchCallConversations(jobId, organizationId.toString());
+
+      res.status(200).json({
+        success: true,
+        message: 'Batch call conversations synced successfully'
       });
     } catch (error) {
       next(error);

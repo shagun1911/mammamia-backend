@@ -44,6 +44,7 @@ import phoneNumberRoutes from './routes/phoneNumber.routes';
 import sipTrunkRoutes from './routes/sipTrunk.routes';
 import batchCallingRoutes from './routes/batchCalling.routes';
 import emailWebhookRoutes from './routes/emailWebhook.routes';
+// import toolWebhookRoutes from './routes/toolWebhook.routes'; // DISABLED - calendar only in automations
 
 import instagramWebhookRoutes from './routes/instagramWebhook.routes';
 import adminRoutes from './routes/admin.routes';
@@ -205,6 +206,8 @@ app.use('/api/v1/phone-numbers', phoneNumberRoutes);
 app.use('/api/v1/sip-trunk', sipTrunkRoutes);
 app.use('/api/v1/batch-calling', batchCallingRoutes);
 app.use('/api/v1/webhook', emailWebhookRoutes); // Email webhook for Python API (agent email tool)
+// DISABLED: Calendar booking only through automations, not during live calls
+// app.use('/api/v1/tools/webhook', toolWebhookRoutes); // Tool webhooks for ElevenLabs voice agents
 app.use('/api/v1/whatsapp', whatsappRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/plans', planRoutes);

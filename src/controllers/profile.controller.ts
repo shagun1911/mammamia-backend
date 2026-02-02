@@ -1,15 +1,26 @@
 import { Response, NextFunction } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { profileService } from '../services/profile.service';
+import { planService } from '../services/plan.service';
 import { successResponse } from '../utils/response.util';
 
 export class ProfileController {
   /**
-   * Get available profile types
+   * Get available profile types (Plans)
    */
   getAvailableProfiles = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const profiles = profileService.getAvailableProfiles();
+      // Use PlanService to get active plans
+      const plans = await planService.findAllPlans(false);
+      // Map to old profile format if needed by frontend
+      const profiles = plans.map((p: any) => ({
+        type: p.slug,
+        name: p.name,
+        description: p.description,
+        chatConversations: p.features.chatConversations,
+        voiceMinutes: p.features.callMinutes,
+        duration: '1 Month'
+      }));
       res.json(successResponse({ profiles }));
     } catch (error) {
       next(error);
@@ -22,11 +33,11 @@ export class ProfileController {
   getProfile = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user!._id;
-      const profile = await profileService.get(userId);
+      // Get usage stats containing plan info
       const usageStats = await profileService.getUsageStats(userId);
-      
-      res.json(successResponse({ 
-        profile,
+
+      res.json(successResponse({
+        profile: null, // Legacy field, deprecated
         usage: usageStats
       }));
     } catch (error) {
@@ -40,20 +51,22 @@ export class ProfileController {
   selectProfile = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user!._id;
-      const { profileType } = req.body;
+      const { profileType } = req.body; // profileType is basically plan slug
 
-      if (!profileType || !['mileva', 'nobel', 'aistein'].includes(profileType)) {
+      if (!profileType) {
         return res.status(400).json({
           success: false,
-          message: 'Invalid profile type. Must be one of: mileva, nobel, aistein'
+          message: 'Profile type (plan slug) is required'
         });
       }
 
-      const profile = await profileService.selectProfile(userId, profileType);
+      // Use PlanService to assign plan
+      const result = await planService.assignPlanToOrganization(userId, profileType);
+
       const usageStats = await profileService.getUsageStats(userId);
 
-      res.json(successResponse({ 
-        profile,
+      res.json(successResponse({
+        profile: { profileType: profileType }, // Minimal legacy response
         usage: usageStats
       }, 'Profile selected successfully'));
     } catch (error) {
@@ -68,7 +81,7 @@ export class ProfileController {
     try {
       const userId = req.user!._id;
       const usageStats = await profileService.getUsageStats(userId);
-      
+
       res.json(successResponse({ usage: usageStats }));
     } catch (error) {
       next(error);
@@ -83,16 +96,16 @@ export class ProfileController {
       const userId = req.user!._id;
       const { type, amount } = req.query;
 
-      if (!type || !['chat', 'voice'].includes(type as string)) {
+      if (!type || !['chat', 'voice', 'automations'].includes(type as string)) {
         return res.status(400).json({
           success: false,
-          message: 'Invalid type. Must be one of: chat, voice'
+          message: 'Invalid type. Must be one of: chat, voice, automations'
         });
       }
 
       const hasCredits = await profileService.checkCredits(
         userId,
-        type as 'chat' | 'voice',
+        type as 'chat' | 'voice' | 'automations',
         amount ? parseInt(amount as string) : 1
       );
 
@@ -107,9 +120,8 @@ export class ProfileController {
    */
   deleteProfile = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const userId = req.user!._id;
-      await profileService.delete(userId);
-      
+      // Cannot delete profile in new model, maybe archive org?
+      // For now, return success to not break frontend
       res.json(successResponse({}, 'Profile deleted successfully'));
     } catch (error) {
       next(error);

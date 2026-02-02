@@ -795,7 +795,7 @@ export class SipTrunkService {
       try {
         // Get phone_number_id from ElevenLabs
         const phone_number_id = await this.getPhoneNumberIdByPhoneNumber(phone_number);
-        
+
         if (!phone_number_id) {
           results.push({
             phone_number,
@@ -808,7 +808,7 @@ export class SipTrunkService {
 
         // Assign agent
         await this.assignAgentToPhoneNumber(phone_number_id, agent_id);
-        
+
         results.push({
           phone_number,
           phone_number_id,
@@ -1050,21 +1050,31 @@ export class SipTrunkService {
         }
       }
 
-      // Check if it's a 404 for phone number not found
-      if (error.response?.status === 404 &&
-        (error.response?.data?.detail?.includes('not found') ||
-          error.response?.data?.message?.includes('not found') ||
-          error.response?.data?.detail?.includes('Document with id') ||
-          error.response?.data?.message?.includes('Document with id'))) {
+      // Check if it's a 404 for agent or phone number not found
+      if (error.response?.status === 404) {
+        const detail = error.response?.data?.detail || error.response?.data?.message || '';
 
-        console.warn('[SIP Trunk Service] ⚠️ Phone number ID not found in Python API:', data.agent_phone_number_id);
-        console.warn('[SIP Trunk Service] ⚠️ Error detail:', error.response?.data?.detail || error.response?.data?.message);
-        // Throw a specific error that the controller can catch and handle
-        throw new AppError(
-          404,
-          'PHONE_NUMBER_NOT_FOUND_IN_API',
-          `Phone number ID ${data.agent_phone_number_id} not found in Python API. The phone number may need to be re-registered.`
-        );
+        if (detail.includes('agent') || detail.includes('agent_')) {
+          console.error('[SIP Trunk Service] ❌ Agent ID not found in Python API:', data.agent_id);
+          throw new AppError(
+            404,
+            'AGENT_NOT_FOUND_IN_API',
+            `Agent ID ${data.agent_id} not found in Python API. Please ensure the agent exists and is synced.`
+          );
+        }
+
+        if (detail.includes('phone_number') || detail.includes('phnum_') || detail.includes('Document with id phnum_')) {
+          console.warn('[SIP Trunk Service] ⚠️ Phone number ID not found in Python API:', data.agent_phone_number_id);
+          throw new AppError(
+            404,
+            'PHONE_NUMBER_NOT_FOUND_IN_API',
+            `Phone number ID ${data.agent_phone_number_id} not found in Python API. The phone number may need to be re-registered.`
+          );
+        }
+
+        // Generic 404 fallback
+        console.error('[SIP Trunk Service] ❌ Resource not found (404):', detail);
+        throw new AppError(404, 'RESOURCE_NOT_FOUND', detail || 'Voice service resource not found');
       }
 
       console.error('[SIP Trunk Service] ❌ Twilio outbound call failed:', error.response?.data || error.message);
@@ -1138,26 +1148,26 @@ export class SipTrunkService {
         },
         dynamic_variables: dynamicVariables // ALWAYS include - never omit
       };
-      
+
       // Add secure e-commerce credentials if valid
-      if (ecommerceCredentials && 
-          ecommerceCredentials.api_key && 
-          ecommerceCredentials.api_secret && 
-          ecommerceCredentials.base_url && 
-          ecommerceCredentials.platform) {
-            body.ecommerce_credentials = {
-              api_key: ecommerceCredentials.api_key,
-              api_secret: ecommerceCredentials.api_secret,
-              base_url: ecommerceCredentials.base_url,
-              platform: ecommerceCredentials.platform,
-              access_token: ecommerceCredentials.access_token
-            };
+      if (ecommerceCredentials &&
+        ecommerceCredentials.api_key &&
+        ecommerceCredentials.api_secret &&
+        ecommerceCredentials.base_url &&
+        ecommerceCredentials.platform) {
+        body.ecommerce_credentials = {
+          api_key: ecommerceCredentials.api_key,
+          api_secret: ecommerceCredentials.api_secret,
+          base_url: ecommerceCredentials.base_url,
+          platform: ecommerceCredentials.platform,
+          access_token: ecommerceCredentials.access_token
+        };
       }
 
       if (data.sender_email) {
         body.sender_email = data.sender_email;
       }
-      
+
       console.log('[SIP Trunk Service] ✅ Final outbound payload constructed (Strict Schema)');
 
       console.log('[SIP Trunk Service] ✅ Final outbound payload constructed (Strict Schema)');
