@@ -3,33 +3,23 @@
   "call_name": "new",
   "recipients": [
     {
-      "phone_number": "917230088638",
-      "name": "Lovjeet",
-      "email": "lovjeet_s@me.iitr.ac.in",
-      "dynamic_variables": {
-        "name": "Lovjeet",
-        "customer_name": "Lovjeet",
-        "email": "lovjeet_s@me.iitr.ac.in"
-      }
-    },
-    {
-      "phone_number": "919896941400",
+      "phone_number": "+919896941400",
       "name": "Shagun",
-      "email": "19shagunyadavnnl@gmail.com",
+      "email": "shagun@gmail.com",
       "dynamic_variables": {
         "name": "Shagun",
         "customer_name": "Shagun",
-        "email": "19shagunyadavnnl@gmail.com"
+        "email": "shagun@gmail.com"
       }
     },
     {
-      "phone_number": "918979145539",
-      "name": "Vivek",
-      "email": "champvivek05@gmail.com",
+      "phone_number": "+919811223344",
+      "name": "Rohan",
+      "email": "rohan.verma@test.com",
       "dynamic_variables": {
-        "name": "Vivek",
-        "customer_name": "Vivek",
-        "email": "champvivek05@gmail.com"
+        "name": "Rohan",
+        "customer_name": "Rohan",
+        "email": "rohan.verma@test.com"
       }
     }
   ],
