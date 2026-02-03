@@ -203,6 +203,21 @@ export class PhoneNumberController {
    * HARD STOP: No agent config, no phone settings update
    */
   createSipTrunk = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    // ============================================================================
+    // STEP 3: CONTROLLER ENTRY LOGS (HARD REQUIREMENT)
+    // This log MUST appear even if validation fails
+    // ============================================================================
+    console.log('🔥 [CONTROLLER HIT] createSipTrunk ============================');
+    console.log('🔥 [CONTROLLER HIT] Method:', req.method);
+    console.log('🔥 [CONTROLLER HIT] Original URL:', req.originalUrl);
+    console.log('🔥 [CONTROLLER HIT] Params:', JSON.stringify(req.params, null, 2));
+    console.log('🔥 [CONTROLLER HIT] Body:', JSON.stringify(req.body, null, 2));
+    console.log('🔥 [CONTROLLER HIT] User:', req.user ? {
+      id: req.user._id || req.user.id,
+      organizationId: req.user.organizationId
+    } : 'MISSING');
+    console.log('🔥 [CONTROLLER HIT] ===========================================');
+    
     try {
       const {
         label,
@@ -333,6 +348,15 @@ export class PhoneNumberController {
           console.warn('[PhoneNumber Controller] ⚠️ Outbound calls will fail until phone number is registered with ElevenLabs');
         }
       }
+
+      // ============================================================================
+      // STEP 6: FINAL EXECUTION MARKER
+      // Log before sending response to prove full execution path
+      // ============================================================================
+      console.log('✅ [OPERATION COMPLETED] createSipTrunk ===================');
+      console.log('✅ [OPERATION COMPLETED] Status Code: 201');
+      console.log('✅ [OPERATION COMPLETED] Phone Number ID:', phoneNumberId);
+      console.log('✅ [OPERATION COMPLETED] ===================================');
 
       // 🔴 VERY IMPORTANT: HARD RETURN - NOTHING AFTER THIS
       return res.status(201).json({
@@ -557,6 +581,21 @@ export class PhoneNumberController {
    * Updates phone number configuration (e.g., assign agent, update SIP trunk settings)
    */
   update = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    // ============================================================================
+    // STEP 3: CONTROLLER ENTRY LOGS (HARD REQUIREMENT)
+    // This log MUST appear even if validation fails
+    // ============================================================================
+    console.log('🔥 [CONTROLLER HIT] update ===================================');
+    console.log('🔥 [CONTROLLER HIT] Method:', req.method);
+    console.log('🔥 [CONTROLLER HIT] Original URL:', req.originalUrl);
+    console.log('🔥 [CONTROLLER HIT] Params:', JSON.stringify(req.params, null, 2));
+    console.log('🔥 [CONTROLLER HIT] Body:', JSON.stringify(req.body, null, 2));
+    console.log('🔥 [CONTROLLER HIT] User:', req.user ? {
+      id: req.user._id || req.user.id,
+      organizationId: req.user.organizationId
+    } : 'MISSING');
+    console.log('🔥 [CONTROLLER HIT] ===========================================');
+    
     try {
       const { phone_number_id } = req.params;
       const {
@@ -571,6 +610,7 @@ export class PhoneNumberController {
       const organizationId = req.user?.organizationId || req.user?._id;
 
       if (!organizationId) {
+        console.error('❌ [UPDATE] Unauthorized - No organizationId or userId');
         return res.status(401).json({
           success: false,
           error: "Unauthorized",
@@ -578,17 +618,68 @@ export class PhoneNumberController {
         });
       }
 
-      const phoneNumber = await PhoneNumber.findOne({
-        phone_number_id,
-        organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString())
-      });
-
+      // ============================================================================
+      // STEP 4: FAIL FAST ON PATCH LOOKUP
+      // Support BOTH organizationId and userId ownership
+      // ============================================================================
+      const orgId = organizationId instanceof mongoose.Types.ObjectId 
+        ? organizationId 
+        : new mongoose.Types.ObjectId(organizationId.toString());
+      const userObjId = userId ? (userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId.toString())) : null;
+      
+      // Build query to match EITHER organizationId OR userId
+      const query: any = {
+        phone_number_id
+      };
+      
+      // Match by organizationId OR userId (for backward compatibility)
+      if (userObjId && orgId.toString() !== userObjId.toString()) {
+        query.$or = [
+          { organizationId: orgId },
+          { organizationId: userObjId },
+          { userId: userObjId }
+        ];
+      } else {
+        query.organizationId = orgId;
+      }
+      
+      console.log('🔎 [DATABASE LOOKUP] Searching for phone number...');
+      console.log('🔎 [DATABASE LOOKUP] Phone Number ID:', phone_number_id);
+      console.log('🔎 [DATABASE LOOKUP] Organization ID:', orgId.toString());
+      console.log('🔎 [DATABASE LOOKUP] User ID:', userObjId ? userObjId.toString() : 'N/A');
+      console.log('🔎 [DATABASE LOOKUP] Query:', JSON.stringify(query, null, 2));
+      
+      const phoneNumber = await PhoneNumber.findOne(query);
+      
       if (!phoneNumber) {
+        // ============================================================================
+        // STEP 4: FAIL FAST - Log 404 with full context
+        // ============================================================================
+        console.error('❌ [UPDATE] Phone number not found (404) ================');
+        console.error('❌ [UPDATE] Phone Number ID:', phone_number_id);
+        console.error('❌ [UPDATE] Organization ID:', orgId.toString());
+        console.error('❌ [UPDATE] User ID:', userObjId ? userObjId.toString() : 'N/A');
+        console.error('❌ [UPDATE] Query used:', JSON.stringify(query, null, 2));
+        console.error('❌ [UPDATE] ============================================');
+        
         return res.status(404).json({
           success: false,
           error: "Phone number not found",
           detail: `Phone number with ID ${phone_number_id} not found`
         });
+      }
+      
+      // Log which ownership field matched
+      if (phoneNumber.organizationId) {
+        const matchedOrgId = phoneNumber.organizationId.toString();
+        if (matchedOrgId === orgId.toString()) {
+          console.log('🔎 [DATABASE LOOKUP] ✅ Matched by organizationId');
+        } else if (userObjId && matchedOrgId === userObjId.toString()) {
+          console.log('🔎 [DATABASE LOOKUP] ✅ Matched by organizationId (legacy userId)');
+        }
+      }
+      if (phoneNumber.userId && userObjId && phoneNumber.userId.toString() === userObjId.toString()) {
+        console.log('🔎 [DATABASE LOOKUP] ✅ Matched by userId');
       }
 
       // Validate agent_id if provided
@@ -708,6 +799,15 @@ export class PhoneNumberController {
         response.outbound_trunk_config = phoneNumber.outbound_trunk_config;
       }
 
+      // ============================================================================
+      // STEP 6: FINAL EXECUTION MARKER
+      // Log before sending response to prove full execution path
+      // ============================================================================
+      console.log('✅ [OPERATION COMPLETED] update ============================');
+      console.log('✅ [OPERATION COMPLETED] Status Code: 200');
+      console.log('✅ [OPERATION COMPLETED] Phone Number ID:', phoneNumber.phone_number_id);
+      console.log('✅ [OPERATION COMPLETED] ===================================');
+
       return res.json(response);
     } catch (err: any) {
       console.error('[PhoneNumber Controller] Update Error:', err);
@@ -729,12 +829,28 @@ export class PhoneNumberController {
    * - PhoneSettings references (if inbound)
    */
   delete = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    // ============================================================================
+    // STEP 3: CONTROLLER ENTRY LOGS (HARD REQUIREMENT)
+    // This log MUST appear even if validation fails
+    // ============================================================================
+    console.log('🔥 [CONTROLLER HIT] delete ===================================');
+    console.log('🔥 [CONTROLLER HIT] Method:', req.method);
+    console.log('🔥 [CONTROLLER HIT] Original URL:', req.originalUrl);
+    console.log('🔥 [CONTROLLER HIT] Params:', JSON.stringify(req.params, null, 2));
+    console.log('🔥 [CONTROLLER HIT] Body:', JSON.stringify(req.body, null, 2));
+    console.log('🔥 [CONTROLLER HIT] User:', req.user ? {
+      id: req.user._id || req.user.id,
+      organizationId: req.user.organizationId
+    } : 'MISSING');
+    console.log('🔥 [CONTROLLER HIT] ===========================================');
+    
     try {
       const { phone_number_id } = req.params;
       const organizationId = req.user?.organizationId || req.user?._id;
       const userId = req.user?._id?.toString() || req.user?.id?.toString();
 
       if (!organizationId || !userId) {
+        console.error('❌ [DELETE] Unauthorized - No organizationId or userId');
         return res.status(401).json({
           success: false,
           error: "Unauthorized",
@@ -742,18 +858,69 @@ export class PhoneNumberController {
         });
       }
 
+      // ============================================================================
+      // STEP 4: FAIL FAST ON DELETE LOOKUP
+      // Support BOTH organizationId and userId ownership (same as update)
+      // ============================================================================
+      const orgId = organizationId instanceof mongoose.Types.ObjectId 
+        ? organizationId 
+        : new mongoose.Types.ObjectId(organizationId.toString());
+      const userObjId = userId ? (userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId.toString())) : null;
+      
+      // Build query to match EITHER organizationId OR userId
+      const query: any = {
+        phone_number_id
+      };
+      
+      // Match by organizationId OR userId (for backward compatibility)
+      if (userObjId && orgId.toString() !== userObjId.toString()) {
+        query.$or = [
+          { organizationId: orgId },
+          { organizationId: userObjId },
+          { userId: userObjId }
+        ];
+      } else {
+        query.organizationId = orgId;
+      }
+      
+      console.log('🔎 [DATABASE LOOKUP] Searching for phone number to delete...');
+      console.log('🔎 [DATABASE LOOKUP] Phone Number ID:', phone_number_id);
+      console.log('🔎 [DATABASE LOOKUP] Organization ID:', orgId.toString());
+      console.log('🔎 [DATABASE LOOKUP] User ID:', userObjId ? userObjId.toString() : 'N/A');
+      console.log('🔎 [DATABASE LOOKUP] Query:', JSON.stringify(query, null, 2));
+      
       // First, find the phone number to get its details before deleting
-      const phoneNumber = await PhoneNumber.findOne({
-        phone_number_id,
-        organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString())
-      });
+      const phoneNumber = await PhoneNumber.findOne(query);
 
       if (!phoneNumber) {
+        // ============================================================================
+        // STEP 4: FAIL FAST - Log 404 with full context
+        // ============================================================================
+        console.error('❌ [DELETE] Phone number not found (404) ================');
+        console.error('❌ [DELETE] Phone Number ID:', phone_number_id);
+        console.error('❌ [DELETE] Organization ID:', orgId.toString());
+        console.error('❌ [DELETE] User ID:', userObjId ? userObjId.toString() : 'N/A');
+        console.error('❌ [DELETE] Query used:', JSON.stringify(query, null, 2));
+        console.error('❌ [DELETE] ============================================');
+        
         return res.status(404).json({
           success: false,
           error: "Phone number not found",
           detail: `Phone number with ID ${phone_number_id} not found`
         });
+      }
+      
+      // Log which ownership field matched
+      if (phoneNumber.organizationId) {
+        const matchedOrgId = phoneNumber.organizationId.toString();
+        if (matchedOrgId === orgId.toString()) {
+          console.log('🔎 [DATABASE LOOKUP] ✅ Matched by organizationId');
+        } else if (userObjId && matchedOrgId === userObjId.toString()) {
+          console.log('🔎 [DATABASE LOOKUP] ✅ Matched by organizationId (legacy userId)');
+        }
+      }
+      if (phoneNumber.userId && userObjId && phoneNumber.userId.toString() === userObjId.toString()) {
+        console.log('🔎 [DATABASE LOOKUP] ✅ Matched by userId');
       }
 
       const phoneNumberValue = phoneNumber.phone_number;
@@ -810,16 +977,24 @@ export class PhoneNumberController {
       }
 
       // Finally, delete the PhoneNumber record itself
-      await PhoneNumber.findOneAndDelete({
-        phone_number_id,
-        organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString())
-      });
+      await PhoneNumber.findOneAndDelete(query);
+
+      // ============================================================================
+      // STEP 6: FINAL EXECUTION MARKER
+      // Log before sending response to prove full execution path
+      // ============================================================================
+      console.log('✅ [OPERATION COMPLETED] delete ===========================');
+      console.log('✅ [OPERATION COMPLETED] Status Code: 200');
+      console.log('✅ [OPERATION COMPLETED] Phone Number ID:', phone_number_id);
+      console.log('✅ [OPERATION COMPLETED] Phone Number:', phoneNumberValue);
+      console.log('✅ [OPERATION COMPLETED] ===================================');
 
       console.log(`✅ [PhoneNumber Controller] Successfully deleted phone number ${phone_number_id} and all related data`);
 
-      return res.json({
+      // API Spec: 200 with success: true, message
+      return res.status(200).json({
         success: true,
-        message: "Phone number and all related data deleted successfully"
+        message: "Operation completed successfully"
       });
     } catch (err: any) {
       console.error('[PhoneNumber Controller] Delete Error:', err);

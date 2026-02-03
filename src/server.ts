@@ -4,7 +4,11 @@ dotenv.config();
 
 import express from 'express';
 import { createServer } from 'http';
+import { createServer as createTcpServer } from 'net';
 import cors from 'cors';
+import { execSync } from 'child_process';
+import { existsSync } from 'fs';
+import { join } from 'path';
 import { connectDatabase } from './config/database';
 import { connectRedis } from './config/redis';
 import { initializeSocket } from './config/socket';
@@ -58,6 +62,24 @@ const httpServer = createServer(app);
 
 // Initialize Socket.io
 initializeSocket(httpServer);
+
+// ============================================================================
+// STEP 1: GLOBAL REQUEST VISIBILITY (MANDATORY)
+// This MUST be the first middleware to log EVERY request hitting Express
+// ============================================================================
+app.use((req, res, next) => {
+  console.log('🌍 [GLOBAL REQUEST] ============================================');
+  console.log('🌍 [GLOBAL REQUEST] Method:', req.method);
+  console.log('🌍 [GLOBAL REQUEST] Original URL:', req.originalUrl);
+  console.log('🌍 [GLOBAL REQUEST] Base URL:', req.baseUrl);
+  console.log('🌍 [GLOBAL REQUEST] Path:', req.path);
+  console.log('🌍 [GLOBAL REQUEST] Headers:', {
+    'content-type': req.headers['content-type'] || 'MISSING',
+    'authorization': req.headers.authorization ? 'Bearer ***' : 'MISSING'
+  });
+  console.log('🌍 [GLOBAL REQUEST] ============================================');
+  next();
+});
 
 // Middleware
 // CORS configuration - supports multiple origins
@@ -156,27 +178,50 @@ app.get('/', (req, res) => {
   });
 });
 
-// Health check endpoint
+// ============================================================================
+// STEP 6: ENHANCED HEALTH ENDPOINT
+// Returns PID, PORT, uptime, environment for frontend verification
+// ============================================================================
 app.get('/api/v1/health', async (req, res) => {
   try {
     // Get batch call monitor status
     const { batchCallMonitor } = await import('./services/batchCallMonitor.service');
     const monitorStatus = batchCallMonitor.getStatus();
     
+    const uptimeSeconds = Math.floor((Date.now() - SERVER_START_TIME) / 1000);
+    
     res.json({ 
       status: 'ok', 
       message: 'Server is running',
       timestamp: new Date().toISOString(),
+      server: {
+        pid: SERVER_PID,
+        port: PORT_NUMBER,
+        uptime: uptimeSeconds,
+        uptimeFormatted: `${Math.floor(uptimeSeconds / 60)}m ${uptimeSeconds % 60}s`,
+        environment: process.env.NODE_ENV || 'development',
+        gitCommit: GIT_COMMIT_HASH || null
+      },
       batchCallMonitor: {
         enabled: monitorStatus.isRunning,
         checkInterval: `${monitorStatus.checkIntervalSeconds}s`
       }
     });
   } catch (error) {
+    const uptimeSeconds = Math.floor((Date.now() - SERVER_START_TIME) / 1000);
+    
     res.json({ 
       status: 'ok', 
       message: 'Server is running',
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      server: {
+        pid: SERVER_PID,
+        port: PORT_NUMBER,
+        uptime: uptimeSeconds,
+        uptimeFormatted: `${Math.floor(uptimeSeconds / 60)}m ${uptimeSeconds % 60}s`,
+        environment: process.env.NODE_ENV || 'development',
+        gitCommit: GIT_COMMIT_HASH || null
+      }
     });
   }
 });
@@ -244,19 +289,102 @@ app.use('*', (req, res) => {
 // Error Handler (must be last)
 app.use(errorHandler);
 
-// Port configuration - Render uses PORT env variable
+// ============================================================================
+// STEP 2: SINGLE SOURCE OF TRUTH FOR PORT (FIX)
+// Enforce PORT from environment ONLY - crash if undefined
+// ============================================================================
 const PORT = process.env.PORT;
 
-// Log configuration on startup
-console.log('🔧 Server Configuration:');
-console.log('   - Environment:', process.env.NODE_ENV || 'development');
-console.log('   - Port:', PORT);
-console.log('   - CORS Origin:', corsOrigin);
-console.log('   - MongoDB:', process.env.MONGODB_URI ? '✓ Configured' : '✗ Missing');
-console.log('   - Redis:', process.env.REDIS_URL ? '✓ Configured' : '✗ Missing');
+if (!PORT) {
+  console.error('❌ [FATAL] PORT environment variable is REQUIRED');
+  console.error('❌ [FATAL] Set PORT in .env file or environment');
+  console.error('❌ [FATAL] Example: PORT=5001');
+  process.exit(1);
+}
+
+const PORT_NUMBER = parseInt(PORT, 10);
+if (isNaN(PORT_NUMBER) || PORT_NUMBER < 1 || PORT_NUMBER > 65535) {
+  console.error('❌ [FATAL] PORT must be a valid number between 1 and 65535');
+  console.error('❌ [FATAL] Current value:', PORT);
+  process.exit(1);
+}
+
+// ============================================================================
+// STEP 4: PORT-IN-USE DETECTION
+// Check if port is already in use before starting
+// ============================================================================
+const checkPortInUse = (port: number): Promise<boolean> => {
+  return new Promise((resolve) => {
+    const server = createTcpServer();
+    server.listen(port, () => {
+      server.once('close', () => resolve(false));
+      server.close();
+    });
+    server.on('error', () => resolve(true));
+  });
+};
+
+// ============================================================================
+// STEP 5: GET GIT COMMIT HASH (if available)
+// ============================================================================
+function getGitCommitHash(): string | null {
+  try {
+    // Check if .git directory exists
+    const gitDir = join(process.cwd(), '.git');
+    if (!existsSync(gitDir)) {
+      return null;
+    }
+    // Get current commit hash
+    const hash = execSync('git rev-parse --short HEAD', { encoding: 'utf-8' }).trim();
+    return hash || null;
+  } catch (error) {
+    return null;
+  }
+}
+
+const GIT_COMMIT_HASH = getGitCommitHash();
+const SERVER_PID = process.pid;
+const SERVER_START_TIME = Date.now();
 
 const startServer = async () => {
   try {
+    // ============================================================================
+    // STEP 4: PORT-IN-USE DETECTION (before any other operations)
+    // ============================================================================
+    const portInUse = await checkPortInUse(PORT_NUMBER);
+    if (portInUse) {
+      console.error('❌ [FATAL] Port', PORT_NUMBER, 'is already in use');
+      console.error('❌ [FATAL] Another backend instance may be running');
+      console.error('❌ [FATAL] Kill the existing process or use a different PORT');
+      process.exit(1);
+    }
+
+    // ============================================================================
+    // STEP 5: STARTUP BANNER (permanent, always visible)
+    // ============================================================================
+    console.log('\n' + '='.repeat(80));
+    console.log('🚀 BACKEND SERVER STARTING');
+    console.log('='.repeat(80));
+    console.log('📋 Process ID (PID):', SERVER_PID);
+    console.log('🔌 Port:', PORT_NUMBER);
+    console.log('🌍 Environment:', process.env.NODE_ENV || 'development');
+    if (GIT_COMMIT_HASH) {
+      console.log('📦 Git Commit:', GIT_COMMIT_HASH);
+    } else {
+      console.log('📦 Git Commit: (not available)');
+    }
+    console.log('⏰ Start Time:', new Date().toISOString());
+    console.log('='.repeat(80) + '\n');
+
+    // Log configuration on startup
+    console.log('🔧 Server Configuration:');
+    console.log('   - Environment:', process.env.NODE_ENV || 'development');
+    console.log('   - Port:', PORT_NUMBER);
+    console.log('   - CORS Origin:', corsOrigin);
+    console.log('   - MongoDB:', process.env.MONGODB_URI ? '✓ Configured' : '✗ Missing');
+    console.log('   - Redis:', process.env.REDIS_URL ? '✓ Configured' : '✗ Missing');
+    console.log('');
+
     // Connect to MongoDB
     await connectDatabase();
     
@@ -336,16 +464,28 @@ const startServer = async () => {
     }
     
     // Start server with Socket.io
-    httpServer.listen(PORT, () => {
-      logger.info(`Server running on port ${PORT}`);
+    httpServer.listen(PORT_NUMBER, () => {
+      console.log('\n' + '='.repeat(80));
+      console.log('✅ BACKEND SERVER RUNNING');
+      console.log('='.repeat(80));
+      console.log('📋 PID:', SERVER_PID);
+      console.log('🔌 Port:', PORT_NUMBER);
+      console.log('🌐 URL: http://localhost:' + PORT_NUMBER);
+      console.log('🌍 Environment:', process.env.NODE_ENV || 'development');
+      if (GIT_COMMIT_HASH) {
+        console.log('📦 Git Commit:', GIT_COMMIT_HASH);
+      }
+      console.log('='.repeat(80) + '\n');
+      
+      logger.info(`Server running on port ${PORT_NUMBER} (PID: ${SERVER_PID})`);
       logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
       logger.info(`Socket.io enabled for real-time messaging`);
       
       // Log webhook endpoints
       const ngrokBaseUrl = process.env.NGROK_BASE_URL;
-      const basePath = ngrokBaseUrl ? ngrokBaseUrl : `http://localhost:${PORT}`;
+      const basePath = ngrokBaseUrl ? ngrokBaseUrl : `http://localhost:${PORT_NUMBER}`;
       
-      console.log('\n📡 Meta Webhooks active:');
+      console.log('📡 Meta Webhooks active:');
       console.log(`   - WhatsApp: ${basePath}/api/v1/social-integrations/whatsapp/webhook`);
       console.log(`   - Messenger: ${basePath}/api/v1/social-integrations/messenger/webhook`);
       console.log(`   - Instagram: ${basePath}/api/v1/social-integrations/instagram/webhook`);
@@ -354,6 +494,22 @@ const startServer = async () => {
         console.log(`\n🔗 Using ngrok base URL: ${ngrokBaseUrl}`);
       } else {
         console.log(`\n⚠️  NGROK_BASE_URL not set - using localhost`);
+      }
+    });
+
+    // ============================================================================
+    // STEP 4: PORT-IN-USE ERROR HANDLING
+    // Handle EADDRINUSE error if port becomes in use after check
+    // ============================================================================
+    httpServer.on('error', (error: any) => {
+      if (error.code === 'EADDRINUSE') {
+        console.error('❌ [FATAL] Port', PORT_NUMBER, 'is already in use');
+        console.error('❌ [FATAL] Another backend instance may have started');
+        console.error('❌ [FATAL] Kill the existing process or use a different PORT');
+        process.exit(1);
+      } else {
+        console.error('❌ [FATAL] Server error:', error);
+        process.exit(1);
       }
     });
   } catch (error: any) {
