@@ -73,9 +73,10 @@ export class PhoneNumberController {
             label: pn.label,
             phone_number: pn.phone_number,
             provider: pn.provider,
-            // Default to true for twilio/sip_trunk so older records and new imports show in outbound dropdown
+            // Default to true for twilio/sip_trunk/sip so older records show in outbound dropdown
             supports_outbound: pn.supports_outbound ?? (pn.provider === 'twilio' || pn.provider === 'sip_trunk' || pn.provider === 'sip'),
-            supports_inbound: pn.supports_inbound ?? (pn.provider === 'twilio'),
+            // Default to false for twilio (Full Setup is outbound-only), use explicit value for others
+            supports_inbound: pn.supports_inbound ?? false,
             elevenlabs_phone_number_id: pn.elevenlabs_phone_number_id,
             created_at_unix: pn.created_at_unix,
             ...((pn as any).agent_id && { agent_id: (pn as any).agent_id })
@@ -134,8 +135,8 @@ export class PhoneNumberController {
         sid,
         token,
         provider: 'twilio',
-        supports_outbound: true, // Twilio numbers support outbound by default
-        supports_inbound: true,  // Twilio numbers support inbound by default
+        supports_outbound: true,  // Full Setup (Twilio) is for outbound calls only
+        supports_inbound: false,  // Use Generic Setup with "Supports Inbound" for inbound calls
         organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString()),
         created_at_unix: Math.floor(Date.now() / 1000)
       });

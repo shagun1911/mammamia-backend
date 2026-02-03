@@ -834,6 +834,7 @@ export class ConversationService {
         roomName: callDocument.metadata?.room_name,
         recording_url: callDocument.metadata?.recording_url || callDocument.recording_url || null
       };
+
       // CRITICAL: Don't update 'updatedAt' when refreshing transcript
       // This prevents conversation from jumping to top of list
       await conversation.save({ timestamps: false });
