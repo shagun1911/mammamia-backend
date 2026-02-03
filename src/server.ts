@@ -157,12 +157,28 @@ app.get('/', (req, res) => {
 });
 
 // Health check endpoint
-app.get('/api/v1/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    message: 'Server is running',
-    timestamp: new Date().toISOString()
-  });
+app.get('/api/v1/health', async (req, res) => {
+  try {
+    // Get batch call monitor status
+    const { batchCallMonitor } = await import('./services/batchCallMonitor.service');
+    const monitorStatus = batchCallMonitor.getStatus();
+    
+    res.json({ 
+      status: 'ok', 
+      message: 'Server is running',
+      timestamp: new Date().toISOString(),
+      batchCallMonitor: {
+        enabled: monitorStatus.isRunning,
+        checkInterval: `${monitorStatus.checkIntervalSeconds}s`
+      }
+    });
+  } catch (error) {
+    res.json({ 
+      status: 'ok', 
+      message: 'Server is running',
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // Meta Public Routes (no authentication required)
@@ -308,6 +324,15 @@ const startServer = async () => {
     } catch (error: any) {
       logger.warn('⚠️  Could not perform startup agent sync:', error.message);
       // Don't block server startup if sync fails
+    }
+    
+    // Start batch call monitor for automatic conversation sync
+    try {
+      const { batchCallMonitor } = await import('./services/batchCallMonitor.service');
+      batchCallMonitor.start();
+      logger.info('✅ Batch call monitor started');
+    } catch (error: any) {
+      logger.warn('⚠️  Could not start batch call monitor:', error.message);
     }
     
     // Start server with Socket.io

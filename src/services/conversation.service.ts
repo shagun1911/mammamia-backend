@@ -746,7 +746,9 @@ export class ConversationService {
               conversation.status = 'closed';
             }
 
-            await conversation.save();
+            // CRITICAL: Don't update 'updatedAt' when refreshing transcript
+            // This prevents conversation from jumping to top of list
+            await conversation.save({ timestamps: false });
 
             // Convert transcript items to messages if available
             if (pythonData.transcript?.items) {
@@ -832,7 +834,9 @@ export class ConversationService {
         roomName: callDocument.metadata?.room_name,
         recording_url: callDocument.metadata?.recording_url || callDocument.recording_url || null
       };
-      await conversation.save();
+      // CRITICAL: Don't update 'updatedAt' when refreshing transcript
+      // This prevents conversation from jumping to top of list
+      await conversation.save({ timestamps: false });
 
       // Delete existing transcript messages to avoid duplicates on refresh
       await Message.deleteMany({

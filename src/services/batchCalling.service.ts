@@ -174,15 +174,18 @@ export class BatchCallingService {
       console.log('========================================');
       console.log(JSON.stringify(payload, null, 2));
       console.log('========================================');
-      console.log('[Batch Calling Service] Payload Summary:');
-      console.log(`  - Agent ID: ${payload.agent_id}`);
-      console.log(`  - Call Name: ${payload.call_name}`);
-      console.log(`  - Recipients Count: ${payload.recipients.length}`);
-      console.log(`  - Phone Number ID: ${payload.phone_number_id}`);
-      console.log(`  - Retry Count: ${payload.retry_count}`);
-      console.log(`  - Sender Email: ${payload.sender_email || 'N/A'}`);
-      console.log(`  - Has Ecommerce: ${!!payload.ecommerce_credentials}`);
-      console.log('\n[Batch Calling Service] Recipients Details:');
+
+      // Write payload to file for debugging (ensure 'fs' is imported at top if needed)
+      try {
+        // Dynamically require 'fs' to avoid import errors if linting/tools issue
+        // If 'fs' is already imported at top as: import * as fs from 'fs';, you can use it directly
+        // @ts-ignore
+        const fs = require('fs');
+        fs.writeFileSync('payload.json', JSON.stringify(payload, null, 2));
+      } catch (err) {
+        console.error('[Batch Calling Service] Error writing payload.json:', err);
+      }
+
       payload.recipients.forEach((recipient: any, idx: number) => {
         console.log(`  Recipient ${idx + 1}:`);
         console.log(`    - Name: ${recipient.name}`);

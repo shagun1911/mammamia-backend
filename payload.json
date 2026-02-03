@@ -1,0 +1,40 @@
+{
+  "agent_id": "agent_0201kggtxaz4e35b0ezrn8tzbkxe",
+  "call_name": "new",
+  "recipients": [
+    {
+      "phone_number": "917230088638",
+      "name": "Lovjeet",
+      "email": "lovjeet_s@me.iitr.ac.in",
+      "dynamic_variables": {
+        "name": "Lovjeet",
+        "customer_name": "Lovjeet",
+        "email": "lovjeet_s@me.iitr.ac.in"
+      }
+    },
+    {
+      "phone_number": "919896941400",
+      "name": "Shagun",
+      "email": "19shagunyadavnnl@gmail.com",
+      "dynamic_variables": {
+        "name": "Shagun",
+        "customer_name": "Shagun",
+        "email": "19shagunyadavnnl@gmail.com"
+      }
+    },
+    {
+      "phone_number": "918979145539",
+      "name": "Vivek",
+      "email": "champvivek05@gmail.com",
+      "dynamic_variables": {
+        "name": "Vivek",
+        "customer_name": "Vivek",
+        "email": "champvivek05@gmail.com"
+      }
+    }
+  ],
+  "retry_count": 0,
+  "agent_phone_number_id": "phnum_2501kggtvaf9fqs948ph9j17zv1x",
+  "phone_number_id": "phnum_2501kggtvaf9fqs948ph9j17zv1x",
+  "sender_email": "22249@iiitu.ac.in"
+}
