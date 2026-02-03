@@ -138,7 +138,6 @@ const BatchCallSchema = new Schema<IBatchCall>({
 
 BatchCallSchema.index({ userId: 1, createdAt: -1 });
 BatchCallSchema.index({ organizationId: 1, createdAt: -1 });
-BatchCallSchema.index({ batch_call_id: 1 });
 
 export default mongoose.model<IBatchCall>('BatchCall', BatchCallSchema);
 

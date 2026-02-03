@@ -722,13 +722,19 @@ export class PhoneNumberController {
   /**
    * Delete phone number
    * DELETE /api/v1/phone-numbers/:phone_number_id
+   * This will delete ALL related data:
+   * - PhoneNumber record
+   * - InboundNumber record (if inbound)
+   * - InboundAgentConfig (if inbound)
+   * - PhoneSettings references (if inbound)
    */
   delete = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const { phone_number_id } = req.params;
       const organizationId = req.user?.organizationId || req.user?._id;
+      const userId = req.user?._id?.toString() || req.user?.id?.toString();
 
-      if (!organizationId) {
+      if (!organizationId || !userId) {
         return res.status(401).json({
           success: false,
           error: "Unauthorized",
@@ -736,7 +742,8 @@ export class PhoneNumberController {
         });
       }
 
-      const phoneNumber = await PhoneNumber.findOneAndDelete({
+      // First, find the phone number to get its details before deleting
+      const phoneNumber = await PhoneNumber.findOne({
         phone_number_id,
         organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString())
       });
@@ -749,9 +756,70 @@ export class PhoneNumberController {
         });
       }
 
+      const phoneNumberValue = phoneNumber.phone_number;
+      const isInbound = phoneNumber.supports_inbound;
+
+      console.log(`🗑️ [PhoneNumber Controller] Deleting phone number ${phone_number_id} (${phoneNumberValue})`);
+      console.log(`📋 [PhoneNumber Controller] Is inbound: ${isInbound}`);
+
+      // If it's an inbound number, delete all related inbound data
+      if (isInbound) {
+        try {
+          // 1. Delete from InboundNumber collection
+          const { inboundNumberService } = await import('../services/inboundNumber.service');
+          try {
+            await inboundNumberService.delete(userId, phoneNumberValue);
+            console.log('✅ [PhoneNumber Controller] Deleted from InboundNumber collection');
+          } catch (inboundError: any) {
+            // 404 is okay - number might not exist in InboundNumber collection
+            if (inboundError.statusCode !== 404) {
+              console.warn('⚠️ [PhoneNumber Controller] Failed to delete from InboundNumber:', inboundError.message);
+            }
+          }
+
+          // 2. Delete from InboundAgentConfig
+          const { inboundAgentConfigService } = await import('../services/inboundAgentConfig.service');
+          try {
+            await inboundAgentConfigService.delete(userId, phoneNumberValue);
+            console.log('✅ [PhoneNumber Controller] Deleted from InboundAgentConfig');
+          } catch (configError: any) {
+            console.warn('⚠️ [PhoneNumber Controller] Failed to delete from InboundAgentConfig:', configError.message);
+          }
+
+          // 3. Remove from PhoneSettings.inboundPhoneNumbers
+          const PhoneSettings = (await import('../models/PhoneSettings')).default;
+          try {
+            const phoneSettings = await PhoneSettings.findOne({ userId: new mongoose.Types.ObjectId(userId) });
+            if (phoneSettings && phoneSettings.inboundPhoneNumbers) {
+              const updatedNumbers = phoneSettings.inboundPhoneNumbers.filter(
+                (num: string) => num !== phoneNumberValue
+              );
+              if (updatedNumbers.length !== phoneSettings.inboundPhoneNumbers.length) {
+                phoneSettings.inboundPhoneNumbers = updatedNumbers;
+                await phoneSettings.save();
+                console.log('✅ [PhoneNumber Controller] Removed from PhoneSettings.inboundPhoneNumbers');
+              }
+            }
+          } catch (settingsError: any) {
+            console.warn('⚠️ [PhoneNumber Controller] Failed to update PhoneSettings:', settingsError.message);
+          }
+        } catch (error: any) {
+          console.error('❌ [PhoneNumber Controller] Error cleaning up inbound data:', error);
+          // Continue with phone number deletion even if cleanup fails
+        }
+      }
+
+      // Finally, delete the PhoneNumber record itself
+      await PhoneNumber.findOneAndDelete({
+        phone_number_id,
+        organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString())
+      });
+
+      console.log(`✅ [PhoneNumber Controller] Successfully deleted phone number ${phone_number_id} and all related data`);
+
       return res.json({
         success: true,
-        message: "Operation completed successfully"
+        message: "Phone number and all related data deleted successfully"
       });
     } catch (err: any) {
       console.error('[PhoneNumber Controller] Delete Error:', err);
