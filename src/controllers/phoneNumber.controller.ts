@@ -273,11 +273,10 @@ export class PhoneNumberController {
         });
       }
 
-      // Generate phone_number_id
-      const phoneNumberId = `phnum_${Math.random().toString(36).substring(2, 22)}`;
-
-      // Create phone number with SIP trunk config
-      // NO AGENT CONFIG, NO PHONE SETTINGS UPDATE
+      // ============================================================================
+      // REGISTER WITH ELEVENLABS FIRST - Get phone_number_id from response
+      // This is REQUIRED for both inbound and outbound configurations
+      // ============================================================================
       const organizationId = req.user?.organizationId || req.user?._id;
       const userId = req.user?._id || req.user?.id;
       if (!organizationId) {
@@ -288,8 +287,56 @@ export class PhoneNumberController {
         });
       }
 
+      console.log('[PhoneNumber Controller] Registering SIP trunk phone number with ElevenLabs...');
+      let phoneNumberId: string;
+      try {
+        const { sipTrunkService } = await import('../services/sipTrunk.service');
+        const elevenLabsResponse = await sipTrunkService.registerSipPhoneNumberWithElevenLabs({
+          label,
+          phone_number,
+          provider,
+          supports_inbound,
+          supports_outbound,
+          inbound_trunk_config,
+          outbound_trunk_config
+        });
+
+        // Use phone_number_id from ElevenLabs response as our primary ID
+        phoneNumberId = elevenLabsResponse.phone_number_id;
+        
+        if (!phoneNumberId) {
+          console.error('[PhoneNumber Controller] ❌ ElevenLabs response missing phone_number_id');
+          return res.status(500).json({
+            success: false,
+            error: "Internal server error",
+            detail: "Failed to get phone_number_id from ElevenLabs response"
+          });
+        }
+
+        console.log('[PhoneNumber Controller] ✅ Phone number registered with ElevenLabs');
+        console.log('[PhoneNumber Controller] Phone number ID from ElevenLabs:', phoneNumberId);
+      } catch (registerError: any) {
+        // Registration failure is critical - fail the request
+        console.error('[PhoneNumber Controller] ❌ ElevenLabs registration failed:', registerError.message);
+        console.error('[PhoneNumber Controller] Error details:', {
+          status: registerError.statusCode,
+          code: registerError.code,
+          message: registerError.message
+        });
+        
+        return res.status(registerError.statusCode || 500).json({
+          success: false,
+          error: "Registration failed",
+          detail: registerError.message || "Failed to register phone number with ElevenLabs"
+        });
+      }
+
+      // ============================================================================
+      // CREATE PHONE NUMBER IN DATABASE USING phone_number_id FROM ELEVENLABS
+      // ============================================================================
       const phoneNumberDoc = await PhoneNumber.create({
-        phone_number_id: phoneNumberId,
+        phone_number_id: phoneNumberId, // Use phone_number_id from ElevenLabs response
+        elevenlabs_phone_number_id: phoneNumberId, // Set to same value for backward compatibility
         label,
         phone_number,
         provider,
@@ -306,48 +353,9 @@ export class PhoneNumberController {
 
       // Phone number is saved in MongoDB with all SIP trunk config
       console.log('[PhoneNumber Controller] ✅ Phone number saved in MongoDB with SIP trunk config');
-      console.log('[PhoneNumber Controller] Phone number ID:', phoneNumberId);
+      console.log('[PhoneNumber Controller] Phone number ID (from ElevenLabs):', phoneNumberId);
       console.log('[PhoneNumber Controller] Supports outbound:', supports_outbound);
       console.log('[PhoneNumber Controller] Supports inbound:', supports_inbound);
-
-      // Register with ElevenLabs Python API if it's a SIP trunk with outbound support
-      // This is REQUIRED - ElevenLabs must know about the phone number before outbound calls
-      if ((provider === 'sip_trunk' || provider === 'sip') && supports_outbound && outbound_trunk_config) {
-        console.log('[PhoneNumber Controller] Registering SIP trunk phone number with ElevenLabs...');
-        try {
-          const { sipTrunkService } = await import('../services/sipTrunk.service');
-          const elevenLabsResponse = await sipTrunkService.registerSipPhoneNumberWithElevenLabs({
-            label,
-            phone_number,
-            provider,
-            supports_inbound,
-            supports_outbound,
-            inbound_trunk_config,
-            outbound_trunk_config
-          });
-
-          // Store ElevenLabs phone_number_id separately - DO NOT overwrite our internal ID
-          await PhoneNumber.updateOne(
-            { phone_number_id: phoneNumberId },
-            { $set: { elevenlabs_phone_number_id: elevenLabsResponse.phone_number_id } }
-          );
-
-          console.log('[PhoneNumber Controller] ✅ Phone number registered with ElevenLabs');
-          console.log('[PhoneNumber Controller] Internal phone_number_id:', phoneNumberId);
-          console.log('[PhoneNumber Controller] ElevenLabs phone_number_id:', elevenLabsResponse.phone_number_id);
-        } catch (registerError: any) {
-          // Registration failure is critical - log but don't fail phone number creation
-          // User can retry registration later
-          console.error('[PhoneNumber Controller] ❌ ElevenLabs registration failed:', registerError.message);
-          console.error('[PhoneNumber Controller] Error details:', {
-            status: registerError.statusCode,
-            code: registerError.code,
-            message: registerError.message
-          });
-          console.warn('[PhoneNumber Controller] ⚠️ Phone number saved in MongoDB but NOT registered with ElevenLabs');
-          console.warn('[PhoneNumber Controller] ⚠️ Outbound calls will fail until phone number is registered with ElevenLabs');
-        }
-      }
 
       // ============================================================================
       // STEP 6: FINAL EXECUTION MARKER
