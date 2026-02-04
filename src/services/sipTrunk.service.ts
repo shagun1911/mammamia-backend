@@ -420,6 +420,55 @@ export class SipTrunkService {
   }
 
   /**
+   * Create Dispatch Rule
+   * Calls Python /calls/create-dispatch-rule endpoint
+   */
+  async createDispatchRule(data: CreateDispatchRuleRequest): Promise<CreateDispatchRuleResponse> {
+    try {
+      const pythonUrl = `${COMM_API_URL}/calls/create-dispatch-rule`;
+
+      console.log('[SIP Trunk Service] ===== CREATING DISPATCH RULE =====');
+      console.log('[SIP Trunk Service] Python API URL:', pythonUrl);
+      console.log('[SIP Trunk Service] Request payload:', {
+        sip_trunk_id: data.sip_trunk_id,
+        name: data.name,
+        agent_name: data.agent_name
+      });
+
+      const response = await axios.post<CreateDispatchRuleResponse>(
+        pythonUrl,
+        {
+          sip_trunk_id: data.sip_trunk_id,
+          name: data.name,
+          agent_name: data.agent_name
+        },
+        {
+          timeout: 60000 // 60 seconds timeout
+        }
+      );
+
+      console.log('[SIP Trunk Service] ✅ Dispatch rule created successfully');
+      console.log('[SIP Trunk Service] Response status:', response.status);
+      console.log('[SIP Trunk Service] Response body:');
+      console.log(JSON.stringify(response.data, null, 2));
+      console.log('[SIP Trunk Service] Response fields:');
+      console.log('  - status:', response.data.status);
+      console.log('  - message:', response.data.message);
+      console.log('  - dispatch_rule_id:', response.data.dispatch_rule_id);
+      console.log('  - dispatch_rule_name:', response.data.dispatch_rule_name);
+
+      return response.data;
+    } catch (error: any) {
+      console.error('[SIP Trunk] ❌ Failed to create dispatch rule:', error.response?.data || error.message);
+      throw new AppError(
+        error.response?.status || 500,
+        'DISPATCH_RULE_ERROR',
+        error.response?.data?.message || error.response?.data?.detail || 'Failed to create dispatch rule'
+      );
+    }
+  }
+
+  /**
    * Register Twilio phone number with ElevenLabs Python API
    * POST /api/v1/phone-numbers (Import Phone Number for Twilio)
    * This MUST be called to register the phone number before making outbound calls
