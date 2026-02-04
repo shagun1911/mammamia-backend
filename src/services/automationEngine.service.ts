@@ -228,6 +228,33 @@ export class AutomationEngine {
       }
     });
 
+    // Facebook Messenger Message Trigger
+    this.triggers.set('facebook_message', {
+      validate: async (config, data) => {
+        // Trigger fires when a message is received on Facebook Messenger
+        if (data.event !== 'message_received') return false;
+        
+        // If pageId is configured, match it
+        if (config.pageId && data.pageId !== config.pageId) return false;
+        
+        return true;
+      }
+    });
+
+    // Instagram Message Trigger
+    this.triggers.set('instagram_message', {
+      validate: async (config, data) => {
+        // Trigger fires when a message is received on Instagram
+        if (data.event !== 'message_received') return false;
+        
+        // If instagramAccountId is configured, match it
+        if (config.instagramAccountId && data.instagramAccountId !== config.instagramAccountId) return false;
+        
+        return true;
+      }
+    });
+
+
     this.triggers.set('shopify_order', {
       validate: async (config, data) => {
         return data.storeId === config.storeId;

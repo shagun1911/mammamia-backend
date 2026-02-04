@@ -506,6 +506,17 @@ export class MetaWebhookController {
           // Python: page_id = entry.get('id')
           const pageId = entry.id;
           
+          // Check for Facebook Lead Ads (changes field)
+          if (entry.changes && entry.changes.length > 0) {
+            for (const change of entry.changes) {
+              if (change.field === 'leadgen' && change.value) {
+                // Facebook Lead Ad submission
+                console.log('[Messenger Webhook] Received Lead Ads submission');
+                await this.processFacebookLeadAd(pageId, change.value, entry);
+              }
+            }
+          }
+          
           // Python: for event in entry.get('messaging', []):
           for (const event of entry.messaging || []) {
             // Python: sender_id = event.get('sender', {}).get('id')
@@ -1162,12 +1173,75 @@ export class MetaWebhookController {
         return; // Exit after sending fallback
       }
 
-      // 2. SYSTEM PROMPT: Fetch from AIBehavior using userId ONLY
+      // 2. CHECK FOR ACTIVE AUTOMATIONS - If active, AI should collect contact details
+      const Automation = (await import('../models/Automation')).default;
+      const activeAutomation = await Automation.findOne({
+        userId: new mongoose.Types.ObjectId(userId),
+        isActive: true,
+        'nodes.service': 'facebook_message'
+      });
+
+      console.log('[Messenger Webhook] Active facebook_message automation:', activeAutomation ? 'YES' : 'NO');
+
+      // 3. SYSTEM PROMPT: Fetch from AIBehavior using userId ONLY
       const aiBehavior = await aiBehaviorService.get(userId);
       let systemPrompt = aiBehavior.chatAgent.systemPrompt || 
         'You are a helpful AI assistant designed to provide excellent customer service. Be friendly, professional, and helpful.';
       
       console.log('[Messenger Webhook] ✅ Using system prompt from AIBehavior.chatAgent.systemPrompt (length:', systemPrompt.length, ')');
+
+      // Check if conversation already has extracted data
+      const existingExtractedData = conversation.metadata?.extractedData || {};
+      const hasName = !!existingExtractedData.name;
+      const hasEmail = !!existingExtractedData.email;
+      const hasPhone = !!existingExtractedData.phone;
+      const hasDate = !!existingExtractedData.appointmentDate;
+      const hasTime = !!existingExtractedData.appointmentTime;
+
+      // If automation is active, modify system prompt to collect required information
+      if (activeAutomation) {
+        console.log('[Messenger Webhook] 🤖 Automation is active - AI will collect contact details');
+        console.log('[Messenger Webhook] Existing data:', {
+          hasName,
+          hasEmail,
+          hasPhone,
+          hasDate,
+          hasTime
+        });
+
+        systemPrompt += '\n\n=== SPECIAL INSTRUCTIONS FOR APPOINTMENT BOOKING ===\n';
+        systemPrompt += 'The user wants to book an appointment. You MUST collect the following information in a conversational way:\n';
+        
+        if (!hasName) {
+          systemPrompt += '1. Full name (if not already known)\n';
+        }
+        if (!hasEmail) {
+          systemPrompt += '2. Email address\n';
+        }
+        if (!hasPhone) {
+          systemPrompt += '3. Phone number (ask for country code too, e.g., +1 for US)\n';
+        }
+        if (!hasDate) {
+          systemPrompt += '4. Preferred appointment date (ask for specific date like "February 10, 2024")\n';
+        }
+        if (!hasTime) {
+          systemPrompt += '5. Preferred appointment time (ask for specific time like "2:00 PM" or "14:00")\n';
+        }
+
+        systemPrompt += '\nIMPORTANT:\n';
+        systemPrompt += '- Ask for ONE piece of information at a time in a friendly, natural way\n';
+        systemPrompt += '- Do NOT overwhelm the user with multiple questions at once\n';
+        systemPrompt += '- After getting one detail, acknowledge it and ask for the next one\n';
+        systemPrompt += '- Be conversational and friendly, not robotic\n';
+        systemPrompt += '- Once you have ALL information, confirm the details with the user\n';
+        systemPrompt += '- Say something like: "Perfect! Let me confirm: Your appointment is scheduled for [date] at [time]. We\'ll send a confirmation to [email] and call you at [phone] if needed."\n';
+        systemPrompt += '\nExample flow:\n';
+        systemPrompt += 'User: "I want to book an appointment"\n';
+        systemPrompt += 'You: "Great! I\'d be happy to help you book an appointment. May I have your full name?"\n';
+        systemPrompt += 'User: "John Doe"\n';
+        systemPrompt += 'You: "Thank you, John! What\'s the best email address to send your confirmation to?"\n';
+        systemPrompt += '...and so on.\n';
+      }
 
       // 4. Get WooCommerce credentials if available (OPTIONAL)
       const ecommerceCredentials = await getEcommerceCredentials(userId);
@@ -1292,8 +1366,238 @@ export class MetaWebhookController {
           timestamp: new Date()
         }
       });
+
+      // If automation is active, extract contact data and trigger automation when ready
+      if (activeAutomation) {
+        console.log('[Messenger Webhook] 📊 Extracting contact data from conversation...');
+        
+        const conversationExtractionService = (await import('../services/conversationExtraction.service')).default;
+        const extractedData = await conversationExtractionService.extractContactData(conversation._id.toString());
+        
+        console.log('[Messenger Webhook] Extracted data:', extractedData);
+        console.log('[Messenger Webhook] Has all required data:', extractedData.hasAllRequiredData);
+
+        // Only trigger automation if we have all required data
+        if (extractedData.hasAllRequiredData) {
+          console.log('[Messenger Webhook] ✅ All data collected! Triggering automation...');
+          
+          const { automationEngine } = await import('../services/automationEngine.service');
+          
+          // Update customer with extracted data
+          if (extractedData.email && !customer.email) {
+            customer.email = extractedData.email;
+          }
+          if (extractedData.phone && !customer.phone) {
+            customer.phone = extractedData.phone;
+          }
+          if (extractedData.name && customer.name === senderPsid) {
+            customer.name = extractedData.name;
+          }
+          await customer.save();
+          console.log('[Messenger Webhook] ✅ Customer updated with extracted data');
+
+          // Trigger automation with complete data
+          automationEngine.triggerByEvent('facebook_message', {
+            event: 'message_received',
+            pageId: pageId,
+            senderPsid: senderPsid,
+            messageText: messageText,
+            contactId: customer._id.toString(),
+            conversationId: conversation._id.toString(),
+            organizationId: conversation.organizationId.toString(),
+            userId: integration.userId.toString(),
+            contact: {
+              name: extractedData.name || customer.name,
+              email: extractedData.email || customer.email,
+              phone: extractedData.phone || customer.phone,
+              tags: customer.tags || []
+            },
+            // Include extracted appointment data
+            appointmentDate: extractedData.appointmentDate,
+            appointmentTime: extractedData.appointmentTime,
+            extractedData: extractedData
+          }, {
+            organizationId: conversation.organizationId.toString(),
+            userId: integration.userId.toString()
+          }).catch(err => console.error('[Messenger Webhook] Automation trigger error:', err));
+        } else {
+          console.log('[Messenger Webhook] ⏳ Waiting for complete data before triggering automation...');
+        }
+      } else {
+        console.log('[Messenger Webhook] No active automation - skipping trigger');
+      }
+
     } catch (error: any) {
       console.error('[Messenger Webhook] Error processing message:', error.message || error);
+    }
+  }
+
+  /**
+   * Process Facebook Lead Ad submission and trigger automations
+   */
+  private async processFacebookLeadAd(
+    pageId: string,
+    leadData: any,
+    entry: any
+  ) {
+    try {
+      console.log('[Facebook Lead Ads] Processing lead submission for page:', pageId);
+      console.log('[Facebook Lead Ads] Lead data:', JSON.stringify(leadData, null, 2));
+
+      const leadgenId = leadData.leadgen_id;
+      const formId = leadData.form_id;
+      const adId = leadData.ad_id;
+      const createdTime = leadData.created_time;
+
+      if (!leadgenId || !formId) {
+        console.warn('[Facebook Lead Ads] Missing leadgen_id or form_id');
+        return;
+      }
+
+      // Find integration
+      const integration = await SocialIntegration.findOne({
+        'credentials.facebookPageId': pageId,
+        platform: 'facebook',
+        status: 'connected',
+        userId: { $exists: true, $ne: null }
+      });
+
+      if (!integration) {
+        console.warn(`[Facebook Lead Ads] No integration found for page_id: ${pageId}`);
+        return;
+      }
+
+      if (!integration.userId) {
+        console.error(`[Facebook Lead Ads] Integration missing userId: ${integration._id}`);
+        return;
+      }
+
+      const userId = integration.userId.toString();
+      console.log(`[Facebook Lead Ads] Found integration with userId: ${userId}`);
+
+      // Fetch lead details from Facebook Graph API
+      const pageAccessToken = integration.credentials?.pageAccessToken;
+      if (!pageAccessToken) {
+        console.error('[Facebook Lead Ads] Missing page access token');
+        return;
+      }
+
+      let leadDetails: any = {};
+      try {
+        const response = await axios.get(
+          `https://graph.facebook.com/v18.0/${leadgenId}?access_token=${pageAccessToken}`
+        );
+        leadDetails = response.data;
+        console.log('[Facebook Lead Ads] Lead details fetched:', JSON.stringify(leadDetails, null, 2));
+      } catch (error: any) {
+        console.error('[Facebook Lead Ads] Failed to fetch lead details:', error.message);
+        // Continue with what we have
+      }
+
+      // Parse field data
+      const fieldData: Record<string, string> = {};
+      if (leadDetails.field_data && Array.isArray(leadDetails.field_data)) {
+        leadDetails.field_data.forEach((field: any) => {
+          fieldData[field.name] = field.values?.[0] || '';
+        });
+      }
+
+      console.log('[Facebook Lead Ads] Parsed field data:', fieldData);
+
+      // Create contact from lead data
+      const Customer = (await import('../models/Customer')).default;
+      const Organization = (await import('../models/Organization')).default;
+
+      // Resolve organization
+      const UserModel = (await import('../models/User')).default;
+      const user = await UserModel.findById(userId);
+      let organizationId = integration.organizationId?.toString();
+      
+      if (!organizationId && user?.organizationId) {
+        organizationId = user.organizationId.toString();
+      } else if (!organizationId) {
+        organizationId = userId; // Fallback to userId
+      }
+
+      // Create or update customer
+      const contactEmail = fieldData.email || fieldData.EMAIL || '';
+      const contactPhone = fieldData.phone || fieldData.phone_number || fieldData.PHONE || '';
+      const contactName = fieldData.full_name || fieldData.name || fieldData.NAME || contactEmail || 'Facebook Lead';
+
+      // Build query filter
+      const orFilters: any[] = [];
+      if (contactEmail) {
+        orFilters.push({ email: contactEmail });
+      }
+      if (contactPhone) {
+        orFilters.push({ phone: contactPhone });
+      }
+
+      let customer: any = null;
+      
+      if (orFilters.length > 0) {
+        customer = await Customer.findOne({
+          organizationId,
+          $or: orFilters
+        });
+      }
+
+      if (!customer) {
+        const newCustomer = await Customer.create({
+          organizationId,
+          name: contactName,
+          email: contactEmail || undefined,
+          phone: contactPhone || undefined,
+          source: 'facebook_lead_ad',
+          metadata: {
+            facebookLeadId: leadgenId,
+            formId: formId,
+            adId: adId,
+            createdTime: createdTime,
+            fieldData: fieldData
+          }
+        });
+        customer = newCustomer;
+        console.log('[Facebook Lead Ads] ✅ Contact created:', customer._id);
+      } else {
+        // Update existing contact with lead data
+        if (!customer.metadata) customer.metadata = {};
+        customer.metadata.facebookLeadId = leadgenId;
+        customer.metadata.lastLeadFormId = formId;
+        customer.metadata.lastLeadAdId = adId;
+        await customer.save();
+        console.log('[Facebook Lead Ads] ✅ Contact updated:', customer._id);
+      }
+
+      // Trigger automations for facebook_lead
+      const { automationEngine } = await import('../services/automationEngine.service');
+      
+      console.log('[Facebook Lead Ads] Triggering automations...');
+      await automationEngine.triggerByEvent('facebook_lead', {
+        event: 'lead_created',
+        pageId: pageId,
+        formId: formId,
+        adId: adId,
+        leadgenId: leadgenId,
+        contactId: customer._id.toString(),
+        organizationId: organizationId,
+        userId: userId,
+        contact: {
+          name: customer.name,
+          email: customer.email,
+          phone: customer.phone,
+          tags: customer.tags || []
+        },
+        fieldData: fieldData,
+        createdTime: createdTime
+      }, {
+        organizationId: organizationId,
+        userId: userId
+      });
+
+      console.log('[Facebook Lead Ads] ✅ Lead processed successfully');
+    } catch (error: any) {
+      console.error('[Facebook Lead Ads] Error processing lead:', error.message || error);
     }
   }
 
@@ -2033,6 +2337,31 @@ export class MetaWebhookController {
           // Don't throw - we don't want to break the webhook flow
         }
       }
+
+      // Trigger automations for instagram_message (non-blocking)
+      const { automationEngine } = await import('../services/automationEngine.service');
+      
+      console.log('[Instagram Webhook] Triggering automations for message received...');
+      automationEngine.triggerByEvent('instagram_message', {
+        event: 'message_received',
+        instagramAccountId: recipientId,
+        senderId: senderId,
+        messageText: messageText,
+        contactId: customer._id.toString(),
+        conversationId: conversation._id.toString(),
+        organizationId: integration.organizationId.toString(),
+        userId: integration.userId.toString(),
+        contact: {
+          name: customer.name,
+          email: customer.email,
+          phone: customer.phone,
+          tags: customer.tags || []
+        }
+      }, {
+        organizationId: integration.organizationId.toString(),
+        userId: integration.userId.toString()
+      }).catch(err => console.error('[Instagram Webhook] Automation trigger error:', err));
+
     } catch (error) {
       console.error('[Instagram Webhook] Error handling message:', error);
     }
