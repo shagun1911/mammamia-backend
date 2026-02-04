@@ -61,6 +61,8 @@ export class AgentController {
         knowledge_base_ids: knowledge_base_ids
       });
 
+      console.log('Agent created successfully', agent);
+
       res.status(201).json(successResponse(agent, 'Agent created successfully'));
     } catch (error) {
       next(error);

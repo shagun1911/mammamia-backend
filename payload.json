@@ -1,30 +1,20 @@
 {
-  "agent_id": "agent_0201kggtxaz4e35b0ezrn8tzbkxe",
-  "call_name": "new",
+  "agent_id": "agent_4001kgmenp5yf73rj3d7qqgvvx5z",
+  "call_name": "Test_Vivek",
   "recipients": [
     {
-      "phone_number": "+919896941400",
-      "name": "Shagun",
-      "email": "shagun@gmail.com",
+      "phone_number": "+918979145539",
+      "name": "vivek singh",
+      "email": "vivek@gmail.com",
       "dynamic_variables": {
-        "name": "Shagun",
-        "customer_name": "Shagun",
-        "email": "shagun@gmail.com"
-      }
-    },
-    {
-      "phone_number": "+919811223344",
-      "name": "Rohan",
-      "email": "rohan.verma@test.com",
-      "dynamic_variables": {
-        "name": "Rohan",
-        "customer_name": "Rohan",
-        "email": "rohan.verma@test.com"
+        "name": "vivek singh",
+        "customer_name": "vivek singh",
+        "email": "vivek@gmail.com"
       }
     }
   ],
   "retry_count": 0,
-  "agent_phone_number_id": "phnum_2501kggtvaf9fqs948ph9j17zv1x",
-  "phone_number_id": "phnum_2501kggtvaf9fqs948ph9j17zv1x",
-  "sender_email": "22249@iiitu.ac.in"
+  "agent_phone_number_id": "phnum_2901kgmfv4rwfbfsfaj1swsjbmx7",
+  "phone_number_id": "phnum_2901kgmfv4rwfbfsfaj1swsjbmx7",
+  "sender_email": "joshspecter8@gmail.com"
 }

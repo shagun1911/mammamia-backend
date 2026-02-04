@@ -14,73 +14,8 @@ export class BatchCallingController {
         agent_id,
         call_name,
         recipients,
-        retry_count,
-        sender_email: requestSenderEmail,
-        phone_number_id,
-        ecommerce_credentials
+        phone_number_id
       } = req.body;
-
-      // Get sender email from request, or automatically fetch from connected Gmail
-      let sender_email = requestSenderEmail;
-      
-      if (!sender_email) {
-        console.log('[Batch Calling Controller] No sender_email provided, fetching from connected Gmail...');
-        const organizationId = req.user?.organizationId || req.user?._id;
-        
-        if (organizationId) {
-          try {
-            // Try GoogleIntegration first (for Gmail OAuth)
-            const GoogleIntegration = (await import('../models/GoogleIntegration')).default;
-            const googleIntegration = await GoogleIntegration.findOne({
-              organizationId: organizationId instanceof mongoose.Types.ObjectId 
-                ? organizationId 
-                : new mongoose.Types.ObjectId(organizationId.toString()),
-              'services.gmail': true,
-              status: 'active'
-            }).lean();
-
-            if (googleIntegration?.googleProfile?.email) {
-              sender_email = googleIntegration.googleProfile.email;
-              console.log('[Batch Calling Controller] ✅ Found Gmail email from GoogleIntegration:', sender_email);
-            } else {
-              // Fallback: Try SocialIntegration (for Gmail via Dialog360 or other)
-              const SocialIntegration = (await import('../models/SocialIntegration')).default;
-              const socialIntegration = await SocialIntegration.findOne({
-                organizationId: organizationId instanceof mongoose.Types.ObjectId 
-                  ? organizationId 
-                  : new mongoose.Types.ObjectId(organizationId.toString()),
-                platform: 'gmail',
-                status: 'connected'
-              }).lean();
-
-              if (socialIntegration) {
-                // Check credentials.email or metadata.email
-                sender_email = socialIntegration.credentials?.email || socialIntegration.metadata?.email;
-                if (sender_email) {
-                  console.log('[Batch Calling Controller] ✅ Found Gmail email from SocialIntegration:', sender_email);
-                }
-              }
-            }
-
-            // Priority 2: Default SMTP sender
-            if (!sender_email) {
-              sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
-            }
-          } catch (emailError: any) {
-            console.warn('[Batch Calling Controller] ⚠️ Error resolving sender email:', emailError.message);
-            // Fallback to DEFAULT_SMTP_SENDER_EMAIL on error
-            if (!sender_email) {
-              sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
-            }
-          }
-        } else {
-          // No organizationId, try DEFAULT_SMTP_SENDER_EMAIL
-          sender_email = process.env.DEFAULT_SMTP_SENDER_EMAIL;
-        }
-        
-        // Log resolved sender email
-        console.log('[Outbound Call] sender_email resolved:', sender_email ?? 'python-fallback');
-      }
 
       console.log('[Batch Calling Controller] ===== SUBMIT BATCH CALL REQUEST =====');
       console.log('[Batch Calling Controller] Endpoint:', req.method, req.originalUrl);
@@ -88,9 +23,7 @@ export class BatchCallingController {
         agent_id,
         call_name,
         recipients_count: recipients?.length || 0,
-        retry_count,
-        sender_email: sender_email || 'not provided',
-        has_ecommerce: !!ecommerce_credentials
+        phone_number_id
       });
 
       // Validate required fields
@@ -205,19 +138,22 @@ export class BatchCallingController {
 
       // Helper to submit batch call (used for initial attempt and retry after re-register)
       const doSubmit = (elevenLabsId: string) => {
+        // Build payload with ONLY the required fields - no transformations, no enrichment
         const payload = {
           agent_id,
           call_name,
-          recipients: recipients.map((r: any) => ({
-            phone_number: r.phone_number,
-            name: r.name,
-            ...(r.email && { email: r.email }),
-            ...(r.dynamic_variables && { dynamic_variables: r.dynamic_variables })
-          })),
-          retry_count: retry_count || 0,
-          sender_email,
           phone_number_id: elevenLabsId,
-          ecommerce_credentials
+          recipients: recipients.map((r: any) => {
+            const recipient: any = {
+              phone_number: r.phone_number,
+              name: r.name
+            };
+            // Include dynamic_variables ONLY if provided (preserve exactly as received)
+            if (r.dynamic_variables !== undefined && r.dynamic_variables !== null) {
+              recipient.dynamic_variables = r.dynamic_variables;
+            }
+            return recipient;
+          })
         };
 
         // Log complete payload before submitting
@@ -229,8 +165,6 @@ export class BatchCallingController {
         console.log('Recipients count:', payload.recipients.length);
         console.log('Agent ID:', payload.agent_id);
         console.log('Phone Number ID:', payload.phone_number_id);
-        console.log('Sender Email:', payload.sender_email || 'not provided');
-        console.log('Has Ecommerce:', !!payload.ecommerce_credentials);
         console.log('========================================\n');
 
         return batchCallingService.submitBatchCall(payload);
@@ -340,7 +274,6 @@ export class BatchCallingController {
             agent_name: result.agent_name,
             call_name: call_name,
             recipients_count: recipients.length,
-            sender_email: sender_email || undefined,
             conversations_synced: false // Track if conversations have been created
           });
           

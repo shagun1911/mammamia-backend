@@ -8,24 +8,14 @@ const COMM_API_URL = process.env.PYTHON_API_URL || process.env.COMM_API_URL || '
 export interface BatchCallRecipient {
   phone_number: string;
   name: string;
-  email?: string;
   dynamic_variables?: Record<string, any>;
 }
 
 export interface BatchCallRequest {
   agent_id: string;
   call_name: string;
+  phone_number_id: string; // ElevenLabs phone number ID
   recipients: BatchCallRecipient[];
-  retry_count?: number;
-  sender_email?: string;
-  phone_number_id?: string; // Internal phone number ID - will be resolved to ElevenLabs ID
-  ecommerce_credentials?: {
-    platform?: string;
-    base_url?: string;
-    api_key?: string;
-    api_secret?: string;
-    access_token?: string;
-  };
 }
 
 export interface BatchCallResponse {
@@ -69,10 +59,8 @@ export class BatchCallingService {
       console.log('[Batch Calling Service] Request payload:', {
         agent_id: data.agent_id,
         call_name: data.call_name,
-        recipients_count: data.recipients.length,
-        retry_count: data.retry_count || 0,
-        sender_email: data.sender_email,
-        has_ecommerce: !!data.ecommerce_credentials
+        phone_number_id: data.phone_number_id,
+        recipients_count: data.recipients.length
       });
 
       // Validate phone_number_id is provided and is a non-empty string
@@ -89,141 +77,38 @@ export class BatchCallingService {
         );
       }
 
-      // Build payload - ensure phone_number_id is included and properly formatted
-      // Python API requires phone_number_id (ElevenLabs phone number ID)
-      const phoneNumberId = String(data.phone_number_id).trim();
-
-      // Import utility function for building dynamic variables
-      const { buildDynamicVariables } = await import('../utils/dynamicVariables.util');
-
-      // Format recipients with dynamic_variables structure
-      // CRITICAL: ElevenLabs needs name, customer_name, email for first_message and appointment/booking tools
-      const formattedRecipients = data.recipients.map((recipient, index) => {
-        const formatted: any = {
-          phone_number: recipient.phone_number,
-          name: recipient.name || 'Customer'
-        };
-
-        if (recipient.email) {
-          formatted.email = recipient.email;
-        }
-
-        // Build dynamic_variables by merging customer_info (name, email) and explicit dynamic_variables
-        const customerInfo: Record<string, any> = {
-          name: recipient.name,
-          email: recipient.email
-        };
-
-        // Also include any other fields from recipient as part of customer_info
-        Object.keys(recipient).forEach(key => {
-          if (key !== 'phone_number' && key !== 'name' && key !== 'email' && key !== 'dynamic_variables') {
-            customerInfo[key] = (recipient as any)[key];
-          }
-        });
-
-        const dynamicVars = buildDynamicVariables(
-          customerInfo,
-          recipient.dynamic_variables
-        );
-
-        // ALWAYS include dynamic_variables (never omit)
-        formatted.dynamic_variables = dynamicVars;
-
-        return formatted;
-      });
-
-      // Log formatted recipients to verify dynamic_variables are included
-      console.log('[Batch Calling Service] 📋 Formatted recipients with dynamic_variables:');
-      formattedRecipients.forEach((recipient, idx) => {
-        console.log(`  Recipient ${idx + 1}:`, {
-          name: recipient.name,
-          phone: recipient.phone_number,
-          email: recipient.email || 'N/A',
-          has_dynamic_variables: !!recipient.dynamic_variables,
-          dynamic_variables: recipient.dynamic_variables || {}
-        });
-        // Defensive logging for dynamic variables
-        console.log(
-          `[Dynamic Variables] Recipient ${idx + 1} final variables:`,
-          JSON.stringify(recipient.dynamic_variables, null, 2)
-        );
-      });
-
-      // Python/ElevenLabs API expects agent_phone_number_id (official API uses this key)
-      const payload: Record<string, any> = {
+      // Build payload with EXACTLY the required fields - no transformations, no enrichment
+      // Preserve recipients exactly as received, including dynamic_variables as-is
+      const payload = {
         agent_id: data.agent_id,
         call_name: data.call_name,
-        recipients: formattedRecipients,
-        retry_count: data.retry_count || 0,
-        agent_phone_number_id: phoneNumberId, // Required by ElevenLabs batch-calling API
-        phone_number_id: phoneNumberId // Send both for compatibility with different API versions
+        phone_number_id: String(data.phone_number_id).trim(),
+        recipients: data.recipients.map((recipient) => {
+          const recipientPayload: any = {
+            phone_number: recipient.phone_number,
+            name: recipient.name
+          };
+          // Include dynamic_variables ONLY if provided (preserve exactly as received)
+          if (recipient.dynamic_variables !== undefined && recipient.dynamic_variables !== null) {
+            recipientPayload.dynamic_variables = recipient.dynamic_variables;
+          }
+          return recipientPayload;
+        })
       };
 
-      // Add optional fields only if they exist
-      if (data.sender_email) {
-        payload.sender_email = data.sender_email;
-      }
-
-      if (data.ecommerce_credentials) {
-        payload.ecommerce_credentials = data.ecommerce_credentials;
-      }
-
-      // 🔥 COMPLETE PAYLOAD LOGGING - FULL DETAILS
+      // Log complete payload before submitting
       console.log('\n========================================');
       console.log('[Batch Calling Service] 🚀 COMPLETE BATCH CALL PAYLOAD:');
       console.log('========================================');
       console.log(JSON.stringify(payload, null, 2));
       console.log('========================================');
-
-      // Write payload to file for debugging (ensure 'fs' is imported at top if needed)
-      try {
-        // Dynamically require 'fs' to avoid import errors if linting/tools issue
-        // If 'fs' is already imported at top as: import * as fs from 'fs';, you can use it directly
-        // @ts-ignore
-        const fs = require('fs');
-        fs.writeFileSync('payload.json', JSON.stringify(payload, null, 2));
-      } catch (err) {
-        console.error('[Batch Calling Service] Error writing payload.json:', err);
-      }
-
-      payload.recipients.forEach((recipient: any, idx: number) => {
-        console.log(`  Recipient ${idx + 1}:`);
-        console.log(`    - Name: ${recipient.name}`);
-        console.log(`    - Phone: ${recipient.phone_number}`);
-        console.log(`    - Email: ${recipient.email || 'N/A'}`);
-        if (recipient.dynamic_variables) {
-          console.log(`    - Dynamic Variables:`, JSON.stringify(recipient.dynamic_variables, null, 6));
-        } else {
-          console.log(`    - Dynamic Variables: NONE`);
-        }
-      });
+      console.log('Recipients count:', payload.recipients.length);
+      console.log('Agent ID:', payload.agent_id);
+      console.log('Phone Number ID:', payload.phone_number_id);
       console.log('========================================\n');
 
-      // Ensure phone_number_id is at the top level and is a valid string
-      if (!payload.phone_number_id || payload.phone_number_id === 'undefined' || payload.phone_number_id === 'null') {
-        console.error('[Batch Calling Service] ❌ phone_number_id is invalid:', payload.phone_number_id);
-        throw new AppError(
-          400,
-          'BATCH_CALL_ERROR',
-          'phone_number_id is required and must be a valid ElevenLabs phone number ID'
-        );
-      }
-
-      // Double-check phone_number_id is in payload
-      if (!payload.phone_number_id) {
-        console.error('[Batch Calling Service] ❌ phone_number_id missing from payload after construction!');
-        throw new AppError(
-          500,
-          'BATCH_CALL_ERROR',
-          'Internal error: phone_number_id was not included in payload'
-        );
-      }
-
-      // Make the request - ensure phone_number_id is definitely in the payload
+      // Make the request
       console.log('[Batch Calling Service] Making POST request to:', pythonUrl);
-      console.log('[Batch Calling Service] Final payload check - phone_number_id:', payload.phone_number_id);
-      console.log('[Batch Calling Service] Final payload check - phone_number_id type:', typeof payload.phone_number_id);
-      console.log('[Batch Calling Service] Final payload check - phone_number_id length:', payload.phone_number_id?.length);
 
       const response = await axios.post<BatchCallResponse>(
         pythonUrl,
