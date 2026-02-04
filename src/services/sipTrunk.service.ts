@@ -576,10 +576,7 @@ export class SipTrunkService {
     supports_outbound: boolean;
     inbound_trunk_config?: {
       address: string;
-      credentials: {
-        username: string;
-        password: string;
-      };
+      // Note: credentials are not required for inbound-only configuration
     };
     outbound_trunk_config?: {
       address: string;
@@ -604,12 +601,9 @@ export class SipTrunkService {
       };
 
       if (data.inbound_trunk_config) {
+        // For inbound-only: only include address, no credentials
         payload.inbound_trunk_config = {
-          address: data.inbound_trunk_config.address,
-          credentials: {
-            username: data.inbound_trunk_config.credentials.username,
-            password: data.inbound_trunk_config.credentials.password
-          }
+          address: data.inbound_trunk_config.address
         };
       }
 
