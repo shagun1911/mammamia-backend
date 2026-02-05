@@ -366,7 +366,7 @@ export class BatchCallingService {
           const phoneNumber = callResult.phone_number;
           const dynamicVars = callResult.dynamic_variables || {};
           const customerName = dynamicVars.name || dynamicVars.customer_name || 'Unknown';
-          const customerEmail = dynamicVars.email;
+          const customerEmail = dynamicVars.email || dynamicVars.customer_email;
           const conversationId = callResult.conversation_id;
           const transcript = callResult.transcript;
 

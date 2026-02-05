@@ -8,7 +8,7 @@ import mongoose from 'mongoose';
 export class BatchCallMonitor {
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
-  private checkIntervalMs = 30000; // Check every 30 seconds
+  private checkIntervalMs = 3000; // Check every 3 seconds for immediate automation triggering
 
   /**
    * Start the batch call monitor

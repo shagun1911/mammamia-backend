@@ -903,8 +903,18 @@ export class AutomationEngine {
     this.actions.set('keplero_google_calendar_create_event', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         if (!context.appointment?.booked) {
-          console.info(`[Automation] ⏭️ Skipping Event Creation: Appointment not confirmed.`);
+          console.info(`[Automation Engine] ⏭️ Skipping Event Creation: Appointment not confirmed.`);
           return { success: true, status: 'skipped', reason: 'Appointment not booked' };
+        }
+
+        // CRITICAL: Skip if date/time are missing
+        if (!context.appointment.date || !context.appointment.time) {
+          console.warn(`[Automation Engine] ⏭️ Skipping Calendar Event: Missing appointment date/time`);
+          return { 
+            success: true, 
+            status: 'skipped', 
+            reason: 'Missing appointment date or time' 
+          };
         }
 
         const { summary, description, startTime, endTime, attendees } = config;
@@ -1005,6 +1015,20 @@ export class AutomationEngine {
     this.actions.set('keplero_google_gmail_send', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         const { to, subject, body } = config;
+        
+        // CRITICAL: Skip if appointment date/time are missing
+        // This prevents failures when appointment is detected but details are unclear
+        if (context.appointment) {
+          if (!context.appointment.date || !context.appointment.time) {
+            console.warn(`[Automation Engine] ⏭️ Skipping Gmail send: Missing appointment date/time`);
+            return { 
+              success: true, 
+              status: 'skipped', 
+              reason: 'Missing appointment date or time' 
+            };
+          }
+        }
+        
         const integration = await SocialIntegration.findOne({
           userId: context.userId,
           organizationId: context.organizationId,
@@ -1012,24 +1036,35 @@ export class AutomationEngine {
           status: 'connected'
         });
 
-        if (!integration) throw new Error('Gmail integration not connected');
+        if (!integration) {
+          console.error('[Automation Engine] ❌ Gmail integration not connected');
+          throw new Error('Gmail integration not connected');
+        }
 
         const resolvedTo = to ? await this.resolveTemplate(to, context) : context.contact.email;
-        if (!resolvedTo) throw new Error('No recipient email found');
+        if (!resolvedTo) {
+          console.error('[Automation Engine] ❌ No recipient email found');
+          throw new Error('No recipient email found');
+        }
 
         const resolvedSubject = await this.resolveTemplate(subject, context);
         const resolvedBody = await this.resolveTemplate(body, context);
 
         try {
           const userEmail = integration.getDecryptedApiKey();
+          console.log(`[Automation Engine] 📧 Sending email to: ${resolvedTo}`);
+          console.log(`[Automation Engine] Subject: ${resolvedSubject}`);
+          
           await gmailOAuthService.sendEmail(userEmail, {
             to: resolvedTo,
             subject: resolvedSubject,
             body: resolvedBody
           });
-          return { success: true, status: 'completed' };
+          
+          console.log(`[Automation Engine] ✅ Email sent successfully to ${resolvedTo}`);
+          return { success: true, status: 'completed', recipient: resolvedTo };
         } catch (error: any) {
-          console.error('[Automation] Gmail send failed:', error.message);
+          console.error('[Automation Engine] ❌ Gmail send failed:', error.message);
           throw new Error(`Gmail send failed: ${error.message}`);
         }
       }
@@ -1088,16 +1123,30 @@ export class AutomationEngine {
     const userId = externalContext?.userId || (await this.resolveUserId(organizationId)) || '';
     const execution = await AutomationExecution.create({ automationId, status: 'pending', triggerData });
 
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`[Automation Engine] 🚀 STARTING AUTOMATION EXECUTION`);
+    console.log(`[Automation Engine] Automation: ${automation.name}`);
+    console.log(`[Automation Engine] Automation ID: ${automationId}`);
+    console.log(`[Automation Engine] Execution ID: ${execution._id}`);
+    console.log(`[Automation Engine] Organization: ${organizationId}`);
+    console.log(`[Automation Engine] Trigger Data:`, JSON.stringify(triggerData, null, 2));
+    console.log(`${'='.repeat(80)}\n`);
+
     try {
       const sortedNodes = [...automation.nodes].sort((a, b) => a.position - b.position);
+      console.log(`[Automation Engine] 📋 Total nodes to process: ${sortedNodes.length}`);
+      
       const triggerNode = sortedNodes.find(n => n.type === 'trigger');
       if (!triggerNode) throw new Error('No trigger node found');
 
       const triggerHandler = this.triggers.get(triggerNode.service);
       if (!triggerHandler) throw new Error(`Trigger handler missing: ${triggerNode.service}`);
 
+      console.log(`[Automation Engine] ✅ Trigger validated: ${triggerNode.service}`);
+
       const triggerConfig = this.convertConfigToPlainObject(triggerNode.config);
       if (!(await triggerHandler.validate(triggerConfig, triggerData))) {
+        console.log(`[Automation Engine] ❌ Trigger criteria not met`);
         execution.status = 'failed';
         execution.errorMessage = 'Trigger criteria not met';
         await execution.save();
@@ -1105,9 +1154,16 @@ export class AutomationEngine {
       }
 
       const contactIds = Array.isArray(triggerData.contactIds) ? triggerData.contactIds : [triggerData.contactId].filter(Boolean);
+      console.log(`[Automation Engine] 👥 Processing ${contactIds.length} contact(s)`);
+      
       for (const contactId of contactIds) {
         const contact = await Customer.findById(contactId).lean();
-        if (!contact) continue;
+        if (!contact) {
+          console.log(`[Automation Engine] ⚠️  Contact ${contactId} not found, skipping`);
+          continue;
+        }
+
+        console.log(`\n[Automation Engine] 👤 Processing contact: ${contact.name} (${contact.email || 'no email'})`);
 
         const context: IAutomationExecutionContext = {
           contact,
@@ -1118,66 +1174,149 @@ export class AutomationEngine {
           appointment: triggerData.appointment
         };
 
+        console.log(`[Automation Engine] 📦 Context prepared:`, {
+          contactName: contact.name,
+          contactEmail: contact.email,
+          hasAppointment: !!context.appointment,
+          appointmentBooked: context.appointment?.booked
+        });
+
+        let nodeIndex = 0;
         for (const node of sortedNodes) {
+          nodeIndex++;
+          if (node.type === 'trigger') {
+            console.log(`[Automation Engine] [${nodeIndex}/${sortedNodes.length}] ⚡ Trigger: ${node.service}`);
+            continue; // Skip trigger in main loop
+          }
+
+          console.log(`\n[Automation Engine] [${nodeIndex}/${sortedNodes.length}] 🔄 Executing: ${node.type} - ${node.service}`);
+
           const nodeConfig = this.convertConfigToPlainObject(node.config);
+          
           if (node.type === 'delay') {
+            console.log(`[Automation Engine] ⏱️  Delaying for ${nodeConfig.delay} ${nodeConfig.delayUnit}`);
             await this.delay(nodeConfig.delay, nodeConfig.delayUnit);
+            console.log(`[Automation Engine] ✅ Delay completed`);
           } else if (node.type === 'condition') {
             // Evaluate condition
             const conditionMet = await this.evaluateCondition(nodeConfig, context);
-            console.log(`[Automation Engine] 🔍 Condition evaluation: ${conditionMet ? 'PASS' : 'FAIL'}`, nodeConfig);
+            console.log(`[Automation Engine] 🔍 Condition evaluation: ${conditionMet ? '✅ PASS' : '❌ FAIL'}`, nodeConfig);
             
             if (!conditionMet) {
-              console.log(`[Automation Engine] ⏭️ Condition not met, skipping remaining actions for this contact`);
+              console.log(`[Automation Engine] ⏭️  Condition not met, skipping remaining actions for this contact`);
               break; // Skip remaining nodes for this contact
             }
           } else if (node.type === 'action') {
             const runner = this.actions.get(node.service);
-            if (!runner) continue;
+            if (!runner) {
+              console.log(`[Automation Engine] ⚠️  No runner found for ${node.service}, skipping`);
+              continue;
+            }
+            
+            console.log(`[Automation Engine] 🎬 Executing action: ${node.service}`);
             const res = await runner.execute(nodeConfig, context.triggerData, context);
-            if (res?.success === false && node.service !== 'keplero_google_sheet_append_row') {
-              throw new Error(res.error || `Action ${node.service} failed`);
+            
+            if (res) {
+              if (res.success === false) {
+                console.log(`[Automation Engine] ❌ Action failed: ${node.service}`, res.error || res.reason);
+                if (node.service !== 'keplero_google_sheet_append_row') {
+                  throw new Error(res.error || `Action ${node.service} failed`);
+                }
+              } else if (res.status === 'skipped') {
+                console.log(`[Automation Engine] ⏭️  Action skipped: ${node.service} - ${res.reason}`);
+              } else if (res.status === 'completed' || res.success === true) {
+                console.log(`[Automation Engine] ✅ Action completed: ${node.service}`);
+                if (res.recipient) console.log(`[Automation Engine]    → Recipient: ${res.recipient}`);
+              } else {
+                console.log(`[Automation Engine] ✅ Action result:`, res);
+              }
+            } else {
+              console.log(`[Automation Engine] ✅ Action completed: ${node.service} (no return value)`);
             }
           }
         }
       }
+      
       execution.status = 'success';
       await execution.save();
+      
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`[Automation Engine] ✅ AUTOMATION EXECUTION COMPLETED SUCCESSFULLY`);
+      console.log(`[Automation Engine] Execution ID: ${execution._id}`);
+      console.log(`[Automation Engine] Status: ${execution.status}`);
+      console.log(`${'='.repeat(80)}\n`);
+      
     } catch (err: any) {
       execution.status = 'failed';
       execution.errorMessage = err.message;
       await execution.save();
+      
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`[Automation Engine] ❌ AUTOMATION EXECUTION FAILED`);
+      console.log(`[Automation Engine] Execution ID: ${execution._id}`);
+      console.log(`[Automation Engine] Error: ${err.message}`);
+      console.log(`[Automation Engine] Stack:`, err.stack);
+      console.log(`${'='.repeat(80)}\n`);
+      
       throw err;
     }
   }
 
   async triggerByEvent(event: string, eventData: any, context?: any) {
+    console.log(`\n${'━'.repeat(80)}`);
+    console.log(`[Automation Engine] 🎯 EVENT TRIGGERED: ${event}`);
+    console.log(`[Automation Engine] Event Data:`, JSON.stringify(eventData, null, 2));
+    console.log(`${'━'.repeat(80)}\n`);
+
     const query: any = { isActive: true };
     const organizationId = context?.organizationId || eventData?.organizationId;
     if (organizationId) query.organizationId = organizationId;
 
     const automations = await Automation.find(query).lean();
+    console.log(`[Automation Engine] 🔍 Found ${automations.length} active automation(s) to check`);
+
     const results: any[] = [];
 
     for (const automation of automations) {
       const triggerNode = automation.nodes.find(n => n.type === 'trigger');
-      if (!triggerNode) continue;
+      if (!triggerNode) {
+        console.log(`[Automation Engine] ⚠️  No trigger node in automation: ${automation.name}`);
+        continue;
+      }
+      
       const triggerHandler = this.triggers.get(triggerNode.service);
-      if (!triggerHandler) continue;
+      if (!triggerHandler) {
+        console.log(`[Automation Engine] ⚠️  No handler for trigger: ${triggerNode.service} in automation: ${automation.name}`);
+        continue;
+      }
 
       try {
         const triggerConfig = this.convertConfigToPlainObject(triggerNode.config);
-        if (await triggerHandler.validate(triggerConfig, eventData)) {
+        const isValid = await triggerHandler.validate(triggerConfig, eventData);
+        
+        if (isValid) {
+          console.log(`[Automation Engine] ✅ Trigger matched for automation: ${automation.name}`);
+          console.log(`[Automation Engine] 🚀 Starting async execution...`);
+          
           const automationId = (automation._id as any).toString();
           this.executeAutomation(automationId, eventData, context).catch(err => {
             console.error(`[Automation Engine] ❌ Async failure for ${automation.name}:`, err.message);
           });
           results.push({ automationId, name: automation.name });
+        } else {
+          console.log(`[Automation Engine] ⏭️  Trigger not matched for automation: ${automation.name} (trigger: ${triggerNode.service})`);
         }
       } catch (error: any) {
         console.error(`[Automation Engine] ❌ Validation error:`, error.message);
       }
     }
+
+    console.log(`\n[Automation Engine] 📊 Trigger Summary: ${results.length} automation(s) triggered`);
+    if (results.length > 0) {
+      results.forEach(r => console.log(`[Automation Engine]    ✅ ${r.name}`));
+    }
+    console.log(`${'━'.repeat(80)}\n`);
+
     return results;
   }
 
