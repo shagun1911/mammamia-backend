@@ -401,14 +401,26 @@ export class BatchCallingService {
             });
             console.log(`[Batch Calling Service] ✅ Created customer: ${customer.name} (${customer.phone})`);
           } else {
-            // Update customer info if we have better data
-            if (customerName !== 'Unknown' && customer.name === 'Unknown') {
+            // CRITICAL FIX: Always update customer info from CSV (batch call data is the source of truth)
+            let customerUpdated = false;
+            
+            if (customerName !== 'Unknown' && customer.name !== customerName) {
               customer.name = customerName;
+              customerUpdated = true;
             }
-            if (customerEmail && !customer.email) {
+            
+            // CRITICAL FIX: Always update email from CSV, even if customer already has an email
+            // This ensures the LATEST CSV data is used, not old database data
+            if (customerEmail && customer.email !== customerEmail) {
+              console.log(`[Batch Calling Service] 📧 Updating email for ${customer.name}: ${customer.email} → ${customerEmail}`);
               customer.email = customerEmail;
+              customerUpdated = true;
             }
-            await customer.save();
+            
+            if (customerUpdated) {
+              await customer.save();
+              console.log(`[Batch Calling Service] ✅ Updated customer: ${customer.name} (${customer.phone})`);
+            }
           }
 
           // Create conversation using the same pattern as outbound calls
@@ -495,18 +507,28 @@ export class BatchCallingService {
           // Trigger batch_call_completed automation for this conversation
           try {
             const { automationService } = await import('./automation.service');
+            
+            // CRITICAL FIX: Pass fresh contact data from CSV in triggerData
+            // This ensures automations use the LATEST email from CSV, not old database email
             await automationService.triggerByEvent('batch_call_completed', {
               event: 'batch_call_completed',
               batch_id: jobId,
               conversation_id: conversation._id.toString(),
               contactId: customer._id.toString(),
               organizationId: organizationId,
-              source: 'batch_call'
+              source: 'batch_call',
+              // CRITICAL: Include fresh contact data from CSV
+              freshContactData: {
+                name: customerName,
+                email: customerEmail,
+                phone: phoneNumber
+              }
             }, {
               userId: userId,
               organizationId: organizationId
             });
             console.log(`[Batch Calling Service] 🚀 Triggered batch_call_completed automation for conversation ${conversation._id}`);
+            console.log(`[Batch Calling Service] 📧 Using fresh email from CSV: ${customerEmail}`);
           } catch (triggerError: any) {
             console.error(`[Batch Calling Service] ⚠️ Failed to trigger automation for conversation ${conversation._id}:`, triggerError.message);
           }

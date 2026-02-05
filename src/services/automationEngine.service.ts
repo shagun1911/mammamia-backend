@@ -1157,10 +1157,28 @@ export class AutomationEngine {
       console.log(`[Automation Engine] 👥 Processing ${contactIds.length} contact(s)`);
       
       for (const contactId of contactIds) {
-        const contact = await Customer.findById(contactId).lean();
+        let contact = await Customer.findById(contactId).lean();
         if (!contact) {
           console.log(`[Automation Engine] ⚠️  Contact ${contactId} not found, skipping`);
           continue;
+        }
+
+        // CRITICAL FIX: Use fresh contact data from CSV if available (for batch calls)
+        // This ensures the LATEST email from CSV is used, not old database email
+        if (triggerData.freshContactData) {
+          console.log(`[Automation Engine] 🔄 Using fresh contact data from CSV instead of database`);
+          console.log(`[Automation Engine] 📧 Database email: ${contact.email}`);
+          console.log(`[Automation Engine] 📧 CSV email (fresh): ${triggerData.freshContactData.email}`);
+          
+          // Merge fresh data with database contact, prioritizing fresh data
+          contact = {
+            ...contact,
+            name: triggerData.freshContactData.name || contact.name,
+            email: triggerData.freshContactData.email || contact.email,
+            phone: triggerData.freshContactData.phone || contact.phone
+          };
+          
+          console.log(`[Automation Engine] ✅ Using merged contact data with fresh email: ${contact.email}`);
         }
 
         console.log(`\n[Automation Engine] 👤 Processing contact: ${contact.name} (${contact.email || 'no email'})`);
@@ -1178,7 +1196,8 @@ export class AutomationEngine {
           contactName: contact.name,
           contactEmail: contact.email,
           hasAppointment: !!context.appointment,
-          appointmentBooked: context.appointment?.booked
+          appointmentBooked: context.appointment?.booked,
+          usingFreshData: !!triggerData.freshContactData
         });
 
         let nodeIndex = 0;
