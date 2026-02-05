@@ -36,12 +36,18 @@ export interface RenderingResult {
 
 /**
  * STRICT VARIABLE CONTRACT
- * Only these variables are allowed:
- * - {{name}} - REQUIRED, always replaced
- * - {{email}} - Optional, replaced with '' if missing
- * - {{phone}} - Optional, replaced with '' if missing
+ * Supported variable formats:
+ * - {{name}} or {{customer_name}} or {{contact.name}} - REQUIRED, always replaced
+ * - {{email}} or {{customer_email}} or {{contact.email}} - Optional
+ * - {{phone}} or {{phone_number}} or {{customer_phone_number}} or {{contact.phone_number}} - Optional
+ * 
+ * All formats are normalized to the same values for consistency.
  */
-const ALLOWED_VARIABLES = ['name', 'email', 'phone'] as const;
+const ALLOWED_VARIABLES = [
+  'name', 'customer_name', 'contact.name',
+  'email', 'customer_email', 'contact.email', 
+  'phone', 'phone_number', 'customer_phone_number', 'contact.phone_number'
+] as const;
 type AllowedVariable = typeof ALLOWED_VARIABLES[number];
 
 /**
@@ -126,17 +132,24 @@ export function renderGreeting(
   const contactPhone = (contact.phone?.trim() || '').replace(/[{}<>]/g, '');
   
   // STEP 3: SINGLE-PASS REPLACEMENT
-  // Use exact case-sensitive replacement to avoid edge cases
+  // Support multiple variable formats for backward compatibility
   let rendered = template;
   
-  // Replace {{name}} (case-insensitive)
+  // Replace all NAME variants (case-insensitive)
   rendered = rendered.replace(/\{\{name\}\}/gi, contactName);
+  rendered = rendered.replace(/\{\{customer_name\}\}/gi, contactName);
+  rendered = rendered.replace(/\{\{contact\.name\}\}/gi, contactName);
   
-  // Replace {{email}} (case-insensitive)
+  // Replace all EMAIL variants (case-insensitive)
   rendered = rendered.replace(/\{\{email\}\}/gi, contactEmail);
+  rendered = rendered.replace(/\{\{customer_email\}\}/gi, contactEmail);
+  rendered = rendered.replace(/\{\{contact\.email\}\}/gi, contactEmail);
   
-  // Replace {{phone}} (case-insensitive)
+  // Replace all PHONE variants (case-insensitive)
   rendered = rendered.replace(/\{\{phone\}\}/gi, contactPhone);
+  rendered = rendered.replace(/\{\{phone_number\}\}/gi, contactPhone);
+  rendered = rendered.replace(/\{\{customer_phone_number\}\}/gi, contactPhone);
+  rendered = rendered.replace(/\{\{contact\.phone_number\}\}/gi, contactPhone);
   
   // STEP 4: CRITICAL SAFETY CHECK - Remove ANY remaining variables
   // This catches typos, unknown variables, or malformed patterns
