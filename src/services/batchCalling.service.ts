@@ -161,7 +161,7 @@ export class BatchCallingService {
 
       console.log('[Batch Calling Service] ✅ Batch job status fetched successfully');
       console.log('[Batch Calling Service] Response status:', response.status);
-      console.log('[Batch Calling Service] Request Body:', JSON.stringify(response.request.data, null, 2));
+      console.log('[Batch Calling Service] Job ID:', jobId);
       console.log('[Batch Calling Service] Response body:', JSON.stringify(response.data, null, 2));
 
       return response.data;
