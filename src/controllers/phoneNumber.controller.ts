@@ -831,7 +831,8 @@ export class PhoneNumberController {
    * Delete phone number
    * DELETE /api/v1/phone-numbers/:phone_number_id
    * This will delete ALL related data:
-   * - PhoneNumber record
+   * - Phone number from ElevenLabs Python API (if registered)
+   * - PhoneNumber record from MongoDB
    * - InboundNumber record (if inbound)
    * - InboundAgentConfig (if inbound)
    * - PhoneSettings references (if inbound)
@@ -933,14 +934,31 @@ export class PhoneNumberController {
 
       const phoneNumberValue = phoneNumber.phone_number;
       const isInbound = phoneNumber.supports_inbound;
+      const elevenlabsPhoneNumberId = phoneNumber.elevenlabs_phone_number_id;
 
       console.log(`🗑️ [PhoneNumber Controller] Deleting phone number ${phone_number_id} (${phoneNumberValue})`);
       console.log(`📋 [PhoneNumber Controller] Is inbound: ${isInbound}`);
+      console.log(`📋 [PhoneNumber Controller] ElevenLabs ID: ${elevenlabsPhoneNumberId || 'N/A'}`);
 
-      // If it's an inbound number, delete all related inbound data
+      // STEP 1: Delete from ElevenLabs Python API first (if registered)
+      if (elevenlabsPhoneNumberId) {
+        try {
+          const { sipTrunkService } = await import('../services/sipTrunk.service');
+          await sipTrunkService.deletePhoneNumberFromElevenLabs(elevenlabsPhoneNumberId);
+          console.log('✅ [PhoneNumber Controller] Deleted from ElevenLabs Python API');
+        } catch (elevenLabsError: any) {
+          // Log but don't fail - we still want to delete from MongoDB
+          console.warn('⚠️ [PhoneNumber Controller] Failed to delete from ElevenLabs:', elevenLabsError.message);
+          console.warn('⚠️ [PhoneNumber Controller] Continuing with MongoDB deletion...');
+        }
+      } else {
+        console.log('ℹ️ [PhoneNumber Controller] No ElevenLabs ID found, skipping ElevenLabs deletion');
+      }
+
+      // STEP 2: If it's an inbound number, delete all related inbound data
       if (isInbound) {
         try {
-          // 1. Delete from InboundNumber collection
+          // 2.1. Delete from InboundNumber collection
           const { inboundNumberService } = await import('../services/inboundNumber.service');
           try {
             await inboundNumberService.delete(userId, phoneNumberValue);
@@ -952,7 +970,7 @@ export class PhoneNumberController {
             }
           }
 
-          // 2. Delete from InboundAgentConfig
+          // 2.2. Delete from InboundAgentConfig
           const { inboundAgentConfigService } = await import('../services/inboundAgentConfig.service');
           try {
             await inboundAgentConfigService.delete(userId, phoneNumberValue);
@@ -961,7 +979,7 @@ export class PhoneNumberController {
             console.warn('⚠️ [PhoneNumber Controller] Failed to delete from InboundAgentConfig:', configError.message);
           }
 
-          // 3. Remove from PhoneSettings.inboundPhoneNumbers
+          // 2.3. Remove from PhoneSettings.inboundPhoneNumbers
           const PhoneSettings = (await import('../models/PhoneSettings')).default;
           try {
             const phoneSettings = await PhoneSettings.findOne({ userId: new mongoose.Types.ObjectId(userId) });
@@ -984,7 +1002,7 @@ export class PhoneNumberController {
         }
       }
 
-      // Finally, delete the PhoneNumber record itself
+      // STEP 3: Finally, delete the PhoneNumber record itself from MongoDB
       await PhoneNumber.findOneAndDelete(query);
 
       // ============================================================================

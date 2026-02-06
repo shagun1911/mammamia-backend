@@ -1280,6 +1280,47 @@ export class SipTrunkService {
       );
     }
   }
+
+  /**
+   * Delete phone number from ElevenLabs Python API
+   * DELETE /api/v1/phone-numbers/{phone_number_id}
+   * 
+   * This deletes the phone number from the ElevenLabs/Python API registry.
+   * Should be called before deleting from MongoDB to ensure complete cleanup.
+   */
+  async deletePhoneNumberFromElevenLabs(phone_number_id: string): Promise<void> {
+    try {
+      const pythonUrl = `${PYTHON_API_URL}/api/v1/phone-numbers/${phone_number_id}`;
+      
+      console.log('[SIP Trunk Service] ===== DELETING PHONE NUMBER FROM ELEVENLABS =====');
+      console.log('[SIP Trunk Service] ElevenLabs Python API URL:', pythonUrl);
+      console.log('[SIP Trunk Service] Phone Number ID:', phone_number_id);
+
+      const response = await axios.delete(pythonUrl, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        timeout: 30000
+      });
+
+      console.log('[SIP Trunk Service] ✅ Phone number deleted from ElevenLabs');
+      console.log('[SIP Trunk Service] Response status:', response.status);
+      console.log('[SIP Trunk Service] Response:', response.data);
+    } catch (error: any) {
+      // If it's a 404, the phone number might already be deleted from ElevenLabs, which is fine
+      if (error.response?.status === 404) {
+        console.warn('[SIP Trunk Service] ⚠️ Phone number not found in ElevenLabs (might already be deleted):', phone_number_id);
+        return; // Don't throw error - this is acceptable
+      }
+
+      console.error('[SIP Trunk Service] ❌ Failed to delete phone number from ElevenLabs:', error.response?.data || error.message);
+      
+      // For other errors, we still want to log but not fail the entire delete operation
+      // This ensures that even if ElevenLabs delete fails, we still delete from MongoDB
+      console.warn('[SIP Trunk Service] ⚠️ Continuing with MongoDB deletion despite ElevenLabs error');
+    }
+  }
 }
 
 export const sipTrunkService = new SipTrunkService();
