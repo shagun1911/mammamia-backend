@@ -310,9 +310,12 @@ export class AuthService {
       // Onboarding fields
       phone: user.phone,
       companyName: user.companyName,
-      companyUrl: user.companyUrl,
+      companyWebsite: user.companyWebsite,
       vat: user.vat,
-      address: user.address,
+      street: user.street,
+      city: user.city,
+      state: user.state,
+      country: user.country,
       onboardingCompleted: user.onboardingCompleted || false
     };
   }
@@ -323,9 +326,12 @@ export class AuthService {
     email: string;
     phone: string;
     companyName?: string;
-    companyUrl?: string;
+    companyWebsite?: string;
     vat?: string;
-    address: string;
+    street: string;
+    city: string;
+    state: string;
+    country: string;
   }) {
     console.log('[Auth Service] Completing onboarding for userId:', userId);
     
@@ -352,9 +358,12 @@ export class AuthService {
       user.email = data.email || user.email;
       user.phone = data.phone;
       user.companyName = data.companyName || undefined;
-      user.companyUrl = data.companyUrl || undefined;
+      user.companyWebsite = data.companyWebsite || undefined;
       user.vat = data.vat || undefined;
-      user.address = data.address;
+      user.street = data.street;
+      user.city = data.city;
+      user.state = data.state;
+      user.country = data.country;
       user.onboardingCompleted = true;
 
       await user.save();
@@ -368,9 +377,12 @@ export class AuthService {
         lastName: user.lastName,
         phone: user.phone,
         companyName: user.companyName,
-        companyUrl: user.companyUrl,
+        companyWebsite: user.companyWebsite,
         vat: user.vat,
-        address: user.address,
+        street: user.street,
+        city: user.city,
+        state: user.state,
+        country: user.country,
         onboardingCompleted: user.onboardingCompleted
       };
     } catch (error: any) {

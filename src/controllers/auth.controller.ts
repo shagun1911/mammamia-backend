@@ -92,15 +92,15 @@ export class AuthController {
   // Complete onboarding
   completeOnboarding = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const { name, email, phone, companyName, companyUrl, vat, address } = req.body;
+      const { name, email, phone, companyName, companyWebsite, vat, street, city, state, country } = req.body;
       
       // Validate required fields
-      if (!name || !email || !phone || !address) {
+      if (!name || !email || !phone || !street || !city || !state || !country) {
         return res.status(400).json({
           success: false,
           error: {
             code: 'VALIDATION_ERROR',
-            message: 'Missing required fields: name, email, phone, and address are required'
+            message: 'Missing required fields: name, email, phone, street, city, state, and country are required'
           }
         });
       }
@@ -121,9 +121,12 @@ export class AuthController {
         email,
         phone,
         companyName,
-        companyUrl,
+        companyWebsite,
         vat,
-        address
+        street,
+        city,
+        state,
+        country
       });
       res.json(successResponse(result, 'Onboarding completed successfully'));
     } catch (error: any) {

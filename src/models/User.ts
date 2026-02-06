@@ -22,9 +22,12 @@ export interface IUser extends Document {
   // Onboarding fields
   phone?: string;
   companyName?: string;
-  companyUrl?: string;
+  companyWebsite?: string;
   vat?: string;
-  address?: string;
+  street?: string;
+  city?: string;
+  state?: string;
+  country?: string;
   onboardingCompleted?: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -100,7 +103,7 @@ const UserSchema = new Schema<IUser>({
     type: String,
     trim: true
   },
-  companyUrl: {
+  companyWebsite: {
     type: String,
     trim: true
   },
@@ -108,7 +111,19 @@ const UserSchema = new Schema<IUser>({
     type: String,
     trim: true
   },
-  address: {
+  street: {
+    type: String,
+    trim: true
+  },
+  city: {
+    type: String,
+    trim: true
+  },
+  state: {
+    type: String,
+    trim: true
+  },
+  country: {
     type: String,
     trim: true
   },
