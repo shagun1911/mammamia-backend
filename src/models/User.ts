@@ -19,6 +19,13 @@ export interface IUser extends Document {
   googleId?: string;
   // Profile/Package fields (now supports dynamic plan slugs)
   selectedProfile?: string;
+  // Onboarding fields
+  phone?: string;
+  companyName?: string;
+  companyUrl?: string;
+  vat?: string;
+  address?: string;
+  onboardingCompleted?: boolean;
   createdAt: Date;
   updatedAt: Date;
   comparePassword(candidatePassword: string): Promise<boolean>;
@@ -83,6 +90,31 @@ const UserSchema = new Schema<IUser>({
     trim: true,
     lowercase: true,
     default: 'free'
+  },
+  // Onboarding fields
+  phone: {
+    type: String,
+    trim: true
+  },
+  companyName: {
+    type: String,
+    trim: true
+  },
+  companyUrl: {
+    type: String,
+    trim: true
+  },
+  vat: {
+    type: String,
+    trim: true
+  },
+  address: {
+    type: String,
+    trim: true
+  },
+  onboardingCompleted: {
+    type: Boolean,
+    default: false
   }
 }, {
   timestamps: true

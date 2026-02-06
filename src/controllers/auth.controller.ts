@@ -88,6 +88,49 @@ export class AuthController {
       next(error);
     }
   };
+
+  // Complete onboarding
+  completeOnboarding = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { name, email, phone, companyName, companyUrl, vat, address } = req.body;
+      
+      // Validate required fields
+      if (!name || !email || !phone || !address) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Missing required fields: name, email, phone, and address are required'
+          }
+        });
+      }
+
+      if (!req.user || !req.user._id) {
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'User not authenticated'
+          }
+        });
+      }
+
+      const userId = (req.user._id as any).toString();
+      const result = await this.authService.completeOnboarding(userId, {
+        name,
+        email,
+        phone,
+        companyName,
+        companyUrl,
+        vat,
+        address
+      });
+      res.json(successResponse(result, 'Onboarding completed successfully'));
+    } catch (error: any) {
+      console.error('[Auth Controller] Onboarding error:', error);
+      next(error);
+    }
+  };
 }
 
 export const authController = new AuthController();

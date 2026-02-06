@@ -306,8 +306,77 @@ export class AuthService {
       isAdmin: user.role === 'admin',
       organizationId: user.organizationId,
       permissions: user.permissions,
-      createdAt: user.createdAt
+      createdAt: user.createdAt,
+      // Onboarding fields
+      phone: user.phone,
+      companyName: user.companyName,
+      companyUrl: user.companyUrl,
+      vat: user.vat,
+      address: user.address,
+      onboardingCompleted: user.onboardingCompleted || false
     };
+  }
+
+  // Complete onboarding
+  async completeOnboarding(userId: string, data: {
+    name: string;
+    email: string;
+    phone: string;
+    companyName?: string;
+    companyUrl?: string;
+    vat?: string;
+    address: string;
+  }) {
+    console.log('[Auth Service] Completing onboarding for userId:', userId);
+    
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      console.error('[Auth Service] User not found:', userId);
+      throw new AppError(404, 'NOT_FOUND', 'User not found');
+    }
+
+    // Check if email is being changed and if new email already exists
+    if (data.email && data.email !== user.email) {
+      const existingUser = await User.findOne({ email: data.email });
+      if (existingUser && existingUser._id.toString() !== userId) {
+        throw new AppError(400, 'EMAIL_EXISTS', 'Email already in use by another account');
+      }
+    }
+
+    try {
+      // Update user fields
+      const nameParts = data.name.trim().split(/\s+/);
+      user.firstName = nameParts[0] || user.firstName;
+      user.lastName = nameParts.slice(1).join(' ') || user.lastName || '';
+      user.email = data.email || user.email;
+      user.phone = data.phone;
+      user.companyName = data.companyName || undefined;
+      user.companyUrl = data.companyUrl || undefined;
+      user.vat = data.vat || undefined;
+      user.address = data.address;
+      user.onboardingCompleted = true;
+
+      await user.save();
+      console.log('[Auth Service] Onboarding completed successfully for user:', userId);
+
+      return {
+        id: user._id,
+        email: user.email,
+        name: `${user.firstName} ${user.lastName}`,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phone: user.phone,
+        companyName: user.companyName,
+        companyUrl: user.companyUrl,
+        vat: user.vat,
+        address: user.address,
+        onboardingCompleted: user.onboardingCompleted
+      };
+    } catch (error: any) {
+      console.error('[Auth Service] Error saving user during onboarding:', error);
+      throw new AppError(500, 'SAVE_ERROR', `Failed to save user data: ${error.message}`);
+    }
   }
 
   // Delete account - removes all user-related data
