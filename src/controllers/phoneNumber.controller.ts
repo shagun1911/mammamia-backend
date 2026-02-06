@@ -831,7 +831,8 @@ export class PhoneNumberController {
    * Delete phone number
    * DELETE /api/v1/phone-numbers/:phone_number_id
    * This will delete ALL related data:
-   * - Phone number from ElevenLabs Python API (if registered)
+
+  * - Phone number from ElevenLabs Python API (if registered)
    * - PhoneNumber record from MongoDB
    * - InboundNumber record (if inbound)
    * - InboundAgentConfig (if inbound)

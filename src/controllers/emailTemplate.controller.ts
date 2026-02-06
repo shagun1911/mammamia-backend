@@ -81,7 +81,17 @@ WORKFLOW:
     try {
       const userId = req.user!.id;
       const { templateId } = req.params;
-      const template = await emailTemplateService.getEmailTemplateById(userId, templateId);
+      
+      // Try to find by template_id first (e.g., "confirm_appointment_8")
+      // If it looks like a MongoDB ObjectId, try that instead
+      let template;
+      if (templateId.match(/^[0-9a-fA-F]{24}$/)) {
+        // It's a MongoDB ObjectId
+        template = await emailTemplateService.getEmailTemplateById(userId, templateId);
+      } else {
+        // It's a template_id string
+        template = await emailTemplateService.getEmailTemplateByTemplateId(userId, templateId);
+      }
       
       if (!template) {
         throw new AppError(404, 'NOT_FOUND', 'Email template not found');

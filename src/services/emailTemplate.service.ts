@@ -7,18 +7,26 @@ const PYTHON_API_BASE_URL = process.env.PYTHON_API_URL || 'https://elvenlabs-voi
 
 /**
  * Get webhook endpoint from environment variable.
- * ALWAYS uses TEMPLATE_WEBHOOK_ENDPOINT - fails fast if not configured.
+ * Uses TEMPLATE_WEBHOOK_ENDPOINT if configured, otherwise falls back to:
+ * 1. BACKEND_URL (for production)
+ * 2. Python API URL (for development)
  * Client input is IGNORED - webhook_base_url is always enforced from ENV.
  */
 function getTemplateWebhookEndpoint(): string {
-  const webhookBaseUrl = process.env.TEMPLATE_WEBHOOK_ENDPOINT?.trim();
+  let webhookBaseUrl = process.env.TEMPLATE_WEBHOOK_ENDPOINT?.trim();
   
+  // Fallback 1: Use BACKEND_URL if TEMPLATE_WEBHOOK_ENDPOINT is not set
   if (!webhookBaseUrl) {
-    throw new AppError(
-      500,
-      'CONFIGURATION_ERROR',
-      'TEMPLATE_WEBHOOK_ENDPOINT is not configured in environment variables. This is required for email template webhooks.'
-    );
+    webhookBaseUrl = process.env.BACKEND_URL?.trim();
+    if (webhookBaseUrl) {
+      console.log('[Email Template] Using BACKEND_URL as webhook endpoint fallback');
+    }
+  }
+  
+  // Fallback 2: Use Python API URL for local development
+  if (!webhookBaseUrl) {
+    webhookBaseUrl = PYTHON_API_BASE_URL;
+    console.log('[Email Template] Using Python API URL as webhook endpoint fallback for local development');
   }
   
   // Ensure URL ends with /api/v1
@@ -26,7 +34,7 @@ function getTemplateWebhookEndpoint(): string {
     ? webhookBaseUrl 
     : `${webhookBaseUrl.replace(/\/$/, '')}/api/v1`;
   
-  console.log('[Email Template] Webhook endpoint enforced:', url);
+  console.log('[Email Template] Webhook endpoint:', url);
   
   return url;
 }
