@@ -3,6 +3,7 @@ import { AuthRequest } from '../middleware/auth.middleware';
 import { CampaignService } from '../services/campaign.service';
 import { successResponse, paginatedResponse } from '../utils/response.util';
 import { AppError } from '../middleware/error.middleware';
+import { profileService } from '../services/profile.service';
 
 export class CampaignController {
   private campaignService: CampaignService;
@@ -104,6 +105,13 @@ export class CampaignController {
       if (!organizationId) {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
       }
+
+      // Check Credits (at least 1 to see if they are already over limit)
+      const hasCredit = await profileService.checkCredits(organizationId.toString(), 'chat', 1);
+      if (!hasCredit) {
+        throw new AppError(403, 'LIMIT_REACHED', 'Plan limit reached. Please upgrade your plan before starting a campaign.');
+      }
+
       const result = await this.campaignService.start(req.params.campaignId, userId, organizationId.toString());
       res.json(successResponse(result, 'Campaign started successfully'));
     } catch (error) {
@@ -165,7 +173,7 @@ export class CampaignController {
         deliveredCount: campaign.deliveredCount || 0,
         failedCount: campaign.failedCount || 0,
         pendingCount: campaign.pendingCount || 0,
-        progress: campaign.totalRecipients 
+        progress: campaign.totalRecipients
           ? Math.round(((campaign.sentCount || 0) + (campaign.failedCount || 0)) / campaign.totalRecipients * 100)
           : 0,
         status: campaign.status,

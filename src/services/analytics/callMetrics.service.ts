@@ -15,24 +15,28 @@ export class CallMetricsService {
    */
   private calculateDurationFromTranscript(transcript: any): number | null {
     try {
-      if (!transcript || !transcript.items || !Array.isArray(transcript.items)) {
+      const items = Array.isArray(transcript)
+        ? transcript
+        : (transcript?.items || transcript?.messages);
+
+      if (!Array.isArray(items) || items.length === 0) {
         return null;
       }
 
-      const items = transcript.items.filter((item: any) => item.timestamp);
-      if (items.length === 0) {
+      const itemsWithTime = items.filter((item: any) => item.timestamp || item.time || item.created_at);
+      if (itemsWithTime.length < 2) {
         return null;
       }
 
       // Sort by timestamp
-      items.sort((a: any, b: any) => {
-        const timeA = new Date(a.timestamp).getTime();
-        const timeB = new Date(b.timestamp).getTime();
+      itemsWithTime.sort((a: any, b: any) => {
+        const timeA = new Date(a.timestamp || a.time || a.created_at).getTime();
+        const timeB = new Date(b.timestamp || b.time || b.created_at).getTime();
         return timeA - timeB;
       });
 
-      const firstTimestamp = new Date(items[0].timestamp).getTime();
-      const lastTimestamp = new Date(items[items.length - 1].timestamp).getTime();
+      const firstTimestamp = new Date(itemsWithTime[0].timestamp || itemsWithTime[0].time || itemsWithTime[0].created_at).getTime();
+      const lastTimestamp = new Date(itemsWithTime[itemsWithTime.length - 1].timestamp || itemsWithTime[itemsWithTime.length - 1].time || itemsWithTime[itemsWithTime.length - 1].created_at).getTime();
       const durationMs = lastTimestamp - firstTimestamp;
       const durationMinutes = Math.ceil(durationMs / (1000 * 60)); // Round UP to nearest minute
 
@@ -47,7 +51,7 @@ export class CallMetricsService {
    * Get duration from conversation metadata or transcript
    * Priority: transcript timestamps > metadata.duration > null (don't count if no valid data)
    */
-  private getCallDuration(conversation: any): number | null {
+  public getCallDuration(conversation: any): number | null {
     // Priority 1: Calculate from transcript timestamps
     if (conversation.transcript) {
       const duration = this.calculateDurationFromTranscript(conversation.transcript);
@@ -56,26 +60,39 @@ export class CallMetricsService {
       }
     }
 
-    // Priority 2: Use metadata.duration (could be in seconds or minutes)
-    if (conversation.metadata?.duration) {
-      const metaDuration = conversation.metadata.duration;
-      if (typeof metaDuration === 'number' && metaDuration > 0) {
-        // If > 100, assume seconds; otherwise assume minutes
-        return metaDuration > 100 ? Math.ceil(metaDuration / 60) : Math.ceil(metaDuration);
-      } else if (typeof metaDuration === 'string') {
-        // Try to parse formatted duration (e.g., "5:30" or "5m 30s")
-        const parsed = this.parseDurationString(metaDuration);
-        if (parsed > 0) return parsed;
+    // Priority 2: Use metadata duration fields
+    if (conversation.metadata) {
+      const meta = conversation.metadata as any;
+      const rawDuration = meta.duration || meta.duration_seconds || meta.call_duration_secs || meta.call_duration_seconds;
+
+      if (rawDuration !== undefined && rawDuration !== null) {
+        const metaDuration = parseInt(String(rawDuration), 10);
+        if (!isNaN(metaDuration)) {
+          return Math.ceil(metaDuration / 60);
+        }
+      }
+
+      // Fallback: Calculate from metadata timestamps
+      const start = meta.callInitiated || meta.AcceptedAt || meta.accepted_time_unix_secs;
+      const end = meta.callCompletedAt || meta.CompletedAt || meta.end_time_unix_secs;
+
+      if (start && end) {
+        const startTime = typeof start === 'number' ? start * 1000 : new Date(start).getTime();
+        const endTime = typeof end === 'number' ? end * 1000 : new Date(end).getTime();
+        const diffSeconds = (endTime - startTime) / 1000;
+        if (diffSeconds > 0 && diffSeconds < 7200) {
+          return Math.ceil(diffSeconds / 60);
+        }
       }
     }
 
-    // Priority 3: Use time difference ONLY if reasonable (between 10 seconds and 2 hours)
+    // Priority 3: Use time difference ONLY if reasonable
     if (conversation.createdAt && conversation.updatedAt) {
       const diffMs = new Date(conversation.updatedAt).getTime() - new Date(conversation.createdAt).getTime();
-      const diffMinutes = Math.ceil(diffMs / (1000 * 60));
-      // Only count if between 1 minute and 120 minutes (reasonable call duration)
-      if (diffMinutes >= 1 && diffMinutes <= 120) {
-        return diffMinutes;
+      const diffSeconds = diffMs / 1000;
+      // Only count if between 1 second and 120 minutes
+      if (diffSeconds > 0 && diffSeconds <= 7200) {
+        return Math.ceil(diffSeconds / 60);
       }
     }
 
@@ -147,7 +164,7 @@ export class CallMetricsService {
 
       for (const conv of phoneConversations) {
         const duration = this.getCallDuration(conv);
-        
+
         if (duration !== null && duration > 0) {
           totalCallMinutes += duration;
           callsWithValidDuration++;
@@ -187,7 +204,7 @@ export class CallMetricsService {
     try {
       const User = mongoose.model('User');
       const user = await User.findById(userId).select('organizationId').lean() as any;
-      
+
       if (!user || !user.organizationId) {
         return {
           totalCallMinutes: 0,
@@ -235,7 +252,7 @@ export class CallMetricsService {
 
       for (const conv of phoneConversations) {
         const duration = this.getCallDuration(conv);
-        
+
         if (duration !== null && duration > 0) {
           totalCallMinutes += duration;
           callsWithValidDuration++;

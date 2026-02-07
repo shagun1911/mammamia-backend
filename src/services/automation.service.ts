@@ -3,6 +3,7 @@ import Automation from '../models/Automation';
 import AutomationExecution from '../models/AutomationExecution';
 import { AutomationEngine } from './automationEngine.service';
 import { AppError } from '../middleware/error.middleware';
+import { profileService } from './profile.service';
 
 export class AutomationService {
   private engine: AutomationEngine;
@@ -39,6 +40,15 @@ export class AutomationService {
   }
 
   async create(automationData: any) {
+    // Check limits if creating as active (default is true)
+    if (automationData.isActive !== false) {
+      if (automationData.organizationId) {
+        const hasCredits = await profileService.checkCredits(automationData.organizationId, 'automations', 1);
+        if (!hasCredits) {
+          throw new AppError(403, 'LIMIT_REACHED', 'Active automations limit reached. Please upgrade your plan.');
+        }
+      }
+    }
     const automation = await Automation.create(automationData);
     return automation;
   }
@@ -56,6 +66,14 @@ export class AutomationService {
 
     if (autoOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this automation');
+    }
+
+    // Check limits if activating
+    if (automationData.isActive === true && !automation.isActive) {
+      const hasCredits = await profileService.checkCredits(organizationId, 'automations', 1);
+      if (!hasCredits) {
+        throw new AppError(403, 'LIMIT_REACHED', 'Active automations limit reached. Please upgrade your plan.');
+      }
     }
 
     const updated = await Automation.findByIdAndUpdate(
@@ -101,6 +119,14 @@ export class AutomationService {
 
     if (autoOrgId !== userOrgId) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this automation');
+    }
+
+    // Check limits if activating
+    if (isActive && !automation.isActive) {
+      const hasCredits = await profileService.checkCredits(organizationId, 'automations', 1);
+      if (!hasCredits) {
+        throw new AppError(403, 'LIMIT_REACHED', 'Active automations limit reached. Please upgrade your plan.');
+      }
     }
 
     const updated = await Automation.findByIdAndUpdate(

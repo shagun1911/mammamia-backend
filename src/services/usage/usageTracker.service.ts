@@ -34,9 +34,13 @@ export class UsageTrackerService {
         let duration = 0;
 
         // Method 1: Calculate from transcript items (most accurate)
-        if (conv.transcript && Array.isArray(conv.transcript)) {
-          const timestamps = conv.transcript
-            .map((item: any) => item.timestamp || item.time)
+        const transcriptItems = Array.isArray(conv.transcript)
+          ? conv.transcript
+          : (conv.transcript as any)?.messages;
+
+        if (Array.isArray(transcriptItems)) {
+          const timestamps = transcriptItems
+            .map((item: any) => item.timestamp || item.time || item.created_at)
             .filter(Boolean)
             .map((ts: any) => new Date(ts).getTime())
             .sort((a: number, b: number) => a - b);
@@ -48,11 +52,31 @@ export class UsageTrackerService {
           }
         }
 
-        // Method 2: Use metadata.duration if available
-        if (duration === 0 && conv.metadata?.duration) {
-          const metaDuration = parseInt(String(conv.metadata.duration), 10);
-          if (!isNaN(metaDuration)) {
-            duration = Math.ceil(metaDuration / 60); // Assuming metadata.duration is in seconds
+        // Method 2: Use metadata duration fields if available
+        if (duration === 0 && conv.metadata) {
+          const meta = conv.metadata as any;
+          const rawDuration = meta.duration || meta.duration_seconds || meta.call_duration_secs || meta.call_duration_seconds;
+
+          if (rawDuration !== undefined && rawDuration !== null) {
+            const metaDuration = parseInt(String(rawDuration), 10);
+            if (!isNaN(metaDuration)) {
+              duration = Math.ceil(metaDuration / 60);
+            }
+          }
+
+          // Fallback: Calculate from metadata timestamps
+          if (duration === 0) {
+            const start = meta.callInitiated || meta.AcceptedAt || meta.accepted_time_unix_secs;
+            const end = meta.callCompletedAt || meta.CompletedAt || meta.end_time_unix_secs;
+
+            if (start && end) {
+              const startTime = typeof start === 'number' ? start * 1000 : new Date(start).getTime();
+              const endTime = typeof end === 'number' ? end * 1000 : new Date(end).getTime();
+              const diffSeconds = (endTime - startTime) / 1000;
+              if (diffSeconds > 0 && diffSeconds < 7200) {
+                duration = Math.ceil(diffSeconds / 60);
+              }
+            }
           }
         }
 
@@ -60,11 +84,11 @@ export class UsageTrackerService {
         if (duration === 0 && conv.createdAt && conv.updatedAt) {
           const start = new Date(conv.createdAt).getTime();
           const end = new Date(conv.updatedAt).getTime();
-          const diffMinutes = (end - start) / 1000 / 60;
+          const diffSeconds = (end - start) / 1000;
 
-          // Only count if duration is reasonable (< 2 hours)
-          if (diffMinutes > 0 && diffMinutes < 120) {
-            duration = Math.ceil(diffMinutes);
+          // Only count if duration is reasonable (0s to 2 hours)
+          if (diffSeconds > 0 && diffSeconds < 7200) {
+            duration = Math.ceil(diffSeconds / 60);
           }
         }
 

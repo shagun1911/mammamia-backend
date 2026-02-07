@@ -393,40 +393,25 @@ export class AnalyticsService {
       { $sort: { _id: 1 } }
     ]);
 
-    // Get call minutes trends from phone conversations
-    const callMinutesTrend = await Conversation.aggregate([
-      {
-        $match: {
-          ...dateQuery,
-          channel: 'phone'
-        }
-      },
-      {
-        $project: {
-          period: { $dateToString: { format: dateFormat[groupBy], date: '$createdAt' } },
-          duration: {
-            $cond: {
-              if: { $and: [{ $ne: ['$transcript', null] }, { $gt: [{ $convert: { input: { $ifNull: ['$transcript.duration', 0] }, to: 'double', onError: 0, onNull: 0 } }, 0] }] },
-              then: { $divide: [{ $convert: { input: { $ifNull: ['$transcript.duration', 0] }, to: 'double', onError: 0, onNull: 0 } }, 60] },
-              else: {
-                $cond: {
-                  if: { $and: [{ $ne: ['$updatedAt', null] }, { $ne: ['$createdAt', null] }, { $gte: [{ $subtract: ['$updatedAt', '$createdAt'] }, 0] }] },
-                  then: { $divide: [{ $subtract: ['$updatedAt', '$createdAt'] }, 60000] },
-                  else: 2
-                }
-              }
-            }
-          }
-        }
-      },
-      {
-        $group: {
-          _id: '$period',
-          minutes: { $sum: { $ceil: '$duration' } }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
+    // Get phone conversations for trend calculation
+    const phoneConversations = await Conversation.find({
+      ...dateQuery,
+      channel: 'phone'
+    }).select('transcript metadata createdAt updatedAt').lean();
+
+    // Group call minutes by period in JS for consistency with CallMetricsService
+    const callMinutesByPeriod: Record<string, number> = {};
+    for (const conv of phoneConversations) {
+      const period = new Date(conv.createdAt).toISOString().split('T')[0]; // Simple day grouping for now
+      // Use the service logic
+      const duration = callMetricsService.getCallDuration(conv) || 0;
+      callMinutesByPeriod[period] = (callMinutesByPeriod[period] || 0) + duration;
+    }
+
+    const callMinutesTrend = Object.entries(callMinutesByPeriod).map(([_id, minutes]) => ({
+      _id,
+      minutes
+    }));
 
     // Generate ALL periods in requested range to ensure continuous graphs
     const allPeriods: string[] = [];

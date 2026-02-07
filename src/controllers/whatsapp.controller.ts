@@ -3,6 +3,7 @@ import { AuthRequest } from '../middleware/auth.middleware';
 import { AppError } from '../middleware/error.middleware';
 import SocialIntegration from '../models/SocialIntegration';
 import { WhatsAppService } from '../services/whatsapp.service';
+import { profileService } from '../services/profile.service';
 
 const whatsappService = new WhatsAppService();
 
@@ -15,9 +16,15 @@ export class WhatsAppController {
     try {
       // Get organizationId from authenticated user
       const organizationId = req.user?.organizationId || req.user?._id;
-      
+
       if (!organizationId) {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+
+      // Check Credits
+      const hasCredit = await profileService.checkCredits(organizationId.toString(), 'chat', 1);
+      if (!hasCredit) {
+        throw new AppError(403, 'LIMIT_REACHED', 'Chat messages limit reached. Please upgrade your plan.');
       }
 
       // Validate request body

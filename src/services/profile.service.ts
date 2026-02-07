@@ -2,8 +2,10 @@ import Profile, { IProfile } from '../models/Profile';
 import User from '../models/User';
 import Organization from '../models/Organization';
 import Plan from '../models/Plan';
+import Automation from '../models/Automation';
 import { AppError } from '../middleware/error.middleware';
 import mongoose from 'mongoose';
+import { usageTrackerService } from './usage/usageTracker.service';
 
 export class ProfileService {
 
@@ -49,43 +51,25 @@ export class ProfileService {
 
     const plan: any = org.planId;
 
-    // 2. Determine Limit
+    // Use usageTrackerService for real-time accurate check
+    const usage = await usageTrackerService.getOrganizationUsage(orgId);
+
     let limit = 0;
-    if (type === 'chat') limit = plan.features.chatConversations;
-    else if (type === 'voice') limit = plan.features.callMinutes;
-    else if (type === 'automations') limit = plan.features.automations;
+    let used = 0;
+
+    if (type === 'chat') {
+      limit = plan.features.chatConversations;
+      used = usage.chatMessages;
+    } else if (type === 'voice') {
+      limit = plan.features.callMinutes;
+      used = usage.callMinutes;
+    } else if (type === 'automations') {
+      limit = plan.features.automations;
+      used = usage.automations;
+    }
 
     // -1 means unlimited
     if (limit === -1) return true;
-
-    // 3. Fetch Usage
-    let profile = await Profile.findOne({ organizationId: orgId });
-
-    // Auto-create if missing
-    if (!profile) {
-      const now = new Date();
-      const end = new Date(now);
-      end.setMonth(end.getMonth() + 1);
-      profile = await Profile.create({
-        organizationId: orgId,
-        billingCycleStart: now,
-        billingCycleEnd: end,
-        isActive: true
-      });
-    }
-
-    // 4. Check Cycle Expiry
-    if (new Date() > profile.billingCycleEnd) {
-      await this.resetBillingCycle(profile);
-      profile = await Profile.findById(profile._id); // Refresh
-      if (!profile) return false;
-    }
-
-    // 5. Compare
-    let used = 0;
-    if (type === 'chat') used = profile.chatConversationsUsed;
-    else if (type === 'voice') used = profile.voiceMinutesUsed;
-    else if (type === 'automations') used = profile.automationsUsed;
 
     return (used + amount) <= limit;
   }
@@ -118,7 +102,8 @@ export class ProfileService {
 
     if (type === 'chat') profile.chatConversationsUsed += amount;
     else if (type === 'voice') profile.voiceMinutesUsed += amount;
-    else if (type === 'automations') profile.automationsUsed += amount;
+    // Automations limit is now based on active count, no need to increment usage here
+    // else if (type === 'automations') profile.automationsUsed += amount;
 
     await profile.save();
   }
@@ -151,17 +136,18 @@ export class ProfileService {
     if (!org || !org.planId) return null;
     const plan: any = org.planId;
 
+    // Get Comprehensive Real-Time Usage
+    const usage = await usageTrackerService.getOrganizationUsage(user.organizationId.toString());
+
     let profile = await Profile.findOne({ organizationId: user.organizationId });
     if (!profile) {
-      // Return empty stats
+      // Return empty stats but with real usage if any
       return this.formatUsageStats(
         {
-          chatConversationsUsed: 0,
-          voiceMinutesUsed: 0,
-          automationsUsed: 0,
           billingCycleEnd: new Date()
         } as any,
-        plan
+        plan,
+        usage
       );
     }
 
@@ -170,10 +156,10 @@ export class ProfileService {
       profile = await Profile.findById(profile._id);
     }
 
-    return this.formatUsageStats(profile!, plan);
+    return this.formatUsageStats(profile!, plan, usage);
   }
 
-  private formatUsageStats(profile: IProfile, plan: any) {
+  private formatUsageStats(profile: IProfile, plan: any, usage: any) {
     // Helper to calc percentage
     const calc = (used: number, limit: number) => {
       if (limit === -1) return { used, limit: 'Unlimited', remaining: 'Unlimited', percentage: 0 };
@@ -188,9 +174,9 @@ export class ProfileService {
     return {
       planName: plan.name,
       currency: plan.currency,
-      chatConversations: calc(profile.chatConversationsUsed, plan.features.chatConversations),
-      voiceMinutes: calc(profile.voiceMinutesUsed, plan.features.callMinutes),
-      automations: calc(profile.automationsUsed, plan.features.automations),
+      chatConversations: calc(usage.chatMessages, plan.features.chatConversations),
+      voiceMinutes: calc(usage.callMinutes, plan.features.callMinutes),
+      automations: calc(usage.automations, plan.features.automations),
       billingCycle: {
         end: profile.billingCycleEnd,
         daysRemaining: Math.max(0, Math.ceil((new Date(profile.billingCycleEnd).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
