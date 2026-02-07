@@ -284,16 +284,25 @@ export class WooCommerceWebhookController {
         }
 
         // Use planService to assign plan (handles organization, profile, etc.)
-        await planService.assignPlanToOrganization(
+        // This will:
+        // 1. Update Organization with new plan
+        // 2. Reset Profile usage counters (fresh start)
+        // 3. Reset billing cycle
+        // 4. Activate Profile
+        // Plan limits are immediately enforced via middleware and service checks
+        const result = await planService.assignPlanToOrganization(
           user.organizationId.toString(),
           planSlug
         );
 
         logger.info('[WooCommerce Webhook] Plan activated successfully', {
           userId: user._id,
+          organizationId: user.organizationId,
           planSlug,
+          planName: result.plan.name,
           orderId,
-          appIntent: paymentIntent.app_intent
+          appIntent: paymentIntent.app_intent,
+          message: 'Plan limits are now active and enforced'
         });
       } catch (error: any) {
         logger.error('[WooCommerce Webhook] Failed to activate plan', {

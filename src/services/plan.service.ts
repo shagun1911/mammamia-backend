@@ -151,18 +151,37 @@ export class PlanService {
 
       logger.info(`✅ Assigned plan ${plan.name} to Org ${org._id}`);
 
-      // 4. Ensure Profile (Usage Tracker) exists
+      // 4. Ensure Profile (Usage Tracker) exists and reset on upgrade
       let profile = await Profile.findOne({ organizationId: org._id });
+      const now = new Date();
+      const end = new Date(now);
+      end.setMonth(end.getMonth() + 1);
+
       if (!profile) {
-        const now = new Date();
-        const end = new Date(now);
-        end.setMonth(end.getMonth() + 1);
+        // Create new profile for new organization
         profile = await Profile.create({
           organizationId: org._id,
           billingCycleStart: now,
           billingCycleEnd: end,
-          isActive: true
+          isActive: true,
+          // Start fresh with zero usage
+          chatConversationsUsed: 0,
+          voiceMinutesUsed: 0,
+          automationsUsed: 0
         });
+        logger.info(`✅ Created new profile for Org ${org._id} with plan ${plan.slug}`);
+      } else {
+        // Profile exists - this is a plan upgrade/change
+        // RESET usage counters and billing cycle (Fresh Start Policy)
+        // This ensures users get the full benefit of the new plan immediately
+        profile.chatConversationsUsed = 0;
+        profile.voiceMinutesUsed = 0;
+        profile.automationsUsed = 0;
+        profile.billingCycleStart = now;
+        profile.billingCycleEnd = end;
+        profile.isActive = true; // Ensure profile is active
+        await profile.save();
+        logger.info(`✅ Reset usage counters and billing cycle for Org ${org._id} on plan upgrade to ${plan.slug}`);
       }
 
       return {
