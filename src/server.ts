@@ -55,6 +55,7 @@ import adminRoutes from './routes/admin.routes';
 import planRoutes from './routes/plan.routes';
 import planWarningsRoutes from './routes/planWarnings.routes';
 import ttsRoutes from './routes/tts.routes';
+import paymentRoutes from './routes/payment.routes';
 
 
 const app = express();
@@ -289,6 +290,7 @@ app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/plans', planRoutes);
 app.use('/api/v1/plan-warnings', planWarningsRoutes);
 app.use('/api/v1/tts', ttsRoutes);
+app.use('/api/payment', paymentRoutes); // Payment status endpoint (read-only)
 
 // 404 handler
 app.use('*', (req, res) => {
