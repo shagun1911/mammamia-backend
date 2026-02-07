@@ -5,6 +5,7 @@ import Customer from '../models/Customer';
 import { AppError } from '../middleware/error.middleware';
 import socialIntegrationService from './socialIntegration.service';
 import { trackUsage } from '../middleware/profileTracking.middleware';
+import { usageService } from './usage.service';
 
 export class ConversationService {
   // Get all conversations with filters and pagination
@@ -744,6 +745,26 @@ export class ConversationService {
             // Update status if call is completed
             if (pythonData.status === 'completed' || pythonData.status === 'ended') {
               conversation.status = 'closed';
+              
+              // Track voice minutes when call completes
+              // Get duration from Python API response or metadata
+              const durationSeconds = pythonData.duration || pythonData.metadata?.duration;
+              if (durationSeconds && durationSeconds > 0) {
+                const durationMinutes = Math.ceil(durationSeconds / 60); // Round up to minutes
+                
+                // Find user from organization to track usage
+                try {
+                  const Organization = (await import('../models/Organization')).default;
+                  const org = await Organization.findById(conversation.organizationId);
+                  if (org?.ownerId) {
+                    await usageService.incrementMinutes(org.ownerId.toString(), durationMinutes);
+                    console.log(`[Conversation Service] Tracked ${durationMinutes} voice minutes for user ${org.ownerId}`);
+                  }
+                } catch (usageError: any) {
+                  console.warn('[Conversation Service] Failed to track voice minutes:', usageError.message);
+                  // Don't fail transcript update if usage tracking fails
+                }
+              }
             }
 
             // CRITICAL: Don't update 'updatedAt' when refreshing transcript
@@ -980,7 +1001,7 @@ export class ConversationService {
   }
 
   // Bulk create conversations (for campaign transcripts)
-  async bulkCreate(conversationsData: any[], organizationId: string) {
+  async bulkCreate(conversationsData: any[], organizationId: string, userId?: string) {
     const created = [];
     const failed = [];
 
@@ -993,6 +1014,17 @@ export class ConversationService {
           organizationId: data.organizationId || organizationId // Use provided or fallback
         });
         created.push(conversation);
+        
+        // Track conversation usage if userId provided
+        // Only count non-phone conversations (phone conversations track minutes separately)
+        if (userId && conversation.channel !== 'phone') {
+          try {
+            await usageService.incrementConversations(userId, 1);
+          } catch (usageError: any) {
+            console.warn('[Conversation Service] Failed to track conversation usage:', usageError.message);
+            // Don't fail conversation creation if usage tracking fails
+          }
+        }
       } catch (error: any) {
         failed.push({
           data,
@@ -1161,9 +1193,13 @@ export class ConversationService {
         conversation = await Conversation.create(conversationData);
 
         // Track chat conversation usage for the resolved userId
+        // Increment subscription.usage.conversations on User model
         try {
-          await trackUsage(userId, 'chat', 1);
+          await usageService.incrementConversations(userId, 1);
           console.log(`[Widget Conversation] Tracked 1 chat conversation for user ${userId}`);
+          
+          // Also track via legacy system for backward compatibility
+          await trackUsage(userId, 'chat', 1);
         } catch (trackError: any) {
           console.warn('[Widget Conversation] Failed to track usage:', trackError.message);
           // Don't fail conversation save if usage tracking fails

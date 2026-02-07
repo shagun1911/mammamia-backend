@@ -1081,6 +1081,17 @@ export class CampaignService {
               // Track voice usage if call was successful
               if (contactResult.call_status === 'success' && callResponse.data.duration) {
                 const durationMinutes = Math.ceil(callResponse.data.duration / 60); // Convert seconds to minutes, round up
+                
+                // Track via new subscription usage system
+                try {
+                  const { usageService } = await import('./usage.service');
+                  await usageService.incrementMinutes(userId, durationMinutes);
+                  console.log(`[Campaign ${campaignId}] Tracked ${durationMinutes} voice minutes for user ${userId} (subscription)`);
+                } catch (usageError: any) {
+                  console.warn(`[Campaign ${campaignId}] Failed to track subscription usage:`, usageError.message);
+                }
+                
+                // Also track via legacy system for backward compatibility
                 await trackUsage(userId, 'voice', durationMinutes);
                 console.log(`[Campaign ${campaignId}] Tracked ${durationMinutes} voice minutes for user ${userId}`);
               }

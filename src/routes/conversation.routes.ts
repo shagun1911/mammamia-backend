@@ -2,17 +2,20 @@ import { Router } from 'express';
 import { conversationController } from '../controllers/conversation.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { attachmentUpload } from '../config/multer';
+import { requireUsage } from '../middleware/usageEnforcement.middleware';
 
 const router = Router();
 
 // Public widget endpoint (no authentication required)
+// Usage tracking handled in controller (widgetId = userId)
 router.post('/widget', conversationController.saveWidgetConversation);
 
 router.use(authenticate); // All other routes require authentication
 
 router.get('/', conversationController.getAll);
 router.get('/search-messages', conversationController.searchMessages);
-router.post('/bulk', conversationController.bulkCreate);
+// Enforce conversation limit before bulk creation
+router.post('/bulk', requireUsage('conversations'), conversationController.bulkCreate);
 router.post('/bulk-delete', conversationController.bulkDelete);
 router.get('/transcript/:callerId', conversationController.fetchTranscript);
 router.get('/:conversationId/audio', conversationController.fetchAudio);

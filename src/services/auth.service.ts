@@ -295,6 +295,24 @@ export class AuthService {
       throw new AppError(404, 'NOT_FOUND', 'User not found');
     }
 
+    // Initialize subscription if not exists (default to free plan)
+    // This ensures all users have subscription data for usage tracking
+    if (!user.subscription) {
+      const { getPlanLimits } = await import('../config/planLimits');
+      const freeLimits = getPlanLimits('free') || { conversations: 20, minutes: 20, automations: 5 };
+      
+      user.subscription = {
+        plan: 'free',
+        limits: freeLimits,
+        usage: {
+          conversations: 0,
+          minutes: 0,
+          automations: 0
+        }
+      };
+      await user.save();
+    }
+
     return {
       id: user._id,
       email: user.email,
@@ -316,7 +334,19 @@ export class AuthService {
       city: user.city,
       state: user.state,
       country: user.country,
-      onboardingCompleted: user.onboardingCompleted || false
+      onboardingCompleted: user.onboardingCompleted || false,
+      // Subscription fields (activated ONLY via WooCommerce webhook)
+      subscription: user.subscription ? {
+        plan: user.subscription.plan,
+        limits: user.subscription.limits,
+        usage: user.subscription.usage,
+        activatedAt: user.subscription.activatedAt
+      } : {
+        plan: 'free',
+        limits: { conversations: 20, minutes: 20, automations: 5 },
+        usage: { conversations: 0, minutes: 0, automations: 0 },
+        activatedAt: null
+      }
     };
   }
 

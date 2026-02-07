@@ -334,10 +334,15 @@ export class ConversationController {
   bulkCreate = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const organizationId = req.user?.organizationId || req.user?._id;
+      const userId = req.user?._id?.toString();
       if (!organizationId) {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID or User ID not found');
       }
-      const result = await this.conversationService.bulkCreate(req.body.conversations, organizationId.toString());
+      const result = await this.conversationService.bulkCreate(
+        req.body.conversations, 
+        organizationId.toString(),
+        userId
+      );
       res.json(successResponse(result, 'Conversations created'));
     } catch (error) {
       next(error);

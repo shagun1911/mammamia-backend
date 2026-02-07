@@ -29,6 +29,21 @@ export interface IUser extends Document {
   state?: string;
   country?: string;
   onboardingCompleted?: boolean;
+  // Subscription/Plan fields (activated ONLY via WooCommerce webhook)
+  subscription?: {
+    plan: string;
+    limits: {
+      conversations: number;
+      minutes: number;
+      automations: number;
+    };
+    usage: {
+      conversations: number;
+      minutes: number;
+      automations: number;
+    };
+    activatedAt?: Date;
+  };
   createdAt: Date;
   updatedAt: Date;
   comparePassword(candidatePassword: string): Promise<boolean>;
@@ -130,6 +145,46 @@ const UserSchema = new Schema<IUser>({
   onboardingCompleted: {
     type: Boolean,
     default: false
+  },
+  // Subscription/Plan fields (activated ONLY via WooCommerce webhook)
+  subscription: {
+    plan: {
+      type: String,
+      default: 'free',
+      lowercase: true,
+      trim: true
+    },
+    limits: {
+      conversations: {
+        type: Number,
+        default: 20
+      },
+      minutes: {
+        type: Number,
+        default: 20
+      },
+      automations: {
+        type: Number,
+        default: 5
+      }
+    },
+    usage: {
+      conversations: {
+        type: Number,
+        default: 0
+      },
+      minutes: {
+        type: Number,
+        default: 0
+      },
+      automations: {
+        type: Number,
+        default: 0
+      }
+    },
+    activatedAt: {
+      type: Date
+    }
   }
 }, {
   timestamps: true

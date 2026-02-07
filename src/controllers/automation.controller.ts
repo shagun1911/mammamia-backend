@@ -38,6 +38,7 @@ export class AutomationController {
     try {
       // Get organizationId from user
       const organizationId = req.user?.organizationId || req.user?._id;
+      const userId = req.user?._id?.toString();
       if (!organizationId) {
         throw new Error('Organization ID not found');
       }
@@ -50,6 +51,19 @@ export class AutomationController {
       };
 
       const automation = await this.automationService.create(automationData);
+      
+      // Track automation usage after successful creation
+      // Only count active automations
+      if (userId && automationData.isActive !== false) {
+        try {
+          const { usageService } = await import('../services/usage.service');
+          await usageService.incrementAutomations(userId, 1);
+        } catch (usageError: any) {
+          console.warn('[Automation Controller] Failed to track automation usage:', usageError.message);
+          // Don't fail automation creation if usage tracking fails
+        }
+      }
+      
       res.status(201).json(successResponse(automation, 'Automation created'));
     } catch (error) {
       next(error);

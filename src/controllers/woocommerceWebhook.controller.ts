@@ -7,6 +7,7 @@ import Plan from '../models/Plan';
 import Profile from '../models/Profile';
 import { planService } from '../services/plan.service';
 import { logger } from '../utils/logger.util';
+import { getPlanLimits } from '../config/planLimits';
 
 /**
  * WooCommerce Webhook Controller
@@ -277,33 +278,68 @@ export class WooCommerceWebhookController {
       paymentIntent.woo_order_id = orderId;
       await paymentIntent.save();
 
-      // Activate plan for user's organization
+      // Activate plan for user (ONLY place where plans are activated)
       try {
-        if (!user.organizationId) {
-          throw new Error('User has no organization');
+        // Get plan limits from config
+        const limits = getPlanLimits(planSlug);
+        
+        if (!limits) {
+          throw new Error(`Unknown plan: ${planSlug}. Cannot activate.`);
         }
 
-        // Use planService to assign plan (handles organization, profile, etc.)
-        // This will:
-        // 1. Update Organization with new plan
-        // 2. Reset Profile usage counters (fresh start)
-        // 3. Reset billing cycle
-        // 4. Activate Profile
-        // Plan limits are immediately enforced via middleware and service checks
-        const result = await planService.assignPlanToOrganization(
-          user.organizationId.toString(),
-          planSlug
-        );
+        // Normalize plan key (handle variations like "mileva-pack" -> "mileva")
+        let normalizedPlanKey = planSlug.toLowerCase().trim();
+        if (normalizedPlanKey === 'mileva-pack') normalizedPlanKey = 'mileva';
+        if (normalizedPlanKey === 'nobel-pack') normalizedPlanKey = 'nobel';
+        if (normalizedPlanKey === 'aistein-pro-pack' || normalizedPlanKey === 'aistein-pro') normalizedPlanKey = 'pro';
+        if (normalizedPlanKey === 'set-up') normalizedPlanKey = 'setup';
 
-        logger.info('[WooCommerce Webhook] Plan activated successfully', {
-          userId: user._id,
-          organizationId: user.organizationId,
-          planSlug,
-          planName: result.plan.name,
-          orderId,
-          appIntent: paymentIntent.app_intent,
-          message: 'Plan limits are now active and enforced'
+        // Activate plan on User model (single source of truth)
+        // This is the ONLY place where plans are activated
+        // Initialize subscription if it doesn't exist, or reset usage on upgrade
+        const currentUser = await User.findById(user._id);
+        const currentPlan = currentUser?.subscription?.plan || 'free';
+        
+        // Reset usage to 0 when activating/upgrading plan (fresh start)
+        await User.findByIdAndUpdate(user._id, {
+          'subscription.plan': normalizedPlanKey,
+          'subscription.limits': {
+            conversations: limits.conversations,
+            minutes: limits.minutes,
+            automations: limits.automations
+          },
+          'subscription.usage': {
+            conversations: 0,
+            minutes: 0,
+            automations: 0
+          },
+          'subscription.activatedAt': new Date()
+        }, {
+          upsert: false, // Don't create if doesn't exist - handled by getCurrentUser
+          new: true
         });
+
+        logger.info('[WooCommerce Webhook] Plan activated on User model', {
+          userId: user._id,
+          planKey: normalizedPlanKey,
+          limits,
+          orderId,
+          appIntent: paymentIntent.app_intent
+        });
+
+        // Also update organization plan (for backward compatibility)
+        if (user.organizationId) {
+          const result = await planService.assignPlanToOrganization(
+            user.organizationId.toString(),
+            planSlug
+          );
+
+          logger.info('[WooCommerce Webhook] Plan also updated on Organization', {
+            organizationId: user.organizationId,
+            planSlug,
+            planName: result.plan.name
+          });
+        }
       } catch (error: any) {
         logger.error('[WooCommerce Webhook] Failed to activate plan', {
           error: error.message,
