@@ -55,6 +55,7 @@ import adminRoutes from './routes/admin.routes';
 import planRoutes from './routes/plan.routes';
 import planWarningsRoutes from './routes/planWarnings.routes';
 import ttsRoutes from './routes/tts.routes';
+import woocommerceWebhookRoutes from './routes/woocommerceWebhook.routes';
 
 
 const app = express();
@@ -133,6 +134,13 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
+
+// ============================================================================
+// WooCommerce Webhook: Raw Body Parser (MUST be before express.json())
+// ============================================================================
+// WooCommerce webhook requires raw request body for signature verification
+// Apply raw parser ONLY for the WooCommerce webhook path
+app.use('/webhooks/woocommerce', express.raw({ type: 'application/json' }));
 
 // Body parsers - but note: multer will handle multipart/form-data
 app.use(express.json({ limit: '5mb' }));
@@ -252,6 +260,7 @@ app.use('/api/v1/campaigns', campaignRoutes);
 app.use('/api/v1/automations', automationRoutes);
 app.use('/api/v1/webhooks', webhookRoutes);
 app.use('/api/v1/webhooks/instagram', instagramWebhookRoutes); // Instagram webhook (separate from OAuth)
+app.use('/webhooks', woocommerceWebhookRoutes); // WooCommerce webhook (mounted at /webhooks/woocommerce)
 app.use('/api/v1/analytics', analyticsRoutes);
 app.use('/api/v1/phone-settings', phoneSettingsRoutes);
 app.use('/api/v1/tools', toolRoutes);
