@@ -29,32 +29,36 @@ export class WooCommerceWebhookController {
    * Verify WooCommerce webhook signature
    * 
    * WooCommerce signs webhooks using HMAC SHA256 with the webhook secret.
-   * The signature is sent in the X-WC-Webhook-Signature header.
+   * The signature is sent in the X-WC-Webhook-Signature header as base64.
+   * 
+   * Only verifies if signature header exists. Returns true if no signature
+   * (for test deliveries or if signature is optional).
    */
-  private verifySignature(rawBody: Buffer, signature: string): boolean {
+  private verifySignature(rawBody: Buffer, signature: string | undefined): boolean {
+    // If no signature header, allow (might be a test delivery)
+    if (!signature) {
+      logger.info('[WooCommerce Webhook] No signature header present, allowing request');
+      return true;
+    }
+
     const webhookSecret = process.env.WC_WEBHOOK_SECRET;
     
     if (!webhookSecret) {
-      logger.error('[WooCommerce Webhook] WC_WEBHOOK_SECRET environment variable is missing');
-      return false;
+      logger.warn('[WooCommerce Webhook] WC_WEBHOOK_SECRET not set, skipping signature verification');
+      return true; // Allow if secret not configured (for development)
     }
 
-    if (!signature) {
-      logger.warn('[WooCommerce Webhook] Missing X-WC-Webhook-Signature header');
-      return false;
-    }
-
-    // Calculate expected signature
+    // Calculate expected signature using base64
     const expectedSignature = crypto
       .createHmac('sha256', webhookSecret)
       .update(rawBody)
-      .digest('hex');
+      .digest('base64');
 
     // Compare signatures using constant-time comparison to prevent timing attacks
-    // timingSafeEqual requires buffers of the same length
     try {
-      const receivedBuffer = Buffer.from(signature, 'hex');
-      const expectedBuffer = Buffer.from(expectedSignature, 'hex');
+      // Both signatures are base64 strings
+      const receivedBuffer = Buffer.from(signature, 'base64');
+      const expectedBuffer = Buffer.from(expectedSignature, 'base64');
       
       if (receivedBuffer.length !== expectedBuffer.length) {
         logger.warn('[WooCommerce Webhook] Signature length mismatch');
@@ -72,7 +76,7 @@ export class WooCommerceWebhookController {
       
       return isValid;
     } catch (error) {
-      // If signature is not valid hex, comparison fails
+      // If signature is not valid base64, comparison fails
       logger.warn('[WooCommerce Webhook] Signature format error', { error: (error as Error).message });
       return false;
     }
@@ -99,32 +103,39 @@ export class WooCommerceWebhookController {
    * POST /webhooks/woocommerce
    * 
    * This endpoint must use express.raw() middleware to receive the raw body
-   * for signature verification.
+   * for signature verification. The route is defined BEFORE express.json()
+   * in server.ts to ensure the raw body is available.
+   * 
+   * IMPORTANT: Never returns 4xx errors to WooCommerce. Always returns 200 OK
+   * to prevent retries. Errors are logged but not exposed.
    */
   async handleWebhook(req: Request, res: Response) {
     try {
       // Get raw body (must be Buffer for signature verification)
       const rawBody = req.body;
       
+      // If body is not a Buffer, this route was hit after express.json() parsed it
+      // Return 200 OK and ignore (never return 4xx to WooCommerce)
       if (!Buffer.isBuffer(rawBody)) {
-        logger.error('[WooCommerce Webhook] Request body is not a Buffer. Ensure express.raw() is used for this route.');
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid request body format'
+        logger.warn('[WooCommerce Webhook] Request body is not a Buffer. Route may be defined after express.json().');
+        return res.status(200).json({
+          success: true,
+          message: 'Request ignored (body already parsed)'
         });
       }
 
-      // Verify signature
-      const signature = req.headers['x-wc-webhook-signature'] as string;
+      // Verify signature (only if header exists)
+      const signature = req.headers['x-wc-webhook-signature'] as string | undefined;
       
       if (!this.verifySignature(rawBody, signature)) {
         logger.warn('[WooCommerce Webhook] Signature verification failed', {
           hasSignature: !!signature,
           bodyLength: rawBody.length
         });
-        return res.status(401).json({
+        // Return 200 OK even on signature failure (never return 4xx to WooCommerce)
+        return res.status(200).json({
           success: false,
-          error: 'Invalid webhook signature'
+          message: 'Signature verification failed, request ignored'
         });
       }
 
@@ -133,10 +144,11 @@ export class WooCommerceWebhookController {
       try {
         orderData = JSON.parse(rawBody.toString('utf8'));
       } catch (parseError) {
-        logger.error('[WooCommerce Webhook] Failed to parse JSON body', parseError);
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid JSON payload'
+        logger.warn('[WooCommerce Webhook] Failed to parse JSON body', parseError);
+        // Return 200 OK for malformed payloads (never return 4xx to WooCommerce)
+        return res.status(200).json({
+          success: true,
+          message: 'Invalid JSON payload, request ignored'
         });
       }
 
