@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import PaymentIntent from '../models/PaymentIntent';
+import Payment from '../models/Payment';
 import { logger } from '../utils/logger.util';
 
 const router = Router();
@@ -7,7 +7,7 @@ const router = Router();
 /**
  * GET /api/payment/status
  * 
- * Read-only endpoint to check payment status by intent ID.
+ * Read-only endpoint to check payment activation status by intent ID.
  * 
  * This endpoint:
  * - Does NOT activate plans
@@ -22,7 +22,12 @@ const router = Router();
  * Response:
  * - 200: Payment found, returns status and plan
  * - 400: Missing intent parameter
- * - 404: Payment intent not found
+ * - Returns "pending" if payment not found (webhook hasn't processed yet)
+ * 
+ * Status values:
+ * - pending: Payment received but not yet activated
+ * - active: Plan has been activated by webhook
+ * - failed: Payment failed or was cancelled
  */
 router.get('/status', async (req: Request, res: Response) => {
   try {
@@ -36,33 +41,35 @@ router.get('/status', async (req: Request, res: Response) => {
       });
     }
 
-    // Look up payment record by app_intent (read-only, no modifications)
-    const payment = await PaymentIntent.findOne({ app_intent: intent }).lean();
+    // Look up payment record by intent (read-only, no modifications)
+    // Payment model is the single source of truth updated by webhook
+    const payment = await Payment.findOne({ intent }).lean();
 
-    // If payment not found, return 404 with not_found status
+    // If payment not found, return pending status (webhook hasn't processed yet)
     if (!payment) {
-      logger.info('[Payment Status] Payment intent not found', { intent });
-      return res.status(404).json({
-        success: false,
-        status: 'not_found',
-        message: 'Payment intent not found'
+      logger.info('[Payment Status] Payment not found, returning pending', { intent });
+      return res.json({
+        success: true,
+        status: 'pending',
+        plan: null
       });
     }
 
     // Return current status (read-only, no modifications)
-    // Status values: pending | active | failed | refunded
-    logger.info('[Payment Status] Payment intent found', {
+    // Status values: pending | active | failed
+    logger.info('[Payment Status] Payment found', {
       intent,
       status: payment.status,
-      planId: payment.planId
+      plan: payment.plan
     });
 
     return res.json({
       success: true,
       status: payment.status,
-      plan: payment.planId,
+      plan: payment.plan,
       // Optional: include additional read-only fields for frontend display
-      wooOrderId: payment.woo_order_id || null,
+      wooOrderId: payment.wooOrderId || null,
+      activatedAt: payment.activatedAt || null,
       createdAt: payment.createdAt,
       updatedAt: payment.updatedAt
     });

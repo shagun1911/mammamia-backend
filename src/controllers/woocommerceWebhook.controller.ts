@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
 import PaymentIntent from '../models/PaymentIntent';
+import Payment from '../models/Payment';
 import User from '../models/User';
 import Organization from '../models/Organization';
 import Plan from '../models/Plan';
@@ -218,6 +219,27 @@ export class WooCommerceWebhookController {
         }
       }
 
+      // CRITICAL: Create/update Payment record for frontend polling
+      // This ensures the frontend can immediately check activation status
+      // Normalize plan key for consistency
+      let normalizedPlanKey = appPlan.toLowerCase().trim();
+      if (normalizedPlanKey === 'mileva-pack') normalizedPlanKey = 'mileva';
+      if (normalizedPlanKey === 'nobel-pack') normalizedPlanKey = 'nobel';
+      if (normalizedPlanKey === 'aistein-pro-pack' || normalizedPlanKey === 'aistein-pro') normalizedPlanKey = 'pro';
+      if (normalizedPlanKey === 'set-up') normalizedPlanKey = 'setup';
+
+      await Payment.findOneAndUpdate(
+        { intent: appIntent },
+        {
+          intent: appIntent,
+          userId: user._id,
+          plan: normalizedPlanKey,
+          status: 'pending', // Will be updated to 'active' when order is processed
+          wooOrderId: orderId
+        },
+        { upsert: true, new: true }
+      );
+
       // Process order status
       await this.processOrderStatus(orderStatus, paymentIntent, user, appPlan, orderId);
 
@@ -294,6 +316,30 @@ export class WooCommerceWebhookController {
         if (normalizedPlanKey === 'aistein-pro-pack' || normalizedPlanKey === 'aistein-pro') normalizedPlanKey = 'pro';
         if (normalizedPlanKey === 'set-up') normalizedPlanKey = 'setup';
 
+        // CRITICAL: Update Payment model (single source of truth for frontend polling)
+        // This is what the frontend polls to know when activation is complete
+        const activatedAt = new Date();
+        await Payment.findOneAndUpdate(
+          { intent: paymentIntent.app_intent },
+          {
+            intent: paymentIntent.app_intent,
+            userId: user._id,
+            plan: normalizedPlanKey,
+            status: 'active',
+            wooOrderId: orderId,
+            activatedAt: activatedAt
+          },
+          { upsert: true, new: true }
+        );
+
+        logger.info('[WooCommerce Webhook] Payment record updated', {
+          intent: paymentIntent.app_intent,
+          userId: user._id,
+          plan: normalizedPlanKey,
+          status: 'active',
+          orderId
+        });
+
         // Activate plan on User model (single source of truth)
         // This is the ONLY place where plans are activated
         // Initialize subscription if it doesn't exist, or reset usage on upgrade
@@ -313,7 +359,7 @@ export class WooCommerceWebhookController {
             minutes: 0,
             automations: 0
           },
-          'subscription.activatedAt': new Date()
+          'subscription.activatedAt': activatedAt
         }, {
           upsert: false, // Don't create if doesn't exist - handled by getCurrentUser
           new: true
@@ -356,6 +402,19 @@ export class WooCommerceWebhookController {
         paymentIntent.status = 'failed';
         paymentIntent.woo_order_id = orderId;
         await paymentIntent.save();
+
+        // Update Payment model to reflect failed status
+        await Payment.findOneAndUpdate(
+          { intent: paymentIntent.app_intent },
+          {
+            intent: paymentIntent.app_intent,
+            userId: user._id,
+            plan: paymentIntent.planId,
+            status: 'failed',
+            wooOrderId: orderId
+          },
+          { upsert: true, new: true }
+        );
 
         logger.info('[WooCommerce Webhook] Payment intent marked as failed', {
           appIntent: paymentIntent.app_intent,
