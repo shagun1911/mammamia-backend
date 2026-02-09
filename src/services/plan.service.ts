@@ -227,10 +227,14 @@ export class PlanService {
    */
   async initializeDefaultPlans() {
     try {
-      const freePlanExists = await Plan.findOne({ slug: 'free' });
-      if (!freePlanExists) {
-        logger.info('Free plan missing, creating it...');
-        await Plan.create({
+      const count = await Plan.countDocuments();
+      if (count > 0) {
+        logger.info('Plans already exist in database. Skipping initialization.');
+        return;
+      }
+
+      const defaultPlans = [
+        {
           name: 'Free Plan',
           slug: 'free',
           description: 'Basic plan for new users',
@@ -241,93 +245,85 @@ export class PlanService {
             chatConversations: 100,
             automations: 5,
             users: 1,
-            customFeatures: ['100 Chat Messages', '100 Call Minutes', '5 Automations']
+            customFeatures: []
           },
           isActive: true,
           isDefault: true,
           displayOrder: 0
-        });
-      }
-
-      const count = await Plan.countDocuments();
-
-      if (count <= 1) {
-        logger.info('Only free or no plans found, creating remaining default plans...');
-
-        const defaultPlans = [
-          {
-            name: 'Aistein Pro Pack',
-            slug: 'aistein-pro-pack',
-            description: 'Voice and Chat Artificial Intelligence Agents',
-            price: 799.00,
-            currency: 'EUR',
-            features: {
-              callMinutes: 2000,
-              chatConversations: 5000,
-              automations: 100,
-              users: 20,
-              customFeatures: ['Voice and Chat AI Agents', '1 month duration']
-            },
-            isActive: true,
-            isDefault: false,
-            displayOrder: 1
+        },
+        {
+          name: 'Aistein Pro Pack',
+          slug: 'aistein-pro-pack',
+          description: '',
+          price: 799.00,
+          currency: 'EUR',
+          features: {
+            callMinutes: 2000,
+            chatConversations: 5000,
+            automations: 100,
+            users: 20,
+            customFeatures: []
           },
-          {
-            name: 'Mileva Pack',
-            slug: 'mileva-pack',
-            description: 'Voice and Chat Artificial Intelligence Agents',
-            price: 299.99,
-            currency: 'EUR',
-            features: {
-              callMinutes: 500,
-              chatConversations: 1000,
-              automations: 25,
-              users: 5,
-              customFeatures: ['Voice and Chat AI Agents', '1 month duration']
-            },
-            isActive: true,
-            isDefault: false,
-            displayOrder: 2
+          isActive: true,
+          isDefault: false,
+          displayOrder: 1
+        },
+        {
+          name: 'Mileva Pack',
+          slug: 'mileva-pack',
+          description: '',
+          price: 299.99,
+          currency: 'EUR',
+          features: {
+            callMinutes: 500,
+            chatConversations: 1000,
+            automations: 25,
+            users: 5,
+            customFeatures: []
           },
-          {
-            name: 'Nobel Pack',
-            slug: 'nobel-pack',
-            description: 'Voice and Chat Artificial Intelligence Agents',
-            price: 499.00,
-            currency: 'EUR',
-            features: {
-              callMinutes: 1000,
-              chatConversations: 2500,
-              automations: 50,
-              users: 10,
-              customFeatures: ['Voice and Chat AI Agents', '1 month duration']
-            },
-            isActive: true,
-            isDefault: false,
-            displayOrder: 3
+          isActive: true,
+          isDefault: false,
+          displayOrder: 2
+        },
+        {
+          name: 'Nobel Pack',
+          slug: 'nobel-pack',
+          description: '',
+          price: 499.00,
+          currency: 'EUR',
+          features: {
+            callMinutes: 1000,
+            chatConversations: 2500,
+            automations: 50,
+            users: 10,
+            customFeatures: []
           },
-          {
-            name: 'Set Up',
-            slug: 'set-up',
-            description: 'Voice and Chat Artificial Intelligence Agents',
-            price: 699.00,
-            currency: 'EUR',
-            features: {
-              callMinutes: 0,
-              chatConversations: 0,
-              automations: 0,
-              users: 1,
-              customFeatures: ['Setup Service', 'One-time fee']
-            },
-            isActive: true,
-            isDefault: false,
-            displayOrder: 4
-          }
-        ];
+          isActive: true,
+          isDefault: false,
+          displayOrder: 3
+        },
+        {
+          name: 'Set Up',
+          slug: 'set-up',
+          description: '',
+          price: 699.00,
+          currency: 'EUR',
+          features: {
+            callMinutes: 0,
+            chatConversations: 0,
+            automations: 0,
+            users: 1,
+            customFeatures: []
+          },
+          isActive: true,
+          isDefault: false,
+          displayOrder: 4
+        }
+      ];
 
-        await Plan.insertMany(defaultPlans);
-        logger.info('Remaining default plans created successfully');
-      }
+      logger.info('Bootstrapping initial default plans...');
+      await Plan.insertMany(defaultPlans);
+      logger.info('✅ Initial plans created successfully');
     } catch (error: any) {
       logger.error('Failed to initialize default plans', { error: error.message });
       throw error;
