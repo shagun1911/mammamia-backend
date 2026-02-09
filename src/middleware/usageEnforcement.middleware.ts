@@ -37,7 +37,7 @@ export function requireUsage(type: 'conversations' | 'minutes' | 'automations') 
               minutes: 0,
               automations: 0
             },
-            activatedAt: null
+            activatedAt: undefined
           }
         });
         

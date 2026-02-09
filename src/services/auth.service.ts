@@ -310,7 +310,7 @@ export class AuthService {
           minutes: 0,
           automations: 0
         },
-        activatedAt: null
+        activatedAt: undefined
       };
       await user.save();
     }
@@ -369,7 +369,7 @@ export class AuthService {
         plan: 'free',
         limits: getPlanLimits('free') || { conversations: 20, minutes: 20, automations: 5 },
         usage: freshUsage,
-        activatedAt: null
+        activatedAt: undefined
       }
     };
 
@@ -387,7 +387,7 @@ export class AuthService {
               automations: plan.features?.automations || 0
             },
             usage: freshUsage,
-            activatedAt: (user.subscription as any)?.activatedAt || null
+            activatedAt: (user.subscription as any)?.activatedAt || undefined
           };
         }
       } catch (err) {
