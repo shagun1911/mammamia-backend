@@ -50,6 +50,13 @@ export class AutomationService {
       }
     }
     const automation = await Automation.create(automationData);
+
+    // Clear usage cache after creation
+    if (automation.organizationId) {
+      const { usageTrackerService } = await import('./usage/usageTracker.service');
+      await usageTrackerService.clearUsageCache(automation.organizationId.toString());
+    }
+
     return automation;
   }
 
@@ -82,6 +89,12 @@ export class AutomationService {
       { new: true }
     );
 
+    // Clear usage cache after update if isActive changed
+    if (updated?.organizationId && (automationData.isActive !== undefined)) {
+      const { usageTrackerService } = await import('./usage/usageTracker.service');
+      await usageTrackerService.clearUsageCache(updated.organizationId.toString());
+    }
+
     return updated!;
   }
 
@@ -100,8 +113,15 @@ export class AutomationService {
       throw new AppError(403, 'FORBIDDEN', 'You do not have access to this automation');
     }
 
+    const orgId = automation.organizationId?.toString();
     await automation.deleteOne();
     await AutomationExecution.deleteMany({ automationId });
+
+    // Clear usage cache after deletion
+    if (orgId) {
+      const { usageTrackerService } = await import('./usage/usageTracker.service');
+      await usageTrackerService.clearUsageCache(orgId);
+    }
 
     return { message: 'Automation deleted successfully' };
   }
@@ -134,6 +154,12 @@ export class AutomationService {
       { isActive },
       { new: true }
     );
+
+    // Clear usage cache after toggle
+    if (updated?.organizationId) {
+      const { usageTrackerService } = await import('./usage/usageTracker.service');
+      await usageTrackerService.clearUsageCache(updated.organizationId.toString());
+    }
 
     return updated!;
   }
