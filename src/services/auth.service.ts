@@ -88,7 +88,7 @@ export class AuthService {
   // Signup
   async signup(name: string, email: string, password: string) {
     console.log('[Auth] Signup attempt:', { email, hasPassword: !!password });
-    
+
     // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -147,9 +147,9 @@ export class AuthService {
   // Login
   async login(email: string, password: string) {
     console.log('[Auth] Login attempt:', { email, hasPassword: !!password });
-    
+
     const user = await User.findOne({ email, status: 'active' });
-    
+
     if (!user) {
       console.log('[Auth] User not found or inactive:', { email });
       throw new AppError(401, 'UNAUTHORIZED', 'Invalid credentials');
@@ -170,7 +170,7 @@ export class AuthService {
     }
 
     const isPasswordValid = await user.comparePassword(password);
-    
+
     if (!isPasswordValid) {
       console.log('[Auth] Invalid password for user:', { email });
       throw new AppError(401, 'UNAUTHORIZED', 'Invalid credentials');
@@ -242,15 +242,15 @@ export class AuthService {
     try {
       const jwtSecret = process.env.JWT_SECRET || 'your_super_secret_jwt_key_change_in_production';
       const decoded: any = jwt.verify(refreshToken, jwtSecret);
-      
+
       const isValid = await this.verifyRefreshToken(decoded.userId, refreshToken);
-      
+
       if (!isValid) {
         throw new AppError(401, 'UNAUTHORIZED', 'Invalid refresh token');
       }
 
       const user = await User.findById(decoded.userId);
-      
+
       if (!user || user.status !== 'active') {
         throw new AppError(401, 'UNAUTHORIZED', 'User not found or inactive');
       }
@@ -290,7 +290,7 @@ export class AuthService {
   // Get current user
   async getCurrentUser(userId: string) {
     const user = await User.findById(userId).select('-passwordHash');
-    
+
     if (!user) {
       throw new AppError(404, 'NOT_FOUND', 'User not found');
     }
@@ -300,7 +300,7 @@ export class AuthService {
     if (!user.subscription) {
       const { getPlanLimits } = await import('../config/planLimits');
       const freeLimits = getPlanLimits('free') || { conversations: 20, minutes: 20, automations: 5 };
-      
+
       user.subscription = {
         plan: 'free',
         limits: freeLimits,
@@ -313,7 +313,29 @@ export class AuthService {
       await user.save();
     }
 
-    return {
+    // Subscription fields (Universal Real-Time Consumption)
+    let freshUsage = { conversations: 0, minutes: 0, automations: 0 };
+    if (user.organizationId) {
+      try {
+        const { usageTrackerService } = await import('./usage/usageTracker.service');
+        const aggUsage = await usageTrackerService.getOrganizationUsage(user.organizationId.toString());
+        freshUsage = {
+          conversations: aggUsage.chatMessages, // In FE, chatMessages is shown as conversations
+          minutes: aggUsage.callMinutes,
+          automations: aggUsage.automations
+        };
+      } catch (err) {
+        console.warn('[Auth Service] Failed to fetch real-time usage:', (err as any).message);
+        // Fallback to stored usage if agg fails
+        freshUsage = {
+          conversations: user.subscription?.usage?.conversations || 0,
+          minutes: user.subscription?.usage?.minutes || 0,
+          automations: user.subscription?.usage?.automations || 0
+        };
+      }
+    }
+
+    const responseData = {
       id: user._id,
       email: user.email,
       name: `${user.firstName} ${user.lastName}`,
@@ -335,19 +357,43 @@ export class AuthService {
       state: user.state,
       country: user.country,
       onboardingCompleted: user.onboardingCompleted || false,
-      // Subscription fields (activated ONLY via WooCommerce webhook)
+      // Subscription fields (Universal Truth)
       subscription: user.subscription ? {
         plan: user.subscription.plan,
-        limits: user.subscription.limits,
-        usage: user.subscription.usage,
+        limits: user.subscription.limits, // Default to stored
+        usage: freshUsage, // Return the fresh aggregation
         activatedAt: user.subscription.activatedAt
       } : {
         plan: 'free',
         limits: { conversations: 20, minutes: 20, automations: 5 },
-        usage: { conversations: 0, minutes: 0, automations: 0 },
+        usage: freshUsage,
         activatedAt: null
       }
     };
+
+    // If organization has a plan, override limits with the LATEST from Plan model
+    if (user.organizationId) {
+      try {
+        const org = await Organization.findById(user.organizationId).populate('planId').lean();
+        if (org && org.planId) {
+          const plan: any = org.planId;
+          responseData.subscription = {
+            plan: plan.slug,
+            limits: {
+              conversations: plan.features?.chatConversations || 0,
+              minutes: plan.features?.callMinutes || 0,
+              automations: plan.features?.automations || 0
+            },
+            usage: freshUsage,
+            activatedAt: (user.subscription as any)?.activatedAt || null
+          };
+        }
+      } catch (err) {
+        console.warn('[Auth Service] Failed to fetch real-time limits:', (err as any).message);
+      }
+    }
+
+    return responseData;
   }
 
   // Complete onboarding
@@ -364,9 +410,9 @@ export class AuthService {
     country: string;
   }) {
     console.log('[Auth Service] Completing onboarding for userId:', userId);
-    
+
     const user = await User.findById(userId);
-    
+
     if (!user) {
       console.error('[Auth Service] User not found:', userId);
       throw new AppError(404, 'NOT_FOUND', 'User not found');
@@ -424,7 +470,7 @@ export class AuthService {
   // Delete account - removes all user-related data
   async deleteAccount(userId: string) {
     const userObjectId = new mongoose.Types.ObjectId(userId);
-    
+
     console.log('[Auth] Starting account deletion for userId:', userId);
 
     try {
@@ -435,10 +481,10 @@ export class AuthService {
       // Get knowledge base document IDs before deleting them (needed for file deletion)
       // Use KnowledgeBaseDocument for the new unified system
       const knowledgeBaseIds = await KnowledgeBaseDocument.find({ userId: userObjectId }).distinct('_id');
-      
+
       // Get automation IDs before deleting them (needed for automation execution deletion)
       const automationIds = await Automation.find({ userId: userObjectId }).distinct('_id');
-      
+
       // Delete files associated with user's knowledge bases first
       if (knowledgeBaseIds.length > 0) {
         const fileDeletion = await File.deleteMany({ knowledgeBaseId: { $in: knowledgeBaseIds } });

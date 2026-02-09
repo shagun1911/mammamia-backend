@@ -18,8 +18,7 @@ export class ProfileController {
         name: p.name,
         description: p.description,
         chatConversations: p.features.chatConversations,
-        voiceMinutes: p.features.callMinutes,
-        duration: '1 Month'
+        voiceMinutes: p.features.callMinutes
       }));
       res.json(successResponse({ profiles }));
     } catch (error) {

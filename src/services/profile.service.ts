@@ -126,7 +126,7 @@ export class ProfileService {
   }
 
   /**
-   * Get usage statistics for frontend
+   * Get usage statistics for frontend (Universal method)
    */
   async getUsageStats(userId: string) {
     const user = await User.findById(userId);
@@ -136,21 +136,24 @@ export class ProfileService {
     if (!org || !org.planId) return null;
     const plan: any = org.planId;
 
-    // Get Comprehensive Real-Time Usage
+    // Get Comprehensive Real-Time Usage from Aggregation (Single Source of Truth)
     const usage = await usageTrackerService.getOrganizationUsage(user.organizationId.toString());
 
     let profile = await Profile.findOne({ organizationId: user.organizationId });
     if (!profile) {
-      // Return empty stats but with real usage if any
-      return this.formatUsageStats(
-        {
-          billingCycleEnd: new Date()
-        } as any,
-        plan,
-        usage
-      );
+      // Create profile if missing to track billing cycle
+      const now = new Date();
+      const end = new Date(now);
+      end.setMonth(end.getMonth() + 1);
+      profile = await Profile.create({
+        organizationId: user.organizationId,
+        billingCycleStart: now,
+        billingCycleEnd: end,
+        isActive: true
+      });
     }
 
+    // Check and Reset Billing Cycle if needed
     if (new Date() > profile.billingCycleEnd) {
       await this.resetBillingCycle(profile);
       profile = await Profile.findById(profile._id);
@@ -159,25 +162,58 @@ export class ProfileService {
     return this.formatUsageStats(profile!, plan, usage);
   }
 
+  /**
+   * Format usage stats for frontend compatibility
+   */
   private formatUsageStats(profile: IProfile, plan: any, usage: any) {
-    // Helper to calc percentage
+    // Helper to calc percentages and handle limits
     const calc = (used: number, limit: number) => {
-      if (limit === -1) return { used, limit: 'Unlimited', remaining: 'Unlimited', percentage: 0 };
+      const isUnlimited = limit === -1;
       return {
-        used,
-        limit,
-        remaining: Math.max(0, limit - used),
-        percentage: Math.min(100, (used / limit) * 100)
+        used: used || 0,
+        limit: isUnlimited ? 'Unlimited' : (limit || 0),
+        remaining: isUnlimited ? 'Unlimited' : Math.max(0, (limit || 0) - (used || 0)),
+        percentage: isUnlimited ? 0 : Math.min(100, ((used || 0) / (limit || 1)) * 100)
       };
     };
 
     return {
       planName: plan.name,
-      currency: plan.currency,
-      chatConversations: calc(usage.chatMessages, plan.features.chatConversations),
-      voiceMinutes: calc(usage.callMinutes, plan.features.callMinutes),
-      automations: calc(usage.automations, plan.features.automations),
+      planSlug: plan.slug,
+      currency: plan.currency || 'EUR',
+      price: plan.price || 0,
+
+      // Standardized Objects (For detailed progress bars/UI)
+      chatConversationsStats: calc(usage.chatMessages, plan.features.chatConversations),
+      voiceMinutesStats: calc(usage.callMinutes, plan.features.callMinutes),
+      automationsStats: calc(usage.automations, plan.features.automations),
+
+      // Standardized Numbers (For billing/summary views)
+      metrics: {
+        chatMessages: usage.chatMessages,
+        callMinutes: usage.callMinutes,
+        conversations: usage.chatMessages, // Alias for FE
+        automations: usage.automations,
+        campaignSends: usage.campaignSends || 0
+      },
+
+      // Legacy fields for backward compatibility (Numbers)
+      chatConversationsUsed: usage.chatMessages,
+      chatConversationsLimit: plan.features.chatConversations === -1 ? -1 : plan.features.chatConversations,
+      voiceMinutesUsed: usage.callMinutes,
+      voiceMinutesLimit: plan.features.callMinutes === -1 ? -1 : plan.features.callMinutes,
+      automationsUsed: usage.automations,
+      automationsLimit: plan.features.automations === -1 ? -1 : plan.features.automations,
+
+      // Extra legacy keys (Numbers)
+      conversations: usage.chatMessages,
+      minutes: usage.callMinutes,
+      chatMessages: usage.chatMessages, // Added for BillingPage
+      callMinutes: usage.callMinutes, // Added for BillingPage
+      automations: usage.automations,
+
       billingCycle: {
+        start: profile.billingCycleStart,
         end: profile.billingCycleEnd,
         daysRemaining: Math.max(0, Math.ceil((new Date(profile.billingCycleEnd).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
       }

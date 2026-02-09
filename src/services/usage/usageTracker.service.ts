@@ -213,10 +213,27 @@ export class UsageTrackerService {
   }
 
   /**
-   * Get comprehensive usage for an organization
+   * Get comprehensive usage for an organization (with optional caching)
    */
-  async getOrganizationUsage(organizationId: string) {
+  async getOrganizationUsage(organizationId: string, useCache: boolean = true) {
     try {
+      const cacheKey = `usage:org:${organizationId}`;
+
+      // Try to get from cache first
+      if (useCache) {
+        try {
+          const { default: redisClient, isRedisAvailable } = await import('../../config/redis');
+          if (isRedisAvailable()) {
+            const cachedData = await redisClient.get(cacheKey);
+            if (cachedData) {
+              return JSON.parse(cachedData);
+            }
+          }
+        } catch (cacheError) {
+          logger.warn(`[Usage Tracker] Cache fetch failed for ${organizationId}:`, (cacheError as any).message);
+        }
+      }
+
       const [callMinutes, chatMessages, conversations, automations, campaignSends] = await Promise.all([
         this.calculateCallMinutes(organizationId),
         this.calculateChatMessages(organizationId),
@@ -225,7 +242,7 @@ export class UsageTrackerService {
         this.calculateCampaignSends(organizationId)
       ]);
 
-      return {
+      const usageData = {
         callMinutes,
         chatMessages,
         conversations,
@@ -234,9 +251,38 @@ export class UsageTrackerService {
         calculatedAt: new Date()
       };
 
+      // Store in cache for 60 seconds (Near Real-Time)
+      if (useCache) {
+        try {
+          const { default: redisClient, isRedisAvailable } = await import('../../config/redis');
+          if (isRedisAvailable()) {
+            await redisClient.setEx(cacheKey, 60, JSON.stringify(usageData));
+          }
+        } catch (cacheError) {
+          logger.warn(`[Usage Tracker] Cache store failed for ${organizationId}:`, (cacheError as any).message);
+        }
+      }
+
+      return usageData;
+
     } catch (error: any) {
       logger.error('[Usage Tracker] Error getting organization usage:', error.message);
       throw error;
+    }
+  }
+
+  /**
+   * Clear usage cache for an organization (call this after significant events)
+   */
+  async clearUsageCache(organizationId: string): Promise<void> {
+    try {
+      const { default: redisClient, isRedisAvailable } = await import('../../config/redis');
+      if (isRedisAvailable()) {
+        await redisClient.del(`usage:org:${organizationId}`);
+        logger.debug(`[Usage Tracker] Cleared usage cache for org ${organizationId}`);
+      }
+    } catch (error: any) {
+      logger.error(`[Usage Tracker] Failed to clear usage cache for ${organizationId}:`, error.message);
     }
   }
 
@@ -252,6 +298,7 @@ export class UsageTrackerService {
     };
   }> {
     try {
+      // Use cache for limit checks too, but maybe shorter? (currently uses default 60s)
       const usage = await this.getOrganizationUsage(organizationId);
 
       const limits = {
