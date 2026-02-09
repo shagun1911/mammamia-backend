@@ -26,6 +26,7 @@ import CampaignRecipient from '../models/CampaignRecipient';
 import File from '../models/File';
 import Folder from '../models/Folder';
 import Label from '../models/Label';
+import { getPlanLimits } from '../config/planLimits';
 
 export class AuthService {
   // In-memory store as fallback when Redis is not available
@@ -360,12 +361,12 @@ export class AuthService {
       // Subscription fields (Universal Truth)
       subscription: user.subscription ? {
         plan: user.subscription.plan,
-        limits: user.subscription.limits, // Default to stored
+        limits: user.subscription.limits || getPlanLimits(user.subscription.plan) || getPlanLimits('free'),
         usage: freshUsage, // Return the fresh aggregation
         activatedAt: user.subscription.activatedAt
       } : {
         plan: 'free',
-        limits: { conversations: 20, minutes: 20, automations: 5 },
+        limits: getPlanLimits('free') || { conversations: 20, minutes: 20, automations: 5 },
         usage: freshUsage,
         activatedAt: null
       }
