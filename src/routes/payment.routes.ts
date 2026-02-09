@@ -3,8 +3,111 @@ import Payment from '../models/Payment';
 import PaymentIntent from '../models/PaymentIntent';
 import User from '../models/User';
 import { logger } from '../utils/logger.util';
+import { authenticate, AuthRequest } from '../middleware/auth.middleware';
+import { getPlanLimits } from '../config/planLimits';
 
 const router = Router();
+
+/**
+ * POST /api/payment/confirm
+ * 
+ * Activate plan immediately when user is redirected back from WooCommerce checkout.
+ * 
+ * This endpoint:
+ * - Requires authentication (user must be logged in)
+ * - Activates plan immediately (no webhook required)
+ * - Prevents reuse of payment intents
+ * - Is idempotent (safe to retry)
+ * 
+ * Payload:
+ * - intent: Payment intent ID (e.g., "wc_xxx")
+ * - plan: Plan slug (e.g., "nobel", "mileva", "pro")
+ * 
+ * Security:
+ * - Uses req.user.id (ignores any uid from client)
+ * - Plan limits enforced server-side
+ * - Intent reuse blocked
+ */
+router.post('/confirm', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user._id || req.user.id;
+    const { intent, plan } = req.body;
+
+    if (!intent || !plan) {
+      return res.status(400).json({ error: "Missing intent or plan" });
+    }
+
+    // Prevent reuse
+    const existingPayment = await Payment.findOne({ intent });
+    if (existingPayment?.status === "active") {
+      return res.json({ status: "already_active" });
+    }
+
+    // Resolve plan limits
+    const limits = getPlanLimits(plan);
+    if (!limits) {
+      return res.status(400).json({ error: "Invalid plan" });
+    }
+
+    // Normalize plan key (handle variations like "mileva-pack" -> "mileva")
+    let normalizedPlanKey = plan.toLowerCase().trim();
+    if (normalizedPlanKey === 'mileva-pack') normalizedPlanKey = 'mileva';
+    if (normalizedPlanKey === 'nobel-pack') normalizedPlanKey = 'nobel';
+    if (normalizedPlanKey === 'aistein-pro-pack' || normalizedPlanKey === 'aistein-pro') normalizedPlanKey = 'pro';
+    if (normalizedPlanKey === 'set-up') normalizedPlanKey = 'setup';
+
+    const activatedAt = new Date();
+
+    // 1️⃣ Create/Update Payment (source of truth)
+    await Payment.findOneAndUpdate(
+      { intent },
+      {
+        intent,
+        userId,
+        plan: normalizedPlanKey,
+        status: "active",
+        activatedAt
+      },
+      { upsert: true }
+    );
+
+    // 2️⃣ Activate user subscription (REAL source of truth)
+    await User.findByIdAndUpdate(userId, {
+      "subscription.plan": normalizedPlanKey,
+      "subscription.limits": limits,
+      "subscription.usage": {
+        conversations: 0,
+        minutes: 0,
+        automations: 0
+      },
+      "subscription.activatedAt": activatedAt
+    });
+
+    logger.info('[Payment Confirm] Plan activated', {
+      intent,
+      userId,
+      plan: normalizedPlanKey,
+      limits
+    });
+
+    return res.json({
+      status: "active",
+      plan: normalizedPlanKey,
+      limits
+    });
+
+  } catch (error: any) {
+    logger.error('[Payment Confirm] Error activating plan', {
+      error: error.message,
+      stack: error.stack
+    });
+
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to activate plan'
+    });
+  }
+});
 
 /**
  * GET /api/payment/status
