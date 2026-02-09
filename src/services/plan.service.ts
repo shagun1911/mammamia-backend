@@ -241,8 +241,8 @@ export class PlanService {
           price: 0,
           currency: 'EUR',
           features: {
-            callMinutes: 100,
-            chatConversations: 100,
+            callMinutes: 20,
+            chatConversations: 20,
             automations: 5,
             users: 1,
             customFeatures: []

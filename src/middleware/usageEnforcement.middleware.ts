@@ -19,21 +19,25 @@ export function requireUsage(type: 'conversations' | 'minutes' | 'automations') 
         throw new AppError(401, 'UNAUTHORIZED', 'User not authenticated');
       }
 
-      // Check if user has subscription data, initialize if missing
-      if (!user.subscription) {
+      // Check if user has subscription data, initialize ONLY if subscription or plan is truly missing
+      // NEVER overwrite an existing subscription.plan
+      if (!user.subscription || !user.subscription.plan) {
         // Initialize with free plan limits
         const { getPlanLimits } = await import('../config/planLimits');
         const freeLimits = getPlanLimits('free') || { conversations: 20, minutes: 20, automations: 5 };
         
-        // Initialize subscription on user document
+        // Initialize subscription on user document - replace entire object
         const User = (await import('../models/User')).default;
         await User.findByIdAndUpdate(user._id, {
-          'subscription.plan': 'free',
-          'subscription.limits': freeLimits,
-          'subscription.usage': {
-            conversations: 0,
-            minutes: 0,
-            automations: 0
+          subscription: {
+            plan: 'free',
+            limits: freeLimits,
+            usage: {
+              conversations: 0,
+              minutes: 0,
+              automations: 0
+            },
+            activatedAt: null
           }
         });
         

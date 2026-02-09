@@ -296,10 +296,10 @@ export class AuthService {
       throw new AppError(404, 'NOT_FOUND', 'User not found');
     }
 
-    // Initialize subscription if not exists (default to free plan)
-    // This ensures all users have subscription data for usage tracking
-    if (!user.subscription) {
-      const { getPlanLimits } = await import('../config/planLimits');
+    // Initialize subscription ONLY if subscription or plan is truly missing
+    // NEVER overwrite an existing subscription.plan
+    // NEVER reset activatedAt if it exists
+    if (!user.subscription || !user.subscription.plan) {
       const freeLimits = getPlanLimits('free') || { conversations: 20, minutes: 20, automations: 5 };
 
       user.subscription = {
@@ -309,7 +309,8 @@ export class AuthService {
           conversations: 0,
           minutes: 0,
           automations: 0
-        }
+        },
+        activatedAt: null
       };
       await user.save();
     }

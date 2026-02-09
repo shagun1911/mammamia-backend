@@ -44,8 +44,8 @@ router.get('/billing', async (req: any, res: any, next: any) => {
           name: 'Free',
           slug: 'free',
           features: {
-            callMinutes: 100,
-            chatConversations: 100,
+            callMinutes: 20,
+            chatConversations: 20,
             automations: 5
           }
         },

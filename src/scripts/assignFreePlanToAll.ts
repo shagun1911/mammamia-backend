@@ -31,8 +31,8 @@ const assignFreePlanToAll = async () => {
         price: 0,
         currency: 'USD',
         features: {
-          callMinutes: 100,
-          chatConversations: 100,
+          callMinutes: 20,
+          chatConversations: 20,
           automations: 5,
           users: 1,
           customFeatures: ['Basic support', '1 workspace']

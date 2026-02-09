@@ -347,24 +347,19 @@ export class WooCommerceWebhookController {
 
         // Activate plan on User model (single source of truth)
         // This is the ONLY place where plans are activated
-        // Initialize subscription if it doesn't exist, or reset usage on upgrade
-        const currentUser = await User.findById(user._id);
-        const currentPlan = currentUser?.subscription?.plan || 'free';
-        
+        // Replace entire subscription object - do not rely on partial updates
         // Reset usage to 0 when activating/upgrading plan (fresh start)
         await User.findByIdAndUpdate(user._id, {
-          'subscription.plan': normalizedPlanKey,
-          'subscription.limits': {
-            conversations: limits.conversations,
-            minutes: limits.minutes,
-            automations: limits.automations
-          },
-          'subscription.usage': {
-            conversations: 0,
-            minutes: 0,
-            automations: 0
-          },
-          'subscription.activatedAt': activatedAt
+          subscription: {
+            plan: normalizedPlanKey,
+            limits: limits,
+            usage: {
+              conversations: 0,
+              minutes: 0,
+              automations: 0
+            },
+            activatedAt: activatedAt
+          }
         }, {
           upsert: false, // Don't create if doesn't exist - handled by getCurrentUser
           new: true

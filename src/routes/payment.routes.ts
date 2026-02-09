@@ -72,15 +72,18 @@ router.post('/confirm', authenticate, async (req: AuthRequest, res: Response) =>
     );
 
     // 2️⃣ Activate user subscription (REAL source of truth)
+    // Replace entire subscription object - do not rely on partial updates
     await User.findByIdAndUpdate(userId, {
-      "subscription.plan": normalizedPlanKey,
-      "subscription.limits": limits,
-      "subscription.usage": {
-        conversations: 0,
-        minutes: 0,
-        automations: 0
-      },
-      "subscription.activatedAt": activatedAt
+      subscription: {
+        plan: normalizedPlanKey,
+        limits: limits,
+        usage: {
+          conversations: 0,
+          minutes: 0,
+          automations: 0
+        },
+        activatedAt: activatedAt
+      }
     });
 
     logger.info('[Payment Confirm] Plan activated', {
@@ -172,15 +175,18 @@ router.post('/force-activate', authenticate, async (req: AuthRequest, res: Respo
     );
 
     // 2️⃣ FORCE User subscription
+    // Replace entire subscription object - do not rely on partial updates
     await User.findByIdAndUpdate(userId, {
-      "subscription.plan": normalizedPlanKey,
-      "subscription.limits": limits,
-      "subscription.usage": {
-        conversations: 0,
-        minutes: 0,
-        automations: 0
-      },
-      "subscription.activatedAt": activatedAt
+      subscription: {
+        plan: normalizedPlanKey,
+        limits: limits,
+        usage: {
+          conversations: 0,
+          minutes: 0,
+          automations: 0
+        },
+        activatedAt: activatedAt
+      }
     });
 
     logger.info('[Payment Force Activate] Plan activated', {
