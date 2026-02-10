@@ -22,7 +22,7 @@ export class EmailWebhookController {
     const { templateId } = req.params;
     const payload = req.body || {};
     const { to, recipient, parameters = {}, conversation_id } = payload;
-    
+
     // Extract arguments from payload
     const params = typeof parameters === 'object' && Object.keys(parameters).length > 0
       ? parameters
@@ -31,7 +31,7 @@ export class EmailWebhookController {
     delete params.recipient;
     delete params.conversation_id;
     delete params.parameters;
-    
+
     console.log(
       '[TOOL NODE] 🔥 ENTERED TOOL EXECUTION',
       JSON.stringify({
@@ -40,7 +40,7 @@ export class EmailWebhookController {
         conversation_id
       }, null, 2)
     );
-    
+
     try {
 
       if (!templateId) {
@@ -129,7 +129,7 @@ export class EmailWebhookController {
       }
 
       let senderEmail: string | undefined;
-      
+
       if (gmailIntegration) {
         senderEmail = gmailIntegration.getDecryptedApiKey();
         console.log('[Email Webhook] Sending via Gmail (Social):', {

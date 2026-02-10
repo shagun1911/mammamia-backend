@@ -8,6 +8,7 @@ const COMM_API_URL = process.env.PYTHON_API_URL || process.env.COMM_API_URL || '
 export interface BatchCallRecipient {
   phone_number: string;
   name: string;
+  email?: string;
   dynamic_variables?: Record<string, any>;
 }
 
@@ -88,6 +89,10 @@ export class BatchCallingService {
             phone_number: recipient.phone_number,
             name: recipient.name
           };
+          // Include email if provided
+          if (recipient.email) {
+            recipientPayload.email = recipient.email;
+          }
           // Include dynamic_variables ONLY if provided (preserve exactly as received)
           if (recipient.dynamic_variables !== undefined && recipient.dynamic_variables !== null) {
             recipientPayload.dynamic_variables = recipient.dynamic_variables;
@@ -403,12 +408,12 @@ export class BatchCallingService {
           } else {
             // CRITICAL FIX: Always update customer info from CSV (batch call data is the source of truth)
             let customerUpdated = false;
-            
+
             if (customerName !== 'Unknown' && customer.name !== customerName) {
               customer.name = customerName;
               customerUpdated = true;
             }
-            
+
             // CRITICAL FIX: Always update email from CSV, even if customer already has an email
             // This ensures the LATEST CSV data is used, not old database data
             if (customerEmail && customer.email !== customerEmail) {
@@ -416,7 +421,7 @@ export class BatchCallingService {
               customer.email = customerEmail;
               customerUpdated = true;
             }
-            
+
             if (customerUpdated) {
               await customer.save();
               console.log(`[Batch Calling Service] ✅ Updated customer: ${customer.name} (${customer.phone})`);
@@ -507,7 +512,7 @@ export class BatchCallingService {
           // Trigger batch_call_completed automation for this conversation
           try {
             const { automationService } = await import('./automation.service');
-            
+
             // CRITICAL FIX: Pass fresh contact data from CSV in triggerData
             // This ensures automations use the LATEST email from CSV, not old database email
             await automationService.triggerByEvent('batch_call_completed', {
