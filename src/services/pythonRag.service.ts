@@ -166,6 +166,10 @@ export class PythonRagService {
       api_secret?: string;
       access_token?: string;
     };
+    emailCredentials?: {
+      x_user_email: string;
+      base_url: string;
+    };
   }): Promise<{
     query: string;
     answer: string;
@@ -224,6 +228,17 @@ export class PythonRagService {
       } else {
         console.log(`[Python RAG] ⚠️  No e-commerce credentials provided in params`);
         console.log(`[Python RAG] ecommerceCredentials value:`, params.ecommerceCredentials);
+      }
+
+      // Include email credentials if provided (OPTIONAL - for Gmail support)
+      if (params.emailCredentials && params.emailCredentials.x_user_email) {
+        requestBody.email_credentials = params.emailCredentials;
+        console.log(`[Python RAG] ✅ Email credentials included in payload:`, { 
+          x_user_email: params.emailCredentials.x_user_email,
+          base_url: params.emailCredentials.base_url
+        });
+      } else {
+        console.log(`[Python RAG] ⚠️  No email credentials provided in params`);
       }
       
       // Log the complete payload being sent

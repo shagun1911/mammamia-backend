@@ -9,6 +9,8 @@ import KnowledgeBaseDocument from '../models/KnowledgeBaseDocument';
 import { getEcommerceCredentials } from '../utils/ecommerce.util';
 import Settings from '../models/Settings';
 import mongoose from 'mongoose';
+import GoogleIntegration from '../models/GoogleIntegration';
+import SocialIntegration from '../models/SocialIntegration';
 
 // Helper function to resolve a single KB ID to collection name(s)
 async function resolveSingleKBId(kbId: string, userId: string): Promise<string[]> {
@@ -322,6 +324,50 @@ export class ChatbotController {
         console.log('[Chatbot] ⚠️  No e-commerce credentials found for user:', userId);
         console.log('[Chatbot] ⚠️  WooCommerce queries will not work. Configure in Settings → Integrations → WooCommerce');
       }
+
+      // Get Gmail email credentials if user has Gmail connected via socials (SIMPLE LOGIC)
+      let emailCredentials: { x_user_email: string; base_url: string } | undefined;
+      try {
+        const User = (await import('../models/User')).default;
+        const user = await User.findById(userId).lean();
+        
+        if (!user || !user.organizationId) {
+          console.log('[Chatbot] ⚠️  User or organizationId not found');
+        } else {
+          // Check SocialIntegration for Gmail (connected via socials in settings)
+          const gmailSocial = await SocialIntegration.findOne({
+            userId: new mongoose.Types.ObjectId(userId),
+            organizationId: user.organizationId,
+            platform: 'gmail',
+            status: 'connected'
+          }).lean();
+
+          if (gmailSocial?.metadata?.email) {
+            emailCredentials = {
+              x_user_email: gmailSocial.metadata.email,
+              base_url: 'https://keplerov1-python-2.onrender.com'
+            };
+            console.log('[Chatbot] ✅ Gmail email found via SocialIntegration:', emailCredentials.x_user_email);
+          } else {
+            // Fallback: Check GoogleIntegration (Gmail via Google services)
+            const googleIntegration = await GoogleIntegration.findOne({
+              userId: new mongoose.Types.ObjectId(userId),
+              organizationId: user.organizationId,
+              'services.gmail': true
+            }).lean();
+
+            if (googleIntegration?.googleProfile?.email) {
+              emailCredentials = {
+                x_user_email: googleIntegration.googleProfile.email,
+                base_url: 'https://keplerov1-python-2.onrender.com'
+              };
+              console.log('[Chatbot] ✅ Gmail email found via GoogleIntegration:', emailCredentials.x_user_email);
+            }
+          }
+        }
+      } catch (error: any) {
+        console.error('[Chatbot] ❌ Error fetching Gmail credentials:', error.message);
+      }
       
       // Append enhanced instructions to system prompt (SAFE - only appends, doesn't replace)
       systemPrompt += '\n\nIMPORTANT INSTRUCTIONS:\n';
@@ -369,9 +415,16 @@ export class ChatbotController {
       } else {
         console.log('[Chatbot] ⚠️  E-commerce credentials are NULL/UNDEFINED - will NOT be sent to Python backend');
       }
+      console.log('[Chatbot] Has Email Credentials:', !!emailCredentials);
+      if (emailCredentials) {
+        console.log('[Chatbot] Email:', emailCredentials.x_user_email);
+        console.log('[Chatbot] Email Base URL:', emailCredentials.base_url);
+      } else {
+        console.log('[Chatbot] ⚠️  Email credentials are NULL/UNDEFINED - will NOT be sent to Python backend');
+      }
       console.log('=====================================================\n');
 
-      // Chat with RAG system - include provider, apiKey, and ecommerceCredentials (if available)
+      // Chat with RAG system - include provider, apiKey, ecommerceCredentials, and emailCredentials (if available)
       const response = await pythonRagService.chat({
         query,
         collectionNames: collectionNames,
@@ -380,6 +433,7 @@ export class ChatbotController {
         provider,
         apiKey,
         ecommerceCredentials,
+        emailCredentials,
         topK: 5, // Default top_k
         elaborate,
         skipHistory: skip_history
@@ -438,6 +492,48 @@ export class ChatbotController {
         console.log('[Chatbot Voice] ⚠️  No e-commerce credentials found for user:', userId);
         console.log('[Chatbot Voice] ⚠️  WooCommerce queries will not work. Configure in Settings → Integrations → WooCommerce');
       }
+
+      // Get Gmail email credentials if user has Gmail connected via socials (SIMPLE LOGIC)
+      let emailCredentials: { x_user_email: string; base_url: string } | undefined;
+      try {
+        const User = (await import('../models/User')).default;
+        const user = await User.findById(userId).lean();
+        
+        if (user?.organizationId) {
+          // Check SocialIntegration for Gmail (connected via socials in settings)
+          const gmailSocial = await SocialIntegration.findOne({
+            userId: new mongoose.Types.ObjectId(userId),
+            organizationId: user.organizationId,
+            platform: 'gmail',
+            status: 'connected'
+          }).lean();
+
+          if (gmailSocial?.metadata?.email) {
+            emailCredentials = {
+              x_user_email: gmailSocial.metadata.email,
+              base_url: 'https://keplerov1-python-2.onrender.com'
+            };
+            console.log('[Chatbot Voice] ✅ Gmail email found via SocialIntegration:', emailCredentials.x_user_email);
+          } else {
+            // Fallback: Check GoogleIntegration (Gmail via Google services)
+            const googleIntegration = await GoogleIntegration.findOne({
+              userId: new mongoose.Types.ObjectId(userId),
+              organizationId: user.organizationId,
+              'services.gmail': true
+            }).lean();
+
+            if (googleIntegration?.googleProfile?.email) {
+              emailCredentials = {
+                x_user_email: googleIntegration.googleProfile.email,
+                base_url: 'https://keplerov1-python-2.onrender.com'
+              };
+              console.log('[Chatbot Voice] ✅ Gmail email found via GoogleIntegration:', emailCredentials.x_user_email);
+            }
+          }
+        }
+      } catch (error: any) {
+        console.warn('[Chatbot Voice] ⚠️  Failed to fetch Gmail credentials:', error.message);
+      }
       
       // Append enhanced instructions to system prompt (SAFE - only appends, doesn't replace)
       systemPrompt += '\n\nIMPORTANT INSTRUCTIONS:\n';
@@ -470,7 +566,7 @@ export class ChatbotController {
         console.warn('[Chatbot Voice] ⚠️  LLM generation will fail without platform API keys configured in environment variables.');
       }
 
-      // Chat with RAG system - include provider, apiKey, and ecommerceCredentials (if available)
+      // Chat with RAG system - include provider, apiKey, ecommerceCredentials, and emailCredentials (if available)
       const response = await pythonRagService.chat({
         query,
         collectionNames: collectionNames,
@@ -479,6 +575,7 @@ export class ChatbotController {
         provider,
         apiKey,
         ecommerceCredentials,
+        emailCredentials,
         topK: 5,
         elaborate: false,
         skipHistory: false
@@ -689,6 +786,48 @@ export class ChatbotController {
         console.log('[Widget Chat] ⚠️  No e-commerce credentials found for user:', userId);
         console.log('[Widget Chat] ⚠️  WooCommerce queries will not work. Configure in Settings → Integrations → WooCommerce');
       }
+
+      // Get Gmail email credentials if user has Gmail connected via socials (SIMPLE LOGIC)
+      let emailCredentials: { x_user_email: string; base_url: string } | undefined;
+      try {
+        const User = (await import('../models/User')).default;
+        const user = await User.findById(userId).lean();
+        
+        if (user?.organizationId) {
+          // Check SocialIntegration for Gmail (connected via socials in settings)
+          const gmailSocial = await SocialIntegration.findOne({
+            userId: new mongoose.Types.ObjectId(userId),
+            organizationId: user.organizationId,
+            platform: 'gmail',
+            status: 'connected'
+          }).lean();
+
+          if (gmailSocial?.metadata?.email) {
+            emailCredentials = {
+              x_user_email: gmailSocial.metadata.email,
+              base_url: 'https://keplerov1-python-2.onrender.com'
+            };
+            console.log('[Widget Chat] ✅ Gmail email found via SocialIntegration:', emailCredentials.x_user_email);
+          } else {
+            // Fallback: Check GoogleIntegration (Gmail via Google services)
+            const googleIntegration = await GoogleIntegration.findOne({
+              userId: new mongoose.Types.ObjectId(userId),
+              organizationId: user.organizationId,
+              'services.gmail': true
+            }).lean();
+
+            if (googleIntegration?.googleProfile?.email) {
+              emailCredentials = {
+                x_user_email: googleIntegration.googleProfile.email,
+                base_url: 'https://keplerov1-python-2.onrender.com'
+              };
+              console.log('[Widget Chat] ✅ Gmail email found via GoogleIntegration:', emailCredentials.x_user_email);
+            }
+          }
+        }
+      } catch (error: any) {
+        console.error('[Widget Chat] ❌ Error fetching Gmail credentials:', error.message);
+      }
       
       // Append enhanced instructions to system prompt (SAFE - only appends, doesn't replace)
       systemPrompt += '\n\nIMPORTANT INSTRUCTIONS:\n';
@@ -765,6 +904,8 @@ export class ChatbotController {
       console.log('[Widget Chat] systemPrompt length:', systemPrompt.length);
       console.log('[Widget Chat] provider:', provider);
       console.log('[Widget Chat] hasApiKey:', !!apiKey);
+      console.log('[Widget Chat] hasEcommerceCredentials:', !!ecommerceCredentials);
+      console.log('[Widget Chat] hasEmailCredentials:', !!emailCredentials);
       console.log('[Widget Chat] apiKey userId match:', '✅ VALIDATED');
       console.log('[Widget Chat] KBs userId match:', '✅ VALIDATED');
       console.log('[Widget Chat] =========================================================');
@@ -789,6 +930,7 @@ export class ChatbotController {
         provider, // Validated: from userId's API keys
         apiKey, // Validated: from userId's API keys
         ecommerceCredentials,
+        emailCredentials,
         topK: 5,
         elaborate: false,
         skipHistory: false
