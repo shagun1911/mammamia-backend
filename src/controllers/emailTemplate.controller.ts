@@ -8,7 +8,7 @@ export class EmailTemplateController {
   createEmailTemplate = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user!.id;
-      const { name, description, subject_template, body_template, parameters } = req.body;
+      const { name, description, subject_template, body_template, parameters, sender_email } = req.body;
 
       // Validation
       if (!name || !name.trim()) {
@@ -33,15 +33,16 @@ export class EmailTemplateController {
         subject_template: subject_template.trim(),
         body_template: body_template.trim(),
         parameters: parameters || [],
+        sender_email: sender_email?.trim(),
       });
 
       // Include suggested prompts for appointment templates (Fix #1 + #2 from batch call guide)
       const isAppointment = name.toLowerCase().includes('appointment') || name.toLowerCase().includes('confirm');
       const suggestions = isAppointment
         ? {
-            suggested_first_message:
-              "Hello! I'm calling to help you with appointments. How can I assist?",
-            suggested_system_prompt: `You are a voice assistant that can book appointments and send confirmation emails.
+          suggested_first_message:
+            "Hello! I'm calling to help you with appointments. How can I assist?",
+          suggested_system_prompt: `You are a voice assistant that can book appointments and send confirmation emails.
 
 CRITICAL - You MUST collect ALL of these before calling the tool:
 1. Customer name
@@ -55,7 +56,7 @@ WORKFLOW:
 - Do NOT say "I'll book it" and then fail - you MUST call the tool with all parameters.
 - If email is missing, the tool will fail. Always ask: "And what email should we send the confirmation to?"
 - Never end the call without either successfully calling the tool or clearly explaining what's missing.`
-          }
+        }
         : undefined;
 
       const responseData = suggestions
@@ -81,7 +82,7 @@ WORKFLOW:
     try {
       const userId = req.user!.id;
       const { templateId } = req.params;
-      
+
       // Try to find by template_id first (e.g., "confirm_appointment_8")
       // If it looks like a MongoDB ObjectId, try that instead
       let template;
@@ -92,7 +93,7 @@ WORKFLOW:
         // It's a template_id string
         template = await emailTemplateService.getEmailTemplateByTemplateId(userId, templateId);
       }
-      
+
       if (!template) {
         throw new AppError(404, 'NOT_FOUND', 'Email template not found');
       }
@@ -122,7 +123,7 @@ WORKFLOW:
     try {
       const userId = req.user!.id;
       const { templateId } = req.params;
-      
+
       // IGNORE any webhook_base_url from request body - always use ENV
       const template = await emailTemplateService.updateTemplateWebhookUrl(userId, templateId);
       res.json(successResponse(template, 'Email template webhook URL updated successfully'));

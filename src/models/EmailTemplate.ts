@@ -16,6 +16,7 @@ export interface IEmailTemplate extends Document {
   parameters: IEmailTemplateParameter[];
   tool_id: string; // From external Python API response
   webhook_base_url?: string;
+  sender_email?: string; // Email address to send from
   created_at?: string; // From external Python API response
   createdAt: Date;
   updatedAt: Date;
@@ -76,6 +77,9 @@ const EmailTemplateSchema = new Schema<IEmailTemplate>({
     required: true,
   },
   webhook_base_url: {
+    type: String,
+  },
+  sender_email: {
     type: String,
   },
   created_at: {

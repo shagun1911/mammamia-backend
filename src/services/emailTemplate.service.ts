@@ -14,7 +14,7 @@ const PYTHON_API_BASE_URL = process.env.PYTHON_API_URL || 'https://elvenlabs-voi
  */
 function getTemplateWebhookEndpoint(): string {
   let webhookBaseUrl = process.env.TEMPLATE_WEBHOOK_ENDPOINT?.trim();
-  
+
   // Fallback 1: Use BACKEND_URL if TEMPLATE_WEBHOOK_ENDPOINT is not set
   if (!webhookBaseUrl) {
     webhookBaseUrl = process.env.BACKEND_URL?.trim();
@@ -22,20 +22,20 @@ function getTemplateWebhookEndpoint(): string {
       console.log('[Email Template] Using BACKEND_URL as webhook endpoint fallback');
     }
   }
-  
+
   // Fallback 2: Use Python API URL for local development
   if (!webhookBaseUrl) {
     webhookBaseUrl = PYTHON_API_BASE_URL;
     console.log('[Email Template] Using Python API URL as webhook endpoint fallback for local development');
   }
-  
+
   // Ensure URL ends with /api/v1
-  const url = webhookBaseUrl.endsWith('/api/v1') 
-    ? webhookBaseUrl 
+  const url = webhookBaseUrl.endsWith('/api/v1')
+    ? webhookBaseUrl
     : `${webhookBaseUrl.replace(/\/$/, '')}/api/v1`;
-  
+
   console.log('[Email Template] Webhook endpoint:', url);
-  
+
   return url;
 }
 
@@ -45,6 +45,7 @@ export interface CreateEmailTemplateRequest {
   subject_template: string;
   body_template: string;
   parameters: IEmailTemplateParameter[];
+  sender_email?: string;
 }
 
 export interface CreateEmailTemplateResponse {
@@ -103,7 +104,8 @@ export class EmailTemplateService {
 
     // Call Python API
     const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/email-templates`;
-    
+
+
     const requestBody = {
       name: data.name.trim(),
       description: data.description.trim(),
@@ -115,6 +117,7 @@ export class EmailTemplateService {
         required: p.required || false,
       })),
       webhook_base_url: webhookBaseUrl,
+      ...(data.sender_email && { sender_email: data.sender_email.trim() }),
     };
 
     console.log('\n========== EMAIL TEMPLATE CREATION ==========');
@@ -143,6 +146,7 @@ export class EmailTemplateService {
         parameters: pythonResponse.parameters,
         tool_id: pythonResponse.tool_id,
         webhook_base_url: webhookBaseUrl,
+        sender_email: data.sender_email?.trim(),
         created_at: pythonResponse.created_at,
       });
 
@@ -160,7 +164,7 @@ export class EmailTemplateService {
       return template;
     } catch (error: any) {
       console.error('[EmailTemplate Service] Failed to create email template in Python API:', error);
-      
+
       if (error.response) {
         console.error('[EmailTemplate Service] Python API error response:', {
           status: error.response.status,
@@ -172,7 +176,7 @@ export class EmailTemplateService {
           error.response.data?.detail || error.response.data?.message || 'Failed to create email template in Python API'
         );
       }
-      
+
       throw new AppError(
         500,
         'EMAIL_TEMPLATE_CREATION_ERROR',
@@ -209,18 +213,18 @@ export class EmailTemplateService {
 
   async deleteEmailTemplate(userId: string, templateId: string): Promise<void> {
     const userObjectId = new mongoose.Types.ObjectId(userId);
-    
+
     // First, try to find the template - handle both MongoDB _id and template_id (Python API ID)
     // Check if templateId is a valid MongoDB ObjectId
     let template = null;
     let query: any = { userId: userObjectId };
-    
+
     if (mongoose.Types.ObjectId.isValid(templateId) && templateId.length === 24) {
       // It's a valid MongoDB ObjectId, try to find by _id
       query._id = templateId;
       template = await EmailTemplate.findOne(query).lean();
     }
-    
+
     // If not found by _id, try to find by template_id (Python API ID)
     if (!template) {
       query = { userId: userObjectId, template_id: templateId };
@@ -269,31 +273,31 @@ export class EmailTemplateService {
    */
   async updateAllTemplatesWebhookUrl(): Promise<{ updated: number; failed: number }> {
     const webhookBaseUrl = getTemplateWebhookEndpoint();
-    
+
     console.log('[Email Template] Updating webhook URLs for all templates to:', webhookBaseUrl);
-    
+
     let updated = 0;
     let failed = 0;
-    
+
     try {
       const templates = await EmailTemplate.find({}).lean();
-      
+
       for (const template of templates) {
         try {
           const templateId = (template as any).template_id;
           const currentWebhook = (template as any).webhook_base_url;
-          
+
           // Skip if already correct
           if (currentWebhook === webhookBaseUrl) {
             continue;
           }
-          
+
           // Update in database
           await EmailTemplate.updateOne(
             { _id: (template as any)._id },
             { $set: { webhook_base_url: webhookBaseUrl } }
           );
-          
+
           // Update in Python API if template_id exists
           if (templateId) {
             try {
@@ -310,14 +314,14 @@ export class EmailTemplateService {
               // Continue - DB update succeeded
             }
           }
-          
+
           updated++;
         } catch (error: any) {
           console.error(`[Email Template] ⚠️ Failed to update template ${(template as any)._id}:`, error.message);
           failed++;
         }
       }
-      
+
       console.log(`[Email Template] ✅ Updated ${updated} templates, ${failed} failed`);
       return { updated, failed };
     } catch (error: any) {
@@ -332,31 +336,31 @@ export class EmailTemplateService {
   async updateTemplateWebhookUrl(userId: string, templateId: string): Promise<IEmailTemplate> {
     const webhookBaseUrl = getTemplateWebhookEndpoint();
     const userObjectId = new mongoose.Types.ObjectId(userId);
-    
+
     // Find template
     let template = null;
     let query: any = { userId: userObjectId };
-    
+
     if (mongoose.Types.ObjectId.isValid(templateId) && templateId.length === 24) {
       query._id = templateId;
       template = await EmailTemplate.findOne(query);
     }
-    
+
     if (!template) {
       query = { userId: userObjectId, template_id: templateId };
       template = await EmailTemplate.findOne(query);
     }
-    
+
     if (!template) {
       throw new AppError(404, 'NOT_FOUND', 'Email template not found');
     }
-    
+
     const pythonTemplateId = (template as any).template_id;
-    
+
     // Update in database
     (template as any).webhook_base_url = webhookBaseUrl;
     await template.save();
-    
+
     // Update in Python API
     if (pythonTemplateId) {
       try {
@@ -373,7 +377,7 @@ export class EmailTemplateService {
         // Don't throw - DB update succeeded
       }
     }
-    
+
     console.log(`[Email Template] ✅ Updated webhook URL for template ${templateId}`);
     return template;
   }
