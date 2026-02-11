@@ -1,3 +1,4 @@
+
 import mongoose from 'mongoose';
 import Automation from '../models/Automation';
 import AutomationExecution from '../models/AutomationExecution';
@@ -585,7 +586,7 @@ export class AutomationEngine {
           to,
           delay,
           delayUnit,
-          languageCode = 'en_US',
+          languageCode,
           components,
           templateParams, // New: Simple array of parameter values
           mode,
@@ -718,11 +719,20 @@ export class AutomationEngine {
         // Use templateName or template (templateName takes precedence)
         // Fallback to a safe default only if nothing is configured
         const resolvedTemplateName = (templateName || template || 'hello_world').trim();
-        const resolvedLanguageCode = (languageCode || 'en_US').trim();
 
         if (!resolvedTemplateName || resolvedTemplateName.trim() === '') {
           throw new Error('templateName is required.');
         }
+
+        // CRITICAL: Language code must come from template metadata selected in UI
+        if (!languageCode || languageCode.trim() === '') {
+          throw new Error(
+            'WhatsApp template languageCode is missing. It must come from selected template metadata. ' +
+            'The language is part of the template and should be stored in node.config.languageCode when the template is selected in the UI.'
+          );
+        }
+
+        const resolvedLanguageCode = languageCode.trim();
 
         // Construct Graph API URL exactly as specified
         const graphApiUrl = `https://graph.facebook.com/v18.0/${resolvedPhoneNumberId}/messages`;

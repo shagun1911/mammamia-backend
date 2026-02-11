@@ -5,7 +5,7 @@ export interface SendTemplateMessageParams {
   phoneNumberId: string;
   to: string;
   templateName: string;
-  languageCode?: string;
+  languageCode: string; // Required: Must come from template metadata
   components?: any[];
 }
 
@@ -45,7 +45,7 @@ export class WhatsAppService {
     params: SendTemplateMessageParams
   ): Promise<SendTemplateMessageResponse> {
     try {
-      const { phoneNumberId, to, templateName, languageCode = 'en_US', components = [] } = params;
+      const { phoneNumberId, to, templateName, languageCode, components = [] } = params;
 
       // Validate required parameters
       if (!phoneNumberId || !to || !templateName) {
@@ -53,6 +53,16 @@ export class WhatsAppService {
           400,
           'MISSING_PARAMETERS',
           'phoneNumberId, to, and templateName are required'
+        );
+      }
+
+      // CRITICAL: Language code must be provided (no defaults, no fallbacks)
+      if (!languageCode || languageCode.trim() === '') {
+        throw new AppError(
+          400,
+          'MISSING_LANGUAGE_CODE',
+          'WhatsApp template languageCode is required. It must come from the selected template metadata. ' +
+          'Do NOT use defaults like "en_US". The language must match the actual template language selected in the UI.'
         );
       }
 

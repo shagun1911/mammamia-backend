@@ -39,6 +39,15 @@ export class WhatsAppController {
         );
       }
 
+      // CRITICAL: languageCode is required (no defaults, no fallbacks)
+      if (!languageCode || languageCode.trim() === '') {
+        throw new AppError(
+          400,
+          'MISSING_LANGUAGE_CODE',
+          'languageCode is required and must come from the selected template metadata. Do not use defaults.'
+        );
+      }
+
       // Fetch WhatsApp SocialIntegration
       const integration = await SocialIntegration.findOne({
         organizationId: organizationId,
@@ -81,7 +90,7 @@ export class WhatsAppController {
         phoneNumberId: finalPhoneNumberId,
         to: to,
         templateName: templateName,
-        languageCode: languageCode || 'en_US',
+        languageCode: languageCode, // No fallback - already validated above
         components: components || []
       });
 
