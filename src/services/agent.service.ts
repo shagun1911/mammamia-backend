@@ -197,6 +197,40 @@ export class AgentService {
   }
 
   /**
+   * CRITICAL: Update voice_id in ElevenLabs conversation_config.tts
+   * This is where the ACTUAL voice used in calls is stored.
+   * The voice_id in agent prompt is just metadata - this one controls the TTS!
+   */
+  private async updateVoiceInConversationConfig(agentId: string, voiceId: string): Promise<void> {
+    try {
+      const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${agentId}`;
+      const requestBody = {
+        conversation_config: {
+          tts: {
+            voice_id: voiceId
+          }
+        }
+      };
+      
+      console.log(`[Agent Service] 🎤 Updating TTS voice_id in conversation_config:`, {
+        agent_id: agentId,
+        voice_id: voiceId,
+        url: pythonUrl
+      });
+      
+      await axios.patch(pythonUrl, requestBody, {
+        timeout: 15000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      console.log(`[Agent Service] ✅ Successfully updated voice_id in conversation_config to: ${voiceId}`);
+    } catch (error: any) {
+      console.error(`[Agent Service] ❌ Failed to update voice_id in conversation_config:`, error.response?.data || error.message);
+      throw new Error(`Failed to update voice in ElevenLabs: ${error.response?.data?.detail || error.message}`);
+    }
+  }
+
+  /**
    * Sync agent tools to ElevenLabs runtime.
    * This ensures tool_ids are patched into the agent so they can be invoked.
    * 
@@ -244,6 +278,15 @@ export class AgentService {
         await this.enableToolNodeForAgent(agentId);
       }
 
+      // CRITICAL: Update voice_id in conversation_config.tts
+      if (agent.voice_id) {
+        try {
+          await this.updateVoiceInConversationConfig(agentId, agent.voice_id);
+        } catch (error: any) {
+          console.error('[ElevenLabs Sync] ⚠️ Failed to update voice_id (non-fatal):', error.message);
+        }
+      }
+
       console.log(`[ElevenLabs Sync] ✅ Synced agent ${agentId} with ${toolIds.length} tools`);
     } catch (error: any) {
       console.error(`[ElevenLabs Sync] ⚠️ Failed to sync agent ${agent.agent_id} to ElevenLabs:`, error.message);
@@ -283,6 +326,16 @@ export class AgentService {
       if (toolIds.length > 0) {
         await this.enableToolNodeForAgent(agentId);
       }
+      
+      // CRITICAL: Update voice_id in conversation_config.tts
+      if ((agent as any).voice_id) {
+        try {
+          await this.updateVoiceInConversationConfig(agentId, (agent as any).voice_id);
+        } catch (error: any) {
+          console.error('[Agent Service] ⚠️ Failed to update voice_id during tool sync (non-fatal):', error.message);
+        }
+      }
+      
       console.log(`[Agent Service] ✅ Updated agent ${agentId} tool_ids in Python API`);
     } catch (error: any) {
       console.error(`[Agent Service] ⚠️ Failed to update agent ${agentId} tool_ids in Python API:`, error.message);
@@ -319,20 +372,27 @@ export class AgentService {
       // Prepend WooCommerce master prompt to system prompt
       const systemPromptToSend = `${WOOCOMMERCE_MASTER_PROMPT}\n\n${data.system_prompt || ''}`;
 
-      const requestBody = {
+      const requestBody: any = {
         name: data.name,
         first_message: firstMessageToSend,
         system_prompt: systemPromptToSend,
         language: data.language,
         knowledge_base_ids: data.knowledge_base_ids,
         tool_ids: toolIds,
-        ...(data.voice_id && { voice_id: data.voice_id }),
-        ...(toolIds.length > 0 && {
-          conversation_config: { workflow: { tool_node: { enabled: true } } }
-        })
       };
+      
+      // CRITICAL: Always include voice_id if provided
+      if (data.voice_id !== undefined) {
+        requestBody.voice_id = data.voice_id;
+      }
+      
+      // Enable tool node if there are tools
+      if (toolIds.length > 0) {
+        requestBody.conversation_config = { workflow: { tool_node: { enabled: true } } };
+      }
 
       console.log(`[Agent Service] Request body:`, JSON.stringify(requestBody, null, 2));
+      console.log(`[Agent Service] 🎤 Creating agent with voice_id:`, data.voice_id);
 
       const response = await axios.post<CreateAgentResponse>(
         pythonUrl,
@@ -371,6 +431,17 @@ export class AgentService {
       });
 
       console.log(`[Agent Service] Agent created successfully with ID: ${agent.agent_id}`);
+
+      // CRITICAL: Update voice_id in conversation_config.tts
+      // This ensures the voice is actually used in calls
+      if (data.voice_id) {
+        try {
+          await this.updateVoiceInConversationConfig(agent.agent_id, data.voice_id);
+        } catch (error: any) {
+          console.error('[Agent Service] ⚠️ Failed to update voice in conversation_config (non-fatal):', error.message);
+          // Don't throw - agent was created successfully
+        }
+      }
 
       // Sync tools to ElevenLabs after agent creation
       // This ensures tools are available in the agent runtime
@@ -485,14 +556,19 @@ export class AgentService {
     // Prepend WooCommerce master prompt to system prompt
     const systemPromptToSend = `${WOOCOMMERCE_MASTER_PROMPT}\n\n${data.system_prompt || ''}`;
 
-    const requestBody = {
+    const requestBody: any = {
       first_message: firstMessageToSend,
       system_prompt: systemPromptToSend,
       language: data.language,
       knowledge_base_ids: data.knowledge_base_ids,
       tool_ids: toolIds,
-      ...(data.voice_id && { voice_id: data.voice_id })
     };
+    
+    // CRITICAL: Always include voice_id if provided (even if empty string)
+    // This ensures ElevenLabs gets the voice_id update
+    if (data.voice_id !== undefined) {
+      requestBody.voice_id = data.voice_id;
+    }
 
     const logContext = (action: string) => ({
       action,
@@ -506,15 +582,23 @@ export class AgentService {
     console.log('[Agent Service] Request summary:', {
       language: data.language,
       knowledge_base_ids_count: data.knowledge_base_ids.length,
-      tool_ids_count: toolIds.length
+      tool_ids_count: toolIds.length,
+      voice_id: data.voice_id,
+      has_voice_id: !!data.voice_id
     });
+    console.log('[Agent Service] 🎤 Voice ID being sent to Python API:', data.voice_id);
+    console.log('[Agent Service] 📦 Full request body to Python API:', JSON.stringify(requestBody, null, 2));
 
     try {
       const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${agentId}/prompt`;
+      console.log('[Agent Service] 🔗 Python API URL:', pythonUrl);
+      
       const response = await axios.patch<UpdateAgentPromptResponse>(pythonUrl, requestBody, {
         timeout: 30000,
         headers: { 'Content-Type': 'application/json' }
       });
+      
+      console.log('[Agent Service] 📥 Python API response:', JSON.stringify(response.data, null, 2));
 
       if (!response.data.agent_id) {
         throw new AppError(500, 'INVALID_RESPONSE', 'Python API did not return agent_id');
@@ -522,6 +606,12 @@ export class AgentService {
 
       if (toolIds.length > 0) {
         await this.enableToolNodeForAgent(agentId);
+      }
+
+      // CRITICAL: Update voice_id in conversation_config.tts
+      // This is where the ACTUAL voice used in calls is stored!
+      if (data.voice_id) {
+        await this.updateVoiceInConversationConfig(agentId, data.voice_id);
       }
 
       if (data.first_message !== undefined) {
@@ -532,11 +622,24 @@ export class AgentService {
       agent.language = data.language;
       agent.knowledge_base_ids = data.knowledge_base_ids;
       agent.tool_ids = toolIds;
-      if (data.voice_id !== undefined) agent.voice_id = data.voice_id;
+      
+      // CRITICAL: Always update voice_id, even if undefined/empty
+      // This ensures voice_id changes are always saved to MongoDB
+      agent.voice_id = data.voice_id;
+      
       if (data.escalationRules !== undefined) agent.escalationRules = data.escalationRules;
+      
+      console.log('[Agent Service] 🎤 Saving voice_id to database:', {
+        agent_id: agentId,
+        voice_id_received: data.voice_id,
+        voice_id_to_save: agent.voice_id,
+        voice_id_defined: data.voice_id !== undefined
+      });
+      
       await agent.save();
 
       console.log('[Agent Service] updateAgentPrompt SUCCESS', logContext('updated'));
+      console.log('[Agent Service] ✅ Agent saved with voice_id:', agent.voice_id);
       return agent;
     } catch (patchError: any) {
       const errDetail = patchError.response?.data?.detail;
@@ -583,9 +686,24 @@ export class AgentService {
         agent.language = data.language;
         agent.knowledge_base_ids = data.knowledge_base_ids;
         agent.tool_ids = toolIds;
-        if (data.voice_id !== undefined) agent.voice_id = data.voice_id;
+        
+        // CRITICAL: Always update voice_id (even if undefined)
+        agent.voice_id = data.voice_id;
+        
         if (data.escalationRules !== undefined) agent.escalationRules = data.escalationRules;
+        
+        console.log('[Agent Service] 🎤 Fallback: Saving new agent with voice_id:', agent.voice_id);
+        
         await agent.save();
+
+        // CRITICAL: Update voice in conversation_config for the new agent
+        if (data.voice_id) {
+          try {
+            await this.updateVoiceInConversationConfig(newAgent.agent_id, data.voice_id);
+          } catch (error: any) {
+            console.error('[Agent Service] ⚠️ Failed to update voice in conversation_config for fallback agent:', error.message);
+          }
+        }
 
         await Agent.deleteOne({ _id: newAgent._id });
 

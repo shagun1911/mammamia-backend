@@ -218,7 +218,6 @@ export class AIBehaviorController {
         'ginevra': 'QITiGyM4owEZrBEf0QV8',
         'roberta': 'ZzFXkjuO1rPntDj6At5C',
         'giusy': '8KInRSd4DtD5L5gK7itu',
-        'roxy': 'mGiFn5Udfw93ewbgFHaP',
         'sami': 'kAzI34nYjizE0zON6rXv',
         'alejandro': 'YKUjKbMlejgvkOZlnnvt',
         'antonio': 'htFfPSZGJwjBv1CL0aMD',

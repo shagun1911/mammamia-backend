@@ -6,11 +6,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const VOICE_ID_MAP: Record<string, string> = {
-  'roxy' : 'OUMCzFUTd0F4Q6lkLkco',	
-'ginevra' : 'QITiGyM4owEZrBEf0QV8',
-'allison' : 'xctasy8XvGp2cVO9HL9k',
-
-
+  'ginevra' : 'QITiGyM4owEZrBEf0QV8',
+  'allison' : 'xctasy8XvGp2cVO9HL9k',
 };
 
 const ELEVENLABS_API_KEY = process.env.ELEVEN_API_KEY;

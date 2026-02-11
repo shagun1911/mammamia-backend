@@ -30,7 +30,6 @@ const VOICE_ID_MAP: Record<string, string> = {
   'ginevra': 'QITiGyM4owEZrBEf0QV8',
   'roberta': 'ZzFXkjuO1rPntDj6At5C',
   'giusy': '8KInRSd4DtD5L5gK7itu',
-  'roxy': 'mGiFn5Udfw93ewbgFHaP',
   'sami': 'kAzI34nYjizE0zON6rXv',
   'alejandro': 'YKUjKbMlejgvkOZlnnvt',
   'antonio': 'htFfPSZGJwjBv1CL0aMD',
@@ -1562,6 +1561,14 @@ export class AutomationEngine {
     const agentDoc = await Agent.findOne({ agent_id }).lean();
     if (!agentDoc) throw new Error(`Agent not found: ${agent_id}`);
 
+    console.log(`[Automation Engine] 🎤 Agent Voice Configuration:`, {
+      agent_id: agent_id,
+      agent_name: agentDoc.name,
+      stored_voice_id: agentDoc.voice_id,
+      will_use_voice_id: agentDoc.voice_id || VOICE_ID_MAP['adam'],
+      fallback_to_adam: !agentDoc.voice_id
+    });
+
     const payload = {
       agent_id: agent_id,
       agent_phone_number_id: phoneNumberDoc?.elevenlabs_phone_number_id || phoneNumberDoc?.phone_number_id || phone_number_id,
@@ -1573,6 +1580,13 @@ export class AutomationEngine {
       customer_info: { name: contact.name, email: contact.email, phone_number: normalizedPhone },
       dynamic_variables: { customer_name: contact.name, ...dynamicVars }
     };
+
+    console.log(`[Automation Engine] 📞 Outbound Call Payload:`, {
+      to_number: normalizedPhone,
+      voice_id: payload.voice_id,
+      language: payload.language,
+      agent_id: payload.agent_id
+    });
 
     const response = await axios.post(`${COMM_API}/api/v1/phone-numbers/twilio/outbound-call`, payload, { timeout: 20000 });
     if (response.data?.status === 'error') throw new Error(response.data.message);

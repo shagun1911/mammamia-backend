@@ -116,6 +116,9 @@ export class AgentController {
         first_message,
         system_prompt,
         language,
+        voice_id,
+        greeting_message,
+        escalationRules,
         knowledge_base_ids
       } = req.body;
 
@@ -144,11 +147,16 @@ export class AgentController {
         console.log('[Agent Normalize] Variables rewritten to lowercase during update');
       }
 
+      console.log('[Agent Controller] Updating agent with voice_id:', voice_id);
+
       // tool_ids are automatically added from env variables (PRODUCTS_TOOL_ID and ORDERS_TOOL_ID)
       const agent = await agentService.updateAgentPrompt(agentId, userId, {
         first_message: firstMessageResult.normalized.trim(),
         system_prompt: systemPromptResult.normalized.trim(),
         language: language.trim(),
+        voice_id: voice_id?.trim(),
+        greeting_message: greeting_message?.trim(),
+        escalationRules: escalationRules,
         knowledge_base_ids: knowledge_base_ids
       });
 
