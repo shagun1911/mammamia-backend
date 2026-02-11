@@ -637,7 +637,7 @@ export class AutomationEngine {
 
         // Use templateName or templateId (templateName takes precedence)
         // Default to "hello_world" if not specified (for testing)
-        const resolvedTemplateName = templateName || templateId || 'hello_world';
+        const resolvedTemplateName = 'hello_world';
         const resolvedLanguageCode = languageCode || 'en_US';
 
         if (!resolvedTemplateName || resolvedTemplateName.trim() === '') {
@@ -650,6 +650,7 @@ export class AutomationEngine {
         // Build payload exactly as specified (do NOT include components unless required)
         const payload: any = {
           messaging_product: 'whatsapp',
+          recipient_type: "individual",
           to: recipientPhone,
           type: 'template',
           template: {
