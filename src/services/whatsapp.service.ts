@@ -108,6 +108,36 @@ export class WhatsAppService {
         console.error('[WhatsApp Template] Graph API error:', JSON.stringify(error.response?.data, null, 2));
       }
 
+      // Handle parameter mismatch error specifically
+      if (errorData.code === 132000 || errorData.message?.includes('Number of parameters')) {
+        const errorDetails = errorData.error_data?.details || '';
+        const expectedParamsMatch = errorDetails.match(/expected number of params \((\d+)\)/);
+        const providedParamsMatch = errorDetails.match(/localizable_params \((\d+)\)/);
+        
+        const expectedCount = expectedParamsMatch ? parseInt(expectedParamsMatch[1]) : null;
+        const providedCount = providedParamsMatch ? parseInt(providedParamsMatch[1]) : 0;
+        
+        const templateName = params.templateName || 'unknown';
+        let helpfulMessage = `WhatsApp template "${templateName}" requires ${expectedCount || 'some'} parameter(s), but ${providedCount} were provided. `;
+        helpfulMessage += `Please add the required components JSON in your automation node configuration. `;
+        helpfulMessage += `Example format: [{"type": "body", "parameters": [{"type": "text", "text": "value1"}, ...]}]`;
+        
+        throw new AppError(
+          error.response?.status || 400,
+          'WHATSAPP_TEMPLATE_PARAMETER_MISMATCH',
+          helpfulMessage,
+          {
+            code: errorData.code || 132000,
+            expectedParams: expectedCount,
+            providedParams: providedCount,
+            templateName: templateName,
+            ...(errorData.error_subcode && { error_subcode: errorData.error_subcode }),
+            ...(errorData.error_user_title && { error_user_title: errorData.error_user_title }),
+            ...(errorData.error_user_msg && { error_user_msg: errorData.error_user_msg })
+          }
+        );
+      }
+
       // Throw AppError with Graph API error details
       throw new AppError(
         error.response?.status || 500,

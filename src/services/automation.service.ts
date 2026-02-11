@@ -43,6 +43,10 @@ export class AutomationService {
     // Check limits if creating as active (default is true)
     if (automationData.isActive !== false) {
       if (automationData.organizationId) {
+        // Clear cache BEFORE checking to ensure accurate count
+        const { usageTrackerService } = await import('./usage/usageTracker.service');
+        await usageTrackerService.clearUsageCache(automationData.organizationId.toString());
+        
         const hasCredits = await profileService.checkCredits(automationData.organizationId, 'automations', 1);
         if (!hasCredits) {
           throw new AppError(403, 'LIMIT_REACHED', 'Active automations limit reached. Please upgrade your plan.');
@@ -77,6 +81,10 @@ export class AutomationService {
 
     // Check limits if activating
     if (automationData.isActive === true && !automation.isActive) {
+      // Clear cache BEFORE checking to ensure accurate count
+      const { usageTrackerService } = await import('./usage/usageTracker.service');
+      await usageTrackerService.clearUsageCache(organizationId.toString());
+      
       const hasCredits = await profileService.checkCredits(organizationId, 'automations', 1);
       if (!hasCredits) {
         throw new AppError(403, 'LIMIT_REACHED', 'Active automations limit reached. Please upgrade your plan.');
@@ -143,6 +151,10 @@ export class AutomationService {
 
     // Check limits if activating
     if (isActive && !automation.isActive) {
+      // Clear cache BEFORE checking to ensure accurate count
+      const { usageTrackerService } = await import('./usage/usageTracker.service');
+      await usageTrackerService.clearUsageCache(organizationId.toString());
+      
       const hasCredits = await profileService.checkCredits(organizationId, 'automations', 1);
       if (!hasCredits) {
         throw new AppError(403, 'LIMIT_REACHED', 'Active automations limit reached. Please upgrade your plan.');

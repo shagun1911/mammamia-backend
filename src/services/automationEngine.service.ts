@@ -587,6 +587,7 @@ export class AutomationEngine {
           delayUnit,
           languageCode = 'en_US',
           components,
+          templateParams, // New: Simple array of parameter values
           mode,
           accessToken
         } = config;
@@ -663,21 +664,55 @@ export class AutomationEngine {
           throw new Error('Recipient phone number (to) is required.');
         }
 
-        // Normalize components: allow stored array or JSON string
+        // Normalize components: support multiple input formats
         let normalizedComponents: any[] = [];
-        if (Array.isArray(components)) {
-          normalizedComponents = components;
-        } else if (typeof components === 'string' && components.trim() !== '') {
-          try {
-            const parsed = JSON.parse(components);
-            if (Array.isArray(parsed)) {
-              normalizedComponents = parsed;
-            } else {
-              console.warn('[Automation Engine] WhatsApp components JSON is not an array, ignoring');
+        
+        // Priority 1: Use existing components if provided (advanced/backward compatibility)
+        // This allows users to override simple params with complex JSON if needed
+        if (components) {
+          if (Array.isArray(components)) {
+            normalizedComponents = components;
+          } else if (typeof components === 'string' && components.trim() !== '') {
+            try {
+              const parsed = JSON.parse(components);
+              if (Array.isArray(parsed)) {
+                normalizedComponents = parsed;
+              } else {
+                console.warn('[Automation Engine] WhatsApp components JSON is not an array, ignoring');
+                throw new Error(`WhatsApp components must be a JSON array. Received: ${typeof parsed}. Please format as: [{"type": "body", "parameters": [...]}]`);
+              }
+            } catch (err: any) {
+              if (err.message && err.message.includes('WhatsApp components must be')) {
+                throw err; // Re-throw our validation error
+              }
+              console.warn('[Automation Engine] Failed to parse WhatsApp components JSON:', err);
+              throw new Error(`Invalid WhatsApp components JSON format. Please ensure it's valid JSON array. Error: ${err.message}`);
             }
-          } catch (err) {
-            console.warn('[Automation Engine] Failed to parse WhatsApp components JSON:', err);
           }
+        }
+        // Priority 2: Use simple templateParams array (new, user-friendly format)
+        // Only use this if components weren't provided
+        else if (templateParams && Array.isArray(templateParams) && templateParams.length > 0) {
+          // Auto-generate components JSON from simple parameter array
+          const bodyParams = templateParams
+            .filter((param: any) => param !== null && param !== undefined && param !== '')
+            .map((param: any) => ({
+              type: 'text',
+              text: String(param)
+            }));
+          
+          if (bodyParams.length > 0) {
+            normalizedComponents = [{
+              type: 'body',
+              parameters: bodyParams
+            }];
+          }
+          console.log(`[Automation Engine] Auto-generated components from ${bodyParams.length} template parameters`);
+        }
+        
+        // Log warning if no components provided (templates may require parameters)
+        if (normalizedComponents.length === 0) {
+          console.warn(`[Automation Engine] No components provided for template "${templateName || template}". If this template requires parameters, the request will fail.`);
         }
 
         // Use templateName or template (templateName takes precedence)
@@ -719,25 +754,48 @@ export class AutomationEngine {
           payload: JSON.stringify(payload, null, 2)
         });
 
-        // Use WhatsAppService.sendTemplateMessage with proper parameters
-        const result = await this.whatsappService.sendTemplateMessage(userAccessToken, {
-          phoneNumberId: resolvedPhoneNumberId,
-          to: recipientPhone,
-          templateName: resolvedTemplateName,
-          languageCode: resolvedLanguageCode,
-          components: normalizedComponents && normalizedComponents.length > 0 ? normalizedComponents : []
-        });
+        try {
+          // Use WhatsAppService.sendTemplateMessage with proper parameters
+          const result = await this.whatsappService.sendTemplateMessage(userAccessToken, {
+            phoneNumberId: resolvedPhoneNumberId,
+            to: recipientPhone,
+            templateName: resolvedTemplateName,
+            languageCode: resolvedLanguageCode,
+            components: normalizedComponents && normalizedComponents.length > 0 ? normalizedComponents : []
+          });
 
-        // Fail hard on HTTP errors (already handled by sendTemplateMessage throwing AppError)
-        if (!result.success) {
-          throw new Error(result.error?.message || 'WhatsApp template send failed');
+          // Fail hard on HTTP errors (already handled by sendTemplateMessage throwing AppError)
+          if (!result.success) {
+            throw new Error(result.error?.message || 'WhatsApp template send failed');
+          }
+
+          return {
+            success: true,
+            messageId: result.message_id,
+            result
+          };
+        } catch (error: any) {
+          // Preserve AppError messages (they contain helpful guidance)
+          if (error.code === 'WHATSAPP_TEMPLATE_PARAMETER_MISMATCH' || error.message?.includes('parameter')) {
+            // Log detailed error info for debugging
+            console.error('[Automation Engine] WhatsApp template parameter error:', {
+              templateName: resolvedTemplateName,
+              hasComponents: normalizedComponents.length > 0,
+              componentCount: normalizedComponents.length,
+              error: error.message,
+              errorCode: error.code
+            });
+            // Re-throw with context
+            throw new Error(
+              `WhatsApp Template Error: ${error.message}\n` +
+              `Template: ${resolvedTemplateName}\n` +
+              `Action: Add the required components JSON in your automation node configuration. ` +
+              `Go to the automation builder, select this WhatsApp action node, and fill in the "Components (JSON)" field.`
+            );
+          }
+          // Re-throw other errors as-is (they already have good messages)
+          throw error;
         }
-
-        return {
-          success: true,
-          messageId: result.message_id,
-          result
-        };
       }
     });
 

@@ -42,11 +42,46 @@ export class ProfileService {
     if (!orgId) throw new AppError(400, 'NO_ORG', 'User not linked to an organization');
 
     // 1. Fetch Organization & Plan
-    const org = await Organization.findById(orgId).populate('planId');
-    if (!org || !org.planId) {
-      // Fallback: If no plan, block or allow? Safer to block or default to free.
-      console.warn(`[Usage] Org ${orgId} has no plan. Blocking.`);
-      return false;
+    let org = await Organization.findById(orgId).populate('planId');
+    if (!org) throw new AppError(400, 'ORG_NOT_FOUND', 'Organization not found');
+
+    // 2. Auto-assign free plan if no plan exists
+    if (!org.planId) {
+      console.warn(`[Usage] Org ${orgId} has no plan. Auto-assigning free plan.`);
+      const freePlan = await Plan.findOne({ slug: 'free' });
+      if (freePlan) {
+        org.planId = freePlan._id as mongoose.Types.ObjectId;
+        org.plan = 'free';
+        await org.save();
+        // Re-populate after save
+        org = await Organization.findById(orgId).populate('planId');
+      } else {
+        // If free plan doesn't exist, use hardcoded free limits
+        console.warn(`[Usage] Free plan not found in DB. Using hardcoded free limits.`);
+        const { getPlanLimits } = await import('../config/planLimits');
+        const freeLimits = getPlanLimits('free') || { conversations: 20, minutes: 20, automations: 5 };
+        const usage = await usageTrackerService.getOrganizationUsage(orgId);
+        
+        let limit = 0;
+        let used = 0;
+        if (type === 'chat') {
+          limit = freeLimits.conversations;
+          used = usage.chatMessages;
+        } else if (type === 'voice') {
+          limit = freeLimits.minutes;
+          used = usage.callMinutes;
+        } else if (type === 'automations') {
+          limit = freeLimits.automations;
+          used = usage.automations;
+        }
+        
+        if (limit === -1) return true;
+        return (used + amount) <= limit;
+      }
+    }
+
+    if (!org.planId) {
+      throw new AppError(500, 'PLAN_ERROR', 'Could not assign plan to organization');
     }
 
     const plan: any = org.planId;
@@ -132,8 +167,27 @@ export class ProfileService {
     const user = await User.findById(userId);
     if (!user?.organizationId) return null;
 
-    const org = await Organization.findById(user.organizationId).populate('planId');
-    if (!org || !org.planId) return null;
+    let org = await Organization.findById(user.organizationId).populate('planId');
+    if (!org) return null;
+    
+    // Auto-assign free plan if no plan exists
+    if (!org.planId) {
+      console.warn(`[Usage] Org ${org._id} has no plan in getUsageStats. Auto-assigning free plan.`);
+      const freePlan = await Plan.findOne({ slug: 'free' });
+      if (freePlan) {
+        org.planId = freePlan._id as mongoose.Types.ObjectId;
+        org.plan = 'free';
+        await org.save();
+        // Re-populate after save
+        org = await Organization.findById(user.organizationId).populate('planId');
+      } else {
+        // If free plan doesn't exist, return null (shouldn't happen in production)
+        console.error(`[Usage] Free plan not found in DB. Cannot get usage stats.`);
+        return null;
+      }
+    }
+    
+    if (!org.planId) return null;
     const plan: any = org.planId;
 
     // Get Comprehensive Real-Time Usage from Aggregation (Single Source of Truth)
