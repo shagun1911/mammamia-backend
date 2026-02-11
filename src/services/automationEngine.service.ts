@@ -577,7 +577,19 @@ export class AutomationEngine {
     // WhatsApp Template Action
     this.actions.set('send_whatsapp', {
       execute: async (config, triggerData, context) => {
-        const { templateName, templateId, phoneNumberId, to, delay, delayUnit, languageCode = 'en_US', components = [] } = config;
+        const {
+          templateName,
+          template,
+          templateId,
+          phoneNumberId,
+          to,
+          delay,
+          delayUnit,
+          languageCode = 'en_US',
+          components,
+          mode,
+          accessToken
+        } = config;
         const contactId = triggerData.contactId;
 
         // Check Credits
@@ -591,11 +603,22 @@ export class AutomationEngine {
           await this.delay(delay, delayUnit);
         }
 
-        // Resolve phoneNumberId from integration if not provided
+        // Resolve phoneNumberId and access token based on mode
         let resolvedPhoneNumberId = phoneNumberId;
         let userAccessToken: string | null = null;
 
-        if (!resolvedPhoneNumberId) {
+        // Manual mode: use credentials stored directly on config
+        if (mode === 'manual') {
+          if (config.phoneNumberId) {
+            resolvedPhoneNumberId = config.phoneNumberId;
+          }
+          if (accessToken) {
+            userAccessToken = accessToken;
+          }
+        }
+
+        // Automatic mode (default): resolve from SocialIntegration if not provided
+        if (!resolvedPhoneNumberId || !userAccessToken) {
           const organizationId = context?.organizationId || triggerData?.organizationId;
           if (organizationId) {
             const SocialIntegration = (await import('../models/SocialIntegration')).default;
@@ -605,9 +628,14 @@ export class AutomationEngine {
               status: 'connected'
             });
 
-            if (integration?.credentials?.phoneNumberId) {
-              resolvedPhoneNumberId = integration.credentials.phoneNumberId;
-              userAccessToken = integration.credentials.apiKey; // USER access token
+            if (integration) {
+              if (!resolvedPhoneNumberId && integration.credentials?.phoneNumberId) {
+                resolvedPhoneNumberId = integration.credentials.phoneNumberId;
+              }
+              // Decrypt USER access token using model method
+              if (!userAccessToken && typeof (integration as any).getDecryptedApiKey === 'function') {
+                userAccessToken = (integration as any).getDecryptedApiKey();
+              }
             }
           }
         }
@@ -635,10 +663,27 @@ export class AutomationEngine {
           throw new Error('Recipient phone number (to) is required.');
         }
 
-        // Use templateName or templateId (templateName takes precedence)
-        // Default to "hello_world" if not specified (for testing)
-        const resolvedTemplateName = 'hello_world';
-        const resolvedLanguageCode = languageCode || 'en_US';
+        // Normalize components: allow stored array or JSON string
+        let normalizedComponents: any[] = [];
+        if (Array.isArray(components)) {
+          normalizedComponents = components;
+        } else if (typeof components === 'string' && components.trim() !== '') {
+          try {
+            const parsed = JSON.parse(components);
+            if (Array.isArray(parsed)) {
+              normalizedComponents = parsed;
+            } else {
+              console.warn('[Automation Engine] WhatsApp components JSON is not an array, ignoring');
+            }
+          } catch (err) {
+            console.warn('[Automation Engine] Failed to parse WhatsApp components JSON:', err);
+          }
+        }
+
+        // Use templateName or template (templateName takes precedence)
+        // Fallback to a safe default only if nothing is configured
+        const resolvedTemplateName = (templateName || template || 'hello_world').trim();
+        const resolvedLanguageCode = (languageCode || 'en_US').trim();
 
         if (!resolvedTemplateName || resolvedTemplateName.trim() === '') {
           throw new Error('templateName is required.');
@@ -647,7 +692,7 @@ export class AutomationEngine {
         // Construct Graph API URL exactly as specified
         const graphApiUrl = `https://graph.facebook.com/v18.0/${resolvedPhoneNumberId}/messages`;
 
-        // Build payload exactly as specified (do NOT include components unless required)
+        // Build payload exactly as specified
         const payload: any = {
           messaging_product: 'whatsapp',
           recipient_type: "individual",
@@ -660,8 +705,8 @@ export class AutomationEngine {
         };
 
         // Only include components if explicitly provided and not empty
-        if (components && Array.isArray(components) && components.length > 0) {
-          payload.template.components = components;
+        if (normalizedComponents && Array.isArray(normalizedComponents) && normalizedComponents.length > 0) {
+          payload.template.components = normalizedComponents;
         }
 
         console.log('[Automation] WhatsApp Template - Final URL and payload:', {
@@ -670,7 +715,7 @@ export class AutomationEngine {
           to: recipientPhone,
           templateName: resolvedTemplateName,
           languageCode: resolvedLanguageCode,
-          hasComponents: components && components.length > 0,
+          hasComponents: normalizedComponents && normalizedComponents.length > 0,
           payload: JSON.stringify(payload, null, 2)
         });
 
@@ -680,7 +725,7 @@ export class AutomationEngine {
           to: recipientPhone,
           templateName: resolvedTemplateName,
           languageCode: resolvedLanguageCode,
-          components: components && components.length > 0 ? components : []
+          components: normalizedComponents && normalizedComponents.length > 0 ? normalizedComponents : []
         });
 
         // Fail hard on HTTP errors (already handled by sendTemplateMessage throwing AppError)

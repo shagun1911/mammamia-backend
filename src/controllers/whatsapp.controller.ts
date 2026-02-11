@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import axios from 'axios';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { AppError } from '../middleware/error.middleware';
 import SocialIntegration from '../models/SocialIntegration';
@@ -119,6 +120,138 @@ export class WhatsAppController {
       }
 
       // Generic error
+      next(error);
+    }
+  }
+
+  /**
+   * Get WhatsApp templates using connected integration (automatic mode)
+   * GET /api/v1/whatsapp/templates
+   */
+  async getTemplates(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const organizationId = req.user?.organizationId || req.user?._id;
+
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+
+      const integration = await SocialIntegration.findOne({
+        organizationId,
+        platform: 'whatsapp',
+        status: 'connected'
+      });
+
+      if (!integration) {
+        throw new AppError(
+          404,
+          'INTEGRATION_NOT_FOUND',
+          'WhatsApp integration not found or not connected. Please connect WhatsApp first.'
+        );
+      }
+
+      const accessToken = (integration as any).getDecryptedApiKey();
+      const wabaId = integration.credentials?.wabaId;
+
+      if (!accessToken || !wabaId) {
+        throw new AppError(
+          400,
+          'MISSING_CREDENTIALS',
+          'WhatsApp access token or WABA ID missing. Please reconnect WhatsApp.'
+        );
+      }
+
+      const metaUrl = `https://graph.facebook.com/v19.0/${wabaId}/message_templates`;
+
+      const response = await axios.get(metaUrl, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        params: {
+          limit: 100
+        }
+      });
+
+      res.json({
+        success: true,
+        data: response.data
+      });
+    } catch (error: any) {
+      if (error instanceof AppError) {
+        return res.status(error.statusCode).json({
+          success: false,
+          error: {
+            message: error.message,
+            code: (error as any)?.errorCode ?? (error as any)?.code ?? null,
+            ...(error.details && { details: error.details })
+          }
+        });
+      }
+
+      if (error.response?.data) {
+        return res.status(error.response.status || 500).json({
+          success: false,
+          error: error.response.data
+        });
+      }
+
+      next(error);
+    }
+  }
+
+  /**
+   * Get WhatsApp templates using manual credentials (manual mode)
+   * POST /api/v1/whatsapp/templates
+   * body: { accessToken, wabaId }
+   */
+  async getTemplatesManual(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { accessToken, wabaId } = req.body || {};
+
+      if (!accessToken || !wabaId) {
+        throw new AppError(
+          400,
+          'MISSING_PARAMETERS',
+          'accessToken and wabaId are required to fetch templates in manual mode'
+        );
+      }
+
+      const metaUrl = `https://graph.facebook.com/v19.0/${wabaId}/message_templates`;
+
+      const response = await axios.get(metaUrl, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        params: {
+          limit: 100
+        }
+      });
+
+      res.json({
+        success: true,
+        data: response.data
+      });
+    } catch (error: any) {
+      if (error instanceof AppError) {
+        return res.status(error.statusCode).json({
+          success: false,
+          error: {
+            message: error.message,
+            code: (error as any)?.errorCode ?? (error as any)?.code ?? null,
+            ...(error.details && { details: error.details })
+          }
+        });
+      }
+
+      if (error.response?.data) {
+        return res.status(error.response.status || 500).json({
+          success: false,
+          error: error.response.data
+        });
+      }
+
       next(error);
     }
   }
