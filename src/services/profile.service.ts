@@ -55,6 +55,9 @@ export class ProfileService {
         await org.save();
         // Re-populate after save
         org = await Organization.findById(orgId).populate('planId');
+        if (!org) {
+          throw new AppError(500, 'ORG_ERROR', 'Failed to reload organization after plan assignment');
+        }
       } else {
         // If free plan doesn't exist, use hardcoded free limits
         console.warn(`[Usage] Free plan not found in DB. Using hardcoded free limits.`);
@@ -80,7 +83,7 @@ export class ProfileService {
       }
     }
 
-    if (!org.planId) {
+    if (!org || !org.planId) {
       throw new AppError(500, 'PLAN_ERROR', 'Could not assign plan to organization');
     }
 
@@ -180,6 +183,10 @@ export class ProfileService {
         await org.save();
         // Re-populate after save
         org = await Organization.findById(user.organizationId).populate('planId');
+        if (!org) {
+          console.error(`[Usage] Failed to reload organization after plan assignment`);
+          return null;
+        }
       } else {
         // If free plan doesn't exist, return null (shouldn't happen in production)
         console.error(`[Usage] Free plan not found in DB. Cannot get usage stats.`);
@@ -187,7 +194,7 @@ export class ProfileService {
       }
     }
     
-    if (!org.planId) return null;
+    if (!org || !org.planId) return null;
     const plan: any = org.planId;
 
     // Get Comprehensive Real-Time Usage from Aggregation (Single Source of Truth)
