@@ -16,6 +16,15 @@ export interface IMessage extends Document {
   topics: string[];
   timestamp: Date;
   metadata?: Record<string, any>;
+  // WhatsApp message status tracking
+  messageId?: string; // WhatsApp message ID (wamid) for outgoing messages
+  status?: 'accepted' | 'sent' | 'delivered' | 'read' | 'failed'; // WhatsApp delivery status
+  sentAt?: Date;
+  deliveredAt?: Date;
+  readAt?: Date;
+  failedAt?: Date;
+  errorCode?: string; // WhatsApp error code for failed messages
+  errorMessage?: string; // Error description
 }
 
 const MessageSchema = new Schema<IMessage>({
@@ -57,10 +66,24 @@ const MessageSchema = new Schema<IMessage>({
   metadata: {
     type: Schema.Types.Mixed,
     default: {}
-  }
+  },
+  // WhatsApp message status tracking
+  messageId: String, // WhatsApp message ID (wamid) for outgoing messages
+  status: {
+    type: String,
+    enum: ['accepted', 'sent', 'delivered', 'read', 'failed'],
+    index: true
+  },
+  sentAt: Date,
+  deliveredAt: Date,
+  readAt: Date,
+  failedAt: Date,
+  errorCode: String,
+  errorMessage: String
 });
 
 MessageSchema.index({ conversationId: 1, timestamp: -1 });
 MessageSchema.index({ text: 'text' });
+MessageSchema.index({ messageId: 1 }); // Index for status updates lookup
 
 export default mongoose.model<IMessage>('Message', MessageSchema);

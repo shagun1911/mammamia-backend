@@ -3,7 +3,8 @@ import axios from 'axios';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { AppError } from '../middleware/error.middleware';
 import SocialIntegration from '../models/SocialIntegration';
-import { WhatsAppService } from '../services/whatsapp.service';
+import WhatsAppTemplate from '../models/WhatsAppTemplate';
+import { WhatsAppService, extractTemplateParamCounts, extractEnrichedTemplateMetadata } from '../services/whatsapp.service';
 import { profileService } from '../services/profile.service';
 
 const whatsappService = new WhatsAppService();
@@ -182,6 +183,37 @@ export class WhatsAppController {
         }
       });
 
+      // Parse and store template metadata with param counts, and enrich for UI
+      if (response.data?.data && Array.isArray(response.data.data)) {
+        for (const template of response.data.data) {
+          try {
+            const paramCounts = extractTemplateParamCounts(template);
+            
+            // Store or update template in DB
+            await WhatsAppTemplate.findOneAndUpdate(
+              { name: template.name, language: template.language },
+              {
+                name: template.name,
+                language: template.language,
+                status: template.status || 'APPROVED',
+                category: template.category || 'MARKETING',
+                components: template.components || [],
+                variables: template.components?.map((c: any) => c.text).filter(Boolean) || [],
+                ...paramCounts
+              },
+              { upsert: true, new: true }
+            );
+
+            // Attach enriched metadata for UI rendering
+            const enrichedMetadata = extractEnrichedTemplateMetadata(template);
+            (template as any).enrichedMetadata = enrichedMetadata;
+          } catch (err: any) {
+            console.warn(`[WhatsApp Controller] Failed to process template ${template.name}:`, err.message);
+            // Continue processing other templates
+          }
+        }
+      }
+
       res.json({
         success: true,
         data: response.data
@@ -237,6 +269,37 @@ export class WhatsAppController {
           limit: 100
         }
       });
+
+      // Parse and store template metadata with param counts, and enrich for UI
+      if (response.data?.data && Array.isArray(response.data.data)) {
+        for (const template of response.data.data) {
+          try {
+            const paramCounts = extractTemplateParamCounts(template);
+            
+            // Store or update template in DB
+            await WhatsAppTemplate.findOneAndUpdate(
+              { name: template.name, language: template.language },
+              {
+                name: template.name,
+                language: template.language,
+                status: template.status || 'APPROVED',
+                category: template.category || 'MARKETING',
+                components: template.components || [],
+                variables: template.components?.map((c: any) => c.text).filter(Boolean) || [],
+                ...paramCounts
+              },
+              { upsert: true, new: true }
+            );
+
+            // Attach enriched metadata for UI rendering
+            const enrichedMetadata = extractEnrichedTemplateMetadata(template);
+            (template as any).enrichedMetadata = enrichedMetadata;
+          } catch (err: any) {
+            console.warn(`[WhatsApp Controller] Failed to process template ${template.name}:`, err.message);
+            // Continue processing other templates
+          }
+        }
+      }
 
       res.json({
         success: true,

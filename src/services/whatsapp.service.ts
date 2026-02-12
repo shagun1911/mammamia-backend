@@ -1,6 +1,130 @@
 import axios from 'axios';
 import { AppError } from '../middleware/error.middleware';
 
+/**
+ * Count parameters in a text string by counting {{number}} placeholders
+ */
+function countParamsFromText(text: string | null | undefined): number {
+  if (!text) return 0;
+  const matches = text.match(/\{\{\d+\}\}/g);
+  return matches ? matches.length : 0;
+}
+
+/**
+ * Extract enriched metadata from WhatsApp template for UI rendering
+ * Includes parameter counts and preview text for body and header
+ */
+export function extractEnrichedTemplateMetadata(template: any): {
+  bodyParamCount: number;
+  headerParamCount: number;
+  buttonParamCount: number;
+  totalParamCount: number;
+  bodyPreview: string | null;
+  headerPreview: string | null;
+} {
+  let bodyParamCount = 0;
+  let headerParamCount = 0;
+  let buttonParamCount = 0;
+  let bodyPreview: string | null = null;
+  let headerPreview: string | null = null;
+
+  if (template.components && Array.isArray(template.components)) {
+    for (const component of template.components) {
+      if (component.type === 'BODY') {
+        const text = component.text || '';
+        bodyPreview = text;
+        bodyParamCount = countParamsFromText(text);
+      } else if (component.type === 'HEADER') {
+        if (component.format === 'TEXT') {
+          const text = component.text || '';
+          headerPreview = text;
+          headerParamCount = countParamsFromText(text);
+        }
+      } else if (component.type === 'BUTTONS') {
+        if (Array.isArray(component.buttons)) {
+          for (const button of component.buttons) {
+            if (button.type === 'URL' && button.url) {
+              buttonParamCount += countParamsFromText(button.url);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const totalParamCount = bodyParamCount + headerParamCount + buttonParamCount;
+
+  return {
+    bodyParamCount,
+    headerParamCount,
+    buttonParamCount,
+    totalParamCount,
+    bodyPreview,
+    headerPreview
+  };
+}
+
+/**
+ * Extract parameter counts from WhatsApp template metadata
+ * Counts {{1}}, {{2}}, etc. placeholders in body, header, and button components
+ */
+export function extractTemplateParamCounts(template: any): {
+  bodyParamCount: number;
+  headerParamCount: number;
+  buttonParamCount: number;
+  totalParamCount: number;
+} {
+  let bodyParamCount = 0;
+  let headerParamCount = 0;
+  let buttonParamCount = 0;
+
+  const placeholderRegex = /\{\{(\d+)\}\}/g;
+  
+  if (template.components && Array.isArray(template.components)) {
+    for (const component of template.components) {
+      if (component.type === 'BODY') {
+        const text = component.text || '';
+        const matches = text.match(placeholderRegex);
+        if (matches) {
+          // Get highest number to count total unique placeholders
+          const numbers = matches.map((m: string) => parseInt(m.match(/\d+/)![0]));
+          bodyParamCount = Math.max(...numbers, 0);
+        }
+      } else if (component.type === 'HEADER') {
+        if (component.format === 'TEXT') {
+          const text = component.text || '';
+          const matches = text.match(placeholderRegex);
+          if (matches) {
+            const numbers = matches.map((m: string) => parseInt(m.match(/\d+/)![0]));
+            headerParamCount = Math.max(...numbers, 0);
+          }
+        }
+      } else if (component.type === 'BUTTONS') {
+        if (Array.isArray(component.buttons)) {
+          for (const button of component.buttons) {
+            if (button.type === 'URL' && button.url) {
+              const matches = button.url.match(placeholderRegex);
+              if (matches) {
+                const numbers = matches.map((m: string) => parseInt(m.match(/\d+/)![0]));
+                buttonParamCount = Math.max(buttonParamCount, ...numbers, 0);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const totalParamCount = bodyParamCount + headerParamCount + buttonParamCount;
+
+  return {
+    bodyParamCount,
+    headerParamCount,
+    buttonParamCount,
+    totalParamCount
+  };
+}
+
 export interface SendTemplateMessageParams {
   phoneNumberId: string;
   to: string;

@@ -475,6 +475,8 @@ export class MetaWebhookController {
             for (const change of entry.changes) {
               if (change.field === 'messages' && change.value) {
                 await this.handleWhatsAppMessage(change.value);
+              } else if (change.field === 'statuses' && change.value?.statuses) {
+                await this.handleWhatsAppStatus(change.value);
               }
             }
           }
@@ -586,6 +588,88 @@ export class MetaWebhookController {
     } catch (error) {
       console.error('[Instagram Webhook] Error processing webhook:', error);
       // Don't throw - we already sent 200 response
+    }
+  }
+
+  /**
+   * Handle WhatsApp message status updates (delivered, read, failed, etc.)
+   */
+  private async handleWhatsAppStatus(data: any) {
+    try {
+      const statuses = data.statuses;
+      if (!statuses || !Array.isArray(statuses) || statuses.length === 0) {
+        return;
+      }
+
+      for (const status of statuses) {
+        const messageId = status.id; // WhatsApp message ID (wamid)
+        const statusValue = status.status; // sent, delivered, read, failed
+        const timestamp = status.timestamp ? new Date(parseInt(status.timestamp) * 1000) : new Date();
+        const recipientId = status.recipient_id;
+        const errors = status.errors || [];
+
+        if (!messageId) {
+          console.warn('[WhatsApp Status Update] Missing messageId in status update');
+          continue;
+        }
+
+        // Find message by messageId
+        const message = await Message.findOne({ messageId: messageId });
+
+        if (!message) {
+          // Log warning but don't crash - message might be from another system or already deleted
+          console.log('[WhatsApp Status Update] Message not found for messageId:', messageId, {
+            status: statusValue,
+            recipientId
+          });
+          continue;
+        }
+
+        // Update status fields based on status value
+        const updateData: any = {
+          status: statusValue
+        };
+
+        if (statusValue === 'sent') {
+          // Status changed to sent (from accepted)
+          updateData.status = 'sent';
+        } else if (statusValue === 'delivered') {
+          updateData.status = 'delivered';
+          updateData.deliveredAt = timestamp;
+        } else if (statusValue === 'read') {
+          updateData.status = 'read';
+          updateData.readAt = timestamp;
+          // Also set deliveredAt if not already set (read implies delivered)
+          if (!message.deliveredAt) {
+            updateData.deliveredAt = timestamp;
+          }
+        } else if (statusValue === 'failed') {
+          updateData.status = 'failed';
+          updateData.failedAt = timestamp;
+          // Extract error information
+          if (errors.length > 0) {
+            const firstError = errors[0];
+            updateData.errorCode = firstError.code?.toString() || undefined;
+            updateData.errorMessage = firstError.title || firstError.message || undefined;
+          }
+        }
+
+        // Update message record
+        await Message.findByIdAndUpdate(message._id, updateData);
+
+        // Structured logging
+        console.log('[WhatsApp Status Update]', {
+          messageId,
+          status: statusValue,
+          recipientId,
+          errorCode: updateData.errorCode || null,
+          errorMessage: updateData.errorMessage || null,
+          timestamp: timestamp.toISOString()
+        });
+      }
+    } catch (error: any) {
+      // Log error but don't throw - webhook must always return 200 OK
+      console.error('[WhatsApp Status Update] Error processing status update:', error.message);
     }
   }
 

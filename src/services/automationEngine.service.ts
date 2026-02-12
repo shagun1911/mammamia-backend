@@ -18,6 +18,8 @@ import gmailOAuthService from './gmailOAuth.service';
 import { emailService } from './email.service';
 import GoogleIntegration from '../models/GoogleIntegration';
 import SocialIntegration from '../models/SocialIntegration';
+import Message from '../models/Message';
+import Conversation from '../models/Conversation';
 
 
 // Voice ID mapping from voice name to ElevenLabs voice ID
@@ -689,19 +691,116 @@ export class AutomationEngine {
           throw new Error('Recipient phone number (to) is required.');
         }
 
+        // Use templateName or template (templateName takes precedence)
+        const resolvedTemplateName = (templateName || template || 'hello_world').trim();
+        const resolvedLanguageCode = (languageCode || 'en_US').trim();
+
+        if (!resolvedTemplateName || resolvedTemplateName.trim() === '') {
+          throw new Error('templateName is required.');
+        }
+
+        // CRITICAL: Language code must come from template metadata selected in UI
+        if (!resolvedLanguageCode || resolvedLanguageCode.trim() === '') {
+          throw new Error(
+            'WhatsApp template languageCode is missing. It must come from selected template metadata. ' +
+            'The language is part of the template and should be stored in node.config.languageCode when the template is selected in the UI.'
+          );
+        }
+
+        // PROACTIVE VALIDATION: Fetch template metadata and validate param counts
+        let templateMetadata: any = null;
+        const WhatsAppTemplate = (await import('../models/WhatsAppTemplate')).default;
+        
+        // Try to fetch from DB first
+        templateMetadata = await WhatsAppTemplate.findOne({
+          name: resolvedTemplateName,
+          language: resolvedLanguageCode
+        });
+
+        // If not in DB, fetch from Meta API once and store
+        if (!templateMetadata) {
+          const organizationId = context?.organizationId || triggerData?.organizationId;
+          if (organizationId && userAccessToken) {
+            try {
+              const SocialIntegration = (await import('../models/SocialIntegration')).default;
+              const integration = await SocialIntegration.findOne({
+                organizationId,
+                platform: 'whatsapp',
+                status: 'connected'
+              });
+
+              if (integration?.credentials?.wabaId) {
+                const axios = (await import('axios')).default;
+                const metaUrl = `https://graph.facebook.com/v19.0/${integration.credentials.wabaId}/message_templates`;
+                
+                const metaResponse = await axios.get(metaUrl, {
+                  headers: {
+                    Authorization: `Bearer ${userAccessToken}`,
+                    'Content-Type': 'application/json'
+                  },
+                  params: { limit: 100 }
+                });
+
+                // Find matching template in response
+                const matchingTemplate = metaResponse.data?.data?.find(
+                  (t: any) => t.name === resolvedTemplateName && t.language === resolvedLanguageCode
+                );
+
+                if (matchingTemplate) {
+                  const { extractTemplateParamCounts } = await import('../services/whatsapp.service');
+                  const paramCounts = extractTemplateParamCounts(matchingTemplate);
+                  
+                  // Store in DB
+                  templateMetadata = await WhatsAppTemplate.findOneAndUpdate(
+                    { name: resolvedTemplateName, language: resolvedLanguageCode },
+                    {
+                      name: matchingTemplate.name,
+                      language: matchingTemplate.language,
+                      status: matchingTemplate.status || 'APPROVED',
+                      category: matchingTemplate.category || 'MARKETING',
+                      components: matchingTemplate.components || [],
+                      variables: matchingTemplate.components?.map((c: any) => c.text).filter(Boolean) || [],
+                      ...paramCounts
+                    },
+                    { upsert: true, new: true }
+                  );
+                }
+              }
+            } catch (fetchError: any) {
+              console.warn(`[Automation Engine] Failed to fetch template metadata from Meta API:`, fetchError.message);
+              // Continue without validation - fallback to reactive error handling
+            }
+          }
+        }
+
         // Normalize components: support multiple input formats
         let normalizedComponents: any[] = [];
+        let providedParamCount = 0;
         
         // Priority 1: Use existing components if provided (advanced/backward compatibility)
         // This allows users to override simple params with complex JSON if needed
         if (components) {
           if (Array.isArray(components)) {
             normalizedComponents = components;
+            // Count parameters in provided components
+            providedParamCount = components.reduce((count: number, comp: any) => {
+              if (comp.parameters && Array.isArray(comp.parameters)) {
+                return count + comp.parameters.length;
+              }
+              return count;
+            }, 0);
           } else if (typeof components === 'string' && components.trim() !== '') {
             try {
               const parsed = JSON.parse(components);
               if (Array.isArray(parsed)) {
                 normalizedComponents = parsed;
+                // Count parameters in provided components
+                providedParamCount = parsed.reduce((count: number, comp: any) => {
+                  if (comp.parameters && Array.isArray(comp.parameters)) {
+                    return count + comp.parameters.length;
+                  }
+                  return count;
+                }, 0);
               } else {
                 console.warn('[Automation Engine] WhatsApp components JSON is not an array, ignoring');
                 throw new Error(`WhatsApp components must be a JSON array. Received: ${typeof parsed}. Please format as: [{"type": "body", "parameters": [...]}]`);
@@ -718,6 +817,15 @@ export class AutomationEngine {
         // Priority 2: Use simple templateParams array (new, user-friendly format)
         // Only use this if components weren't provided
         else if (templateParams && Array.isArray(templateParams) && templateParams.length > 0) {
+          // Validate header params if template has them
+          if (templateMetadata && templateMetadata.headerParamCount > 0) {
+            throw new Error(
+              `Template "${resolvedTemplateName}" requires ${templateMetadata.headerParamCount} header parameter(s), ` +
+              `but templateParams only supports body parameters. Please use the advanced "Components (JSON)" field ` +
+              `to provide header parameters, or use a template without header parameters.`
+            );
+          }
+
           // Auto-generate components JSON from simple parameter array
           const bodyParams = templateParams
             .filter((param: any) => param !== null && param !== undefined && param !== '')
@@ -725,6 +833,8 @@ export class AutomationEngine {
               type: 'text',
               text: String(param)
             }));
+          
+          providedParamCount = bodyParams.length;
           
           if (bodyParams.length > 0) {
             normalizedComponents = [{
@@ -735,28 +845,29 @@ export class AutomationEngine {
           console.log(`[Automation Engine] Auto-generated components from ${bodyParams.length} template parameters`);
         }
         
-        // Log warning if no components provided (templates may require parameters)
-        if (normalizedComponents.length === 0) {
-          console.warn(`[Automation Engine] No components provided for template "${templateName || template}". If this template requires parameters, the request will fail.`);
+        // PROACTIVE VALIDATION: Check param count if template metadata is available
+        if (templateMetadata && templateMetadata.totalParamCount !== undefined) {
+          const expectedCount = templateMetadata.totalParamCount;
+          
+          if (expectedCount > 0 && providedParamCount !== expectedCount) {
+            throw new Error(
+              `WHATSAPP_TEMPLATE_PARAMETER_MISMATCH: Template "${resolvedTemplateName}" requires ${expectedCount} parameter(s) ` +
+              `but ${providedParamCount} were provided. ` +
+              `Body params: ${templateMetadata.bodyParamCount || 0}, ` +
+              `Header params: ${templateMetadata.headerParamCount || 0}, ` +
+              `Button params: ${templateMetadata.buttonParamCount || 0}.`
+            );
+          }
+          
+          // If template requires no params, don't attach components
+          if (expectedCount === 0 && normalizedComponents.length > 0) {
+            console.warn(`[Automation Engine] Template "${resolvedTemplateName}" requires no parameters, but components were provided. Ignoring components.`);
+            normalizedComponents = [];
+          }
+        } else if (normalizedComponents.length === 0) {
+          // Log warning if no components provided and we don't have metadata
+          console.warn(`[Automation Engine] No components provided for template "${resolvedTemplateName}". If this template requires parameters, the request will fail.`);
         }
-
-        // Use templateName or template (templateName takes precedence)
-        // Fallback to a safe default only if nothing is configured
-        const resolvedTemplateName = (templateName || template || 'hello_world').trim();
-
-        if (!resolvedTemplateName || resolvedTemplateName.trim() === '') {
-          throw new Error('templateName is required.');
-        }
-
-        // CRITICAL: Language code must come from template metadata selected in UI
-        if (!languageCode || languageCode.trim() === '') {
-          throw new Error(
-            'WhatsApp template languageCode is missing. It must come from selected template metadata. ' +
-            'The language is part of the template and should be stored in node.config.languageCode when the template is selected in the UI.'
-          );
-        }
-
-        const resolvedLanguageCode = languageCode.trim();
 
         // Construct Graph API URL exactly as specified
         const graphApiUrl = `https://graph.facebook.com/v18.0/${resolvedPhoneNumberId}/messages`;
@@ -803,6 +914,61 @@ export class AutomationEngine {
             throw new Error(result.error?.message || 'WhatsApp template send failed');
           }
 
+          // Store messageId for status tracking
+          const messageId = result.message_id;
+          if (messageId && contactId && organizationId) {
+            try {
+              // Find or create conversation for this contact
+              let conversation = await Conversation.findOne({
+                customerId: contactId,
+                channel: 'whatsapp',
+                organizationId: organizationId
+              }).sort({ updatedAt: -1 }); // Get most recent conversation
+
+              // Create conversation if it doesn't exist
+              if (!conversation) {
+                conversation = await Conversation.create({
+                  customerId: contactId,
+                  channel: 'whatsapp',
+                  status: 'open',
+                  organizationId: organizationId,
+                  isAiManaging: true,
+                  metadata: {
+                    phoneNumberId: resolvedPhoneNumberId,
+                    source: 'automation'
+                  }
+                });
+              }
+
+              // Create message record with messageId for status tracking
+              await Message.create({
+                conversationId: conversation._id,
+                organizationId: organizationId,
+                customerId: contactId,
+                sender: 'ai',
+                text: `[WhatsApp Template] ${resolvedTemplateName}`,
+                type: 'message',
+                messageId: messageId,
+                status: 'accepted',
+                sentAt: new Date(),
+                timestamp: new Date(),
+                metadata: {
+                  platform: 'whatsapp',
+                  templateName: resolvedTemplateName,
+                  languageCode: resolvedLanguageCode,
+                  phoneNumberId: resolvedPhoneNumberId,
+                  recipientPhone: recipientPhone,
+                  source: 'automation'
+                }
+              });
+
+              console.log(`[Automation Engine] ✅ Stored WhatsApp messageId ${messageId} for status tracking`);
+            } catch (storeError: any) {
+              // Log but don't fail - status tracking is non-critical
+              console.warn('[Automation Engine] Failed to store messageId for status tracking:', storeError.message);
+            }
+          }
+
           return {
             success: true,
             messageId: result.message_id,
@@ -810,7 +976,10 @@ export class AutomationEngine {
           };
         } catch (error: any) {
           // Preserve AppError messages (they contain helpful guidance)
-          if (error.code === 'WHATSAPP_TEMPLATE_PARAMETER_MISMATCH' || error.message?.includes('parameter')) {
+          // Also catch our proactive validation errors
+          if (error.code === 'WHATSAPP_TEMPLATE_PARAMETER_MISMATCH' || 
+              error.message?.includes('WHATSAPP_TEMPLATE_PARAMETER_MISMATCH') ||
+              error.message?.includes('parameter')) {
             // Log detailed error info for debugging
             console.error('[Automation Engine] WhatsApp template parameter error:', {
               templateName: resolvedTemplateName,
