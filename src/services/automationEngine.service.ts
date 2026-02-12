@@ -156,26 +156,51 @@ export class AutomationEngine {
     // ============ AISTEIN-IT TRIGGERS ============
 
     // Contact Created Trigger
-    this.triggers.set('keplero_contact_created', {
+    this.triggers.set('aistein_contact_created', {
       validate: async (config, data) => {
         // Trigger fires when a new contact is created
         return data.event === 'contact_created';
       }
     });
 
+    // Legacy compatibility: Map old keplero_ names to new aistein_ names
+    // This ensures existing automations continue to work
+    this.triggers.set('keplero_contact_created', {
+      validate: async (config, data) => {
+        const handler = this.triggers.get('aistein_contact_created');
+        return handler ? handler.validate(config, data) : false;
+      }
+    });
+
     // Contact Deleted Trigger
-    this.triggers.set('keplero_contact_deleted', {
+    this.triggers.set('aistein_contact_deleted', {
       validate: async (config, data) => {
         return data.event === 'contact_deleted';
       }
     });
 
+    // Legacy compatibility
+    this.triggers.set('keplero_contact_deleted', {
+      validate: async (config, data) => {
+        const handler = this.triggers.get('aistein_contact_deleted');
+        return handler ? handler.validate(config, data) : false;
+      }
+    });
+
     // Contact Moved to List Trigger
-    this.triggers.set('keplero_contact_moved', {
+    this.triggers.set('aistein_contact_moved', {
       validate: async (config, data) => {
         // Check if contact was moved to the specified list
         return data.event === 'contact_moved' &&
           (!config.listId || data.listId === config.listId);
+      }
+    });
+
+    // Legacy compatibility
+    this.triggers.set('keplero_contact_moved', {
+      validate: async (config, data) => {
+        const handler = this.triggers.get('aistein_contact_moved');
+        return handler ? handler.validate(config, data) : false;
       }
     });
 
@@ -211,7 +236,7 @@ export class AutomationEngine {
     });
 
     // Legacy mass sending trigger (redirect to batch_call logic)
-    this.triggers.set('keplero_mass_sending', {
+    this.triggers.set('aistein_mass_sending', {
       validate: async (config, data) => {
         // Support old event names but same filtering logic
         if (data.event !== 'batch_call' && data.event !== 'mass_sending') return false;
@@ -277,7 +302,7 @@ export class AutomationEngine {
     // ============ AISTEIN-IT ACTIONS ============
 
     // API Call Action
-    this.actions.set('keplero_api_call', {
+    this.actions.set('aistein_api_call', {
       execute: async (config, triggerData) => {
         const { url, method = 'GET', headers = {}, body, params = {} } = config;
 
@@ -310,7 +335,7 @@ export class AutomationEngine {
     });
 
     // Create Contact Action
-    this.actions.set('keplero_create_contact', {
+    this.actions.set('aistein_create_contact', {
       execute: async (config, triggerData, context) => {
         const { name, email, phone, tags = [], lists = [] } = config;
 
@@ -365,7 +390,7 @@ export class AutomationEngine {
     });
 
     // Outbound Call Action
-    this.actions.set('keplero_outbound_call', {
+    this.actions.set('aistein_outbound_call', {
       execute: async (config, triggerData, context) => {
         const agentId = triggerData?.agent_id || config.agent_id;
         const phoneNumberId = triggerData?.phone_number_id || config.phone_number_id;
@@ -398,7 +423,7 @@ export class AutomationEngine {
         });
       }
     });
-    this.actions.set('keplero_batch_calling', {
+    this.actions.set('aistein_batch_calling', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         const { listId, agent_id, phone_number_id, call_name } = config;
 
@@ -453,7 +478,7 @@ export class AutomationEngine {
     });
 
     // Extract Data Action
-    this.actions.set('keplero_extract_data', {
+    this.actions.set('aistein_extract_data', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         const conversationId = triggerData.conversation_id || config.conversation_id;
         const extractionType = config.extraction_type || 'appointment';
@@ -484,7 +509,7 @@ export class AutomationEngine {
 
 
     // SMS Sending Action
-    this.actions.set('keplero_send_sms', {
+    this.actions.set('aistein_send_sms', {
       execute: async (config, triggerData) => {
         const contactId = triggerData.contactId || config.contactId;
         const message = config.message || '';
@@ -534,7 +559,7 @@ export class AutomationEngine {
     });
 
     // Email Sending Action
-    this.actions.set('keplero_send_email', {
+    this.actions.set('aistein_send_email', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         const { subject, body, to, is_html } = config;
 
@@ -823,9 +848,9 @@ export class AutomationEngine {
     // Legacy actions (FIXED - redirect to real email sender)
     this.actions.set('send_email', {
       execute: async (config, triggerData, context) => {
-        const handler = this.actions.get('keplero_send_email');
+        const handler = this.actions.get('aistein_send_email');
         if (!handler) {
-          throw new Error('keplero_send_email handler not found');
+          throw new Error('aistein_send_email handler not found');
         }
         return handler.execute(config, triggerData, context);
       }
@@ -898,7 +923,7 @@ export class AutomationEngine {
     // ============ GOOGLE WORKSPACE ACTIONS ============
 
     // Extract Appointment Data from Conversation
-    this.actions.set('keplero_extract_appointment', {
+    this.actions.set('aistein_extract_appointment', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         const { conversation_id, extraction_type = 'appointment' } = config;
         
@@ -970,7 +995,7 @@ export class AutomationEngine {
 
     // Google Calendar - Check Availability
     // Google Calendar - Check Availability
-    this.actions.set('keplero_google_calendar_check_availability', {
+    this.actions.set('aistein_google_calendar_check_availability', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         if (!context.appointment?.booked) {
           console.info(`[Automation] ⏭️ Skipping Calendar Check: No booked appointment in context.`);
@@ -1013,7 +1038,7 @@ export class AutomationEngine {
     });
 
     // Google Calendar - Create Event
-    this.actions.set('keplero_google_calendar_create_event', {
+    this.actions.set('aistein_google_calendar_create_event', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         if (!context.appointment?.booked) {
           console.info(`[Automation Engine] ⏭️ Skipping Event Creation: Appointment not confirmed.`);
@@ -1079,7 +1104,7 @@ export class AutomationEngine {
     });
 
     // Google Sheets - Append Row
-    this.actions.set('keplero_google_sheet_append_row', {
+    this.actions.set('aistein_google_sheet_append_row', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         const { spreadsheetId, values } = config;
         if (!spreadsheetId || !Array.isArray(values)) throw new Error('Sheet configuration missing');
@@ -1125,7 +1150,7 @@ export class AutomationEngine {
     });
 
     // Gmail - Send Email
-    this.actions.set('keplero_google_gmail_send', {
+    this.actions.set('aistein_google_gmail_send', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         const { to, subject, body } = config;
         
@@ -1182,6 +1207,41 @@ export class AutomationEngine {
         }
       }
     });
+
+    // ============ LEGACY COMPATIBILITY MAPPINGS ============
+    // Map old "keplero_" service names to new "aistein_" handlers
+    // This ensures backward compatibility for existing automations
+    const legacyMappings: Record<string, string> = {
+      'keplero_api_call': 'aistein_api_call',
+      'keplero_create_contact': 'aistein_create_contact',
+      'keplero_outbound_call': 'aistein_outbound_call',
+      'keplero_batch_calling': 'aistein_batch_calling',
+      'keplero_extract_data': 'aistein_extract_data',
+      'keplero_send_sms': 'aistein_send_sms',
+      'keplero_send_email': 'aistein_send_email',
+      'keplero_extract_appointment': 'aistein_extract_appointment',
+      'keplero_google_calendar_check_availability': 'aistein_google_calendar_check_availability',
+      'keplero_google_calendar_create_event': 'aistein_google_calendar_create_event',
+      'keplero_google_sheet_append_row': 'aistein_google_sheet_append_row',
+      'keplero_google_gmail_send': 'aistein_google_gmail_send',
+      'keplero_mass_sending': 'aistein_mass_sending',
+    };
+
+    // Register legacy action handlers
+    for (const [oldName, newName] of Object.entries(legacyMappings)) {
+      this.actions.set(oldName, {
+        execute: async (config, triggerData, context) => {
+          console.log(`[Automation Engine] ⚠️ Using legacy service name: ${oldName} → ${newName}`);
+          const handler = this.actions.get(newName);
+          if (!handler) {
+            throw new Error(`Handler not found for ${newName} (mapped from ${oldName})`);
+          }
+          return handler.execute(config, triggerData, context);
+        }
+      });
+    }
+
+    console.log('[Automation Engine] ✅ Legacy compatibility mappings registered');
   }
 
   /**
@@ -1351,7 +1411,7 @@ export class AutomationEngine {
             if (res) {
               if (res.success === false) {
                 console.log(`[Automation Engine] ❌ Action failed: ${node.service}`, res.error || res.reason);
-                if (node.service !== 'keplero_google_sheet_append_row') {
+                if (node.service !== 'aistein_google_sheet_append_row') {
                   throw new Error(res.error || `Action ${node.service} failed`);
                 }
               } else if (res.status === 'skipped') {
