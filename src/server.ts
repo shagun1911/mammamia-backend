@@ -48,6 +48,7 @@ import phoneNumberRoutes from './routes/phoneNumber.routes';
 import sipTrunkRoutes from './routes/sipTrunk.routes';
 import batchCallingRoutes from './routes/batchCalling.routes';
 import emailWebhookRoutes from './routes/emailWebhook.routes';
+import elevenlabsWebhookRoutes from './routes/elevenlabsWebhook.routes';
 // import toolWebhookRoutes from './routes/toolWebhook.routes'; // DISABLED - calendar only in automations
 
 import instagramWebhookRoutes from './routes/instagramWebhook.routes';
@@ -283,6 +284,7 @@ app.use('/api/v1/phone-numbers', phoneNumberRoutes);
 app.use('/api/v1/sip-trunk', sipTrunkRoutes);
 app.use('/api/v1/batch-calling', batchCallingRoutes);
 app.use('/api/v1/webhook', emailWebhookRoutes); // Email webhook for Python API (agent email tool)
+app.use('/api/v1/webhook/elevenlabs', elevenlabsWebhookRoutes); // ElevenLabs webhook for call events
 // DISABLED: Calendar booking only through automations, not during live calls
 // app.use('/api/v1/tools/webhook', toolWebhookRoutes); // Tool webhooks for ElevenLabs voice agents
 app.use('/api/v1/whatsapp', whatsappRoutes);
@@ -507,10 +509,16 @@ const startServer = async () => {
       console.log(`   - Messenger: ${basePath}/api/v1/social-integrations/messenger/webhook`);
       console.log(`   - Instagram: ${basePath}/api/v1/social-integrations/instagram/webhook`);
       
+      console.log('\n📡 ElevenLabs Webhook active:');
+      console.log(`   - Endpoint: ${basePath}/api/v1/webhook/elevenlabs`);
+      console.log(`   - Configure this URL in ElevenLabs webhook settings`);
+      
       if (ngrokBaseUrl) {
         console.log(`\n🔗 Using ngrok base URL: ${ngrokBaseUrl}`);
+        console.log(`   ElevenLabs Webhook URL: ${ngrokBaseUrl}/api/v1/webhook/elevenlabs`);
       } else {
         console.log(`\n⚠️  NGROK_BASE_URL not set - using localhost`);
+        console.log(`   For ElevenLabs webhooks, set NGROK_BASE_URL=https://your-ngrok-url.ngrok.io`);
       }
     });
 
