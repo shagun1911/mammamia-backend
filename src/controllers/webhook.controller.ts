@@ -12,6 +12,7 @@ import { pythonRagService } from '../services/pythonRag.service';
 import { SocialIntegrationService } from '../services/socialIntegration.service';
 import { getEcommerceCredentials } from '../utils/ecommerce.util';
 import axios from 'axios';
+import mongoose from 'mongoose';
 
 const socialIntegrationService = new SocialIntegrationService();
 
