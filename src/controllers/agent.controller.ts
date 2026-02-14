@@ -43,6 +43,11 @@ export class AgentController {
         throw new AppError(400, 'VALIDATION_ERROR', 'knowledge_base_ids must be an array');
       }
 
+      // Filter out null, undefined, and empty string values from knowledge_base_ids
+      const filteredKnowledgeBaseIds = knowledge_base_ids.filter(
+        (id: any) => id !== null && id !== undefined && typeof id === 'string' && id.trim() !== ''
+      );
+
       // Normalize template variables to lowercase (prevents runtime call drops)
       const firstMessageResult = normalizeTemplateVariables(first_message);
       const systemPromptResult = normalizeTemplateVariables(system_prompt);
@@ -58,7 +63,7 @@ export class AgentController {
         system_prompt: systemPromptResult.normalized.trim(),
         language: language.trim(),
         voice_id: voice_id?.trim(),
-        knowledge_base_ids: knowledge_base_ids
+        knowledge_base_ids: filteredKnowledgeBaseIds
       });
 
       console.log('Agent created successfully', agent);
@@ -139,6 +144,11 @@ export class AgentController {
         throw new AppError(400, 'VALIDATION_ERROR', 'knowledge_base_ids must be an array');
       }
 
+      // Filter out null, undefined, and empty string values from knowledge_base_ids
+      const filteredKnowledgeBaseIds = knowledge_base_ids.filter(
+        (id: any) => id !== null && id !== undefined && typeof id === 'string' && id.trim() !== ''
+      );
+
       // Normalize template variables to lowercase (prevents runtime call drops)
       const firstMessageResult = normalizeTemplateVariables(first_message);
       const systemPromptResult = normalizeTemplateVariables(system_prompt);
@@ -157,7 +167,7 @@ export class AgentController {
         voice_id: voice_id?.trim(),
         greeting_message: greeting_message?.trim(),
         escalationRules: escalationRules,
-        knowledge_base_ids: knowledge_base_ids
+        knowledge_base_ids: filteredKnowledgeBaseIds
       });
 
       res.json(successResponse(agent, 'Agent prompt updated successfully'));

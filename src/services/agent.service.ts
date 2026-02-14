@@ -397,11 +397,16 @@ export class AgentService {
       // Build complete tool_ids array (env tools + email template tools)
       const toolIds = await this.buildToolIds(userId);
 
+      // Filter out invalid values from knowledge_base_ids (safety check)
+      const validKnowledgeBaseIds = (data.knowledge_base_ids || []).filter(
+        (id: any) => id !== null && id !== undefined && typeof id === 'string' && id.trim() !== ''
+      );
+
       console.log(`[Agent Service] Creating agent for userId: ${userId}`);
       console.log(`[Agent Service] Agent data:`, {
         name: data.name,
         language: data.language,
-        knowledge_base_ids_count: data.knowledge_base_ids.length,
+        knowledge_base_ids_count: validKnowledgeBaseIds.length,
         tool_ids_count: toolIds.length,
         tool_ids: toolIds
       });
@@ -422,7 +427,7 @@ export class AgentService {
         first_message: firstMessageToSend,
         system_prompt: systemPromptToSend,
         language: data.language,
-        knowledge_base_ids: data.knowledge_base_ids,
+        knowledge_base_ids: validKnowledgeBaseIds,
         tool_ids: toolIds,
       };
       
@@ -471,7 +476,7 @@ export class AgentService {
         language: data.language,
         voice_id: data.voice_id,
         escalationRules: data.escalationRules || [],
-        knowledge_base_ids: data.knowledge_base_ids,
+        knowledge_base_ids: validKnowledgeBaseIds,
         tool_ids: toolIds // Use the static tool IDs from env
       });
 
@@ -605,6 +610,11 @@ export class AgentService {
     const toolIds = await this.buildToolIds(userId);
     const firstMessageToSend = data.first_message || agent.first_message || 'Hello! How can I help you today?';
 
+    // Filter out invalid values from knowledge_base_ids (safety check)
+    const validKnowledgeBaseIds = (data.knowledge_base_ids || []).filter(
+      (id: any) => id !== null && id !== undefined && typeof id === 'string' && id.trim() !== ''
+    );
+
     // Prepend WooCommerce master prompt to system prompt
     const systemPromptToSend = `${WOOCOMMERCE_MASTER_PROMPT}\n\n${data.system_prompt || ''}`;
 
@@ -612,7 +622,7 @@ export class AgentService {
       first_message: firstMessageToSend,
       system_prompt: systemPromptToSend,
       language: data.language,
-      knowledge_base_ids: data.knowledge_base_ids,
+      knowledge_base_ids: validKnowledgeBaseIds,
       tool_ids: toolIds,
     };
     
@@ -633,7 +643,7 @@ export class AgentService {
     console.log('[Agent Service] updateAgentPrompt START', logContext('update'));
     console.log('[Agent Service] Request summary:', {
       language: data.language,
-      knowledge_base_ids_count: data.knowledge_base_ids.length,
+      knowledge_base_ids_count: validKnowledgeBaseIds.length,
       tool_ids_count: toolIds.length,
       voice_id: data.voice_id,
       has_voice_id: !!data.voice_id
@@ -679,7 +689,7 @@ export class AgentService {
       }
       agent.system_prompt = data.system_prompt;
       agent.language = data.language;
-      agent.knowledge_base_ids = data.knowledge_base_ids;
+      agent.knowledge_base_ids = validKnowledgeBaseIds;
       agent.tool_ids = toolIds;
       
       // CRITICAL: Always update voice_id, even if undefined/empty
@@ -735,7 +745,7 @@ export class AgentService {
           language: data.language,
           voice_id: data.voice_id || agent.voice_id,
           escalationRules: data.escalationRules || agent.escalationRules || [],
-          knowledge_base_ids: data.knowledge_base_ids
+          knowledge_base_ids: validKnowledgeBaseIds
         });
 
         agent.agent_id = newAgent.agent_id;

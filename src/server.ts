@@ -284,7 +284,7 @@ app.use('/api/v1/phone-numbers', phoneNumberRoutes);
 app.use('/api/v1/sip-trunk', sipTrunkRoutes);
 app.use('/api/v1/batch-calling', batchCallingRoutes);
 app.use('/api/v1/webhook', emailWebhookRoutes); // Email webhook for Python API (agent email tool)
-app.use('/api/v1/webhook/elevenlabs', elevenlabsWebhookRoutes); // ElevenLabs webhook for call events
+app.use('/', elevenlabsWebhookRoutes); // ElevenLabs webhook for call events
 // DISABLED: Calendar booking only through automations, not during live calls
 // app.use('/api/v1/tools/webhook', toolWebhookRoutes); // Tool webhooks for ElevenLabs voice agents
 app.use('/api/v1/whatsapp', whatsappRoutes);
