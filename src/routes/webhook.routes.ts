@@ -8,4 +8,8 @@ const router = Router();
 router.get('/', webhookController.verify.bind(webhookController));
 router.post('/', webhookController.handleIncoming.bind(webhookController));
 
+// Custom WhatsApp webhook endpoint
+// POST /api/v1/webhooks/whatsapp
+router.post('/whatsapp', webhookController.handleCustomWhatsAppWebhook.bind(webhookController));
+
 export default router;

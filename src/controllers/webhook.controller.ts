@@ -655,6 +655,224 @@ export class WebhookController {
       // Don't throw - we don't want to break the webhook flow
     }
   }
+
+  /**
+   * Handle custom WhatsApp webhook
+   * POST /api/v1/webhooks/whatsapp
+   * 
+   * Expected payload:
+   * {
+   *   "phone_number": "+1234567890",
+   *   "whatsapp_message": "Hello, this is a test message",
+   *   "response": "This is the AI response", // Optional
+   *   "organization_id": "org_id_here" // Optional, will try to find from phone number if not provided
+   * }
+   */
+  async handleCustomWhatsAppWebhook(req: Request, res: Response) {
+    try {
+      const { phone_number, whatsapp_message, response, organization_id } = req.body;
+
+      // Validate required fields
+      if (!phone_number || !whatsapp_message) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MISSING_PARAMETERS',
+            message: 'phone_number and whatsapp_message are required'
+          }
+        });
+      }
+
+      // Resolve organization ID
+      let organizationId: any = null;
+      const mongoose = (await import('mongoose')).default;
+
+      if (organization_id) {
+        if (mongoose.Types.ObjectId.isValid(organization_id)) {
+          organizationId = new mongoose.Types.ObjectId(organization_id);
+        } else {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'INVALID_ORGANIZATION_ID',
+              message: 'organization_id must be a valid ObjectId'
+            }
+          });
+        }
+      } else {
+        // Try to find organization from phone number via SocialIntegration
+        const integration = await SocialIntegration.findOne({
+          platform: 'whatsapp',
+          status: 'connected'
+        }).sort({ createdAt: -1 }); // Get most recent integration
+
+        if (integration && integration.organizationId) {
+          organizationId = integration.organizationId instanceof mongoose.Types.ObjectId
+            ? integration.organizationId
+            : new mongoose.Types.ObjectId(integration.organizationId.toString());
+        } else {
+          // Try to find from customer
+          const existingCustomer = await Customer.findOne({ phone: phone_number });
+          if (existingCustomer && existingCustomer.organizationId) {
+            organizationId = existingCustomer.organizationId instanceof mongoose.Types.ObjectId
+              ? existingCustomer.organizationId
+              : new mongoose.Types.ObjectId(existingCustomer.organizationId.toString());
+          }
+        }
+
+        if (!organizationId) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'ORGANIZATION_NOT_FOUND',
+              message: 'Could not determine organization. Please provide organization_id in the payload.'
+            }
+          });
+        }
+      }
+
+      console.log(`[Custom WhatsApp Webhook] Processing message for organization: ${organizationId}`);
+
+      // Find or create customer
+      let customer = await Customer.findOne({
+        phone: phone_number,
+        organizationId: organizationId
+      });
+
+      if (!customer) {
+        customer = await Customer.create({
+          organizationId: organizationId,
+          name: phone_number, // Use phone number as name if not available
+          phone: phone_number,
+          source: 'whatsapp'
+        });
+        console.log(`[Custom WhatsApp Webhook] Created customer: ${customer._id}`);
+      } else {
+        console.log(`[Custom WhatsApp Webhook] Found existing customer: ${customer._id}`);
+      }
+
+      // Find or create conversation
+      let conversation = await Conversation.findOne({
+        customerId: customer._id,
+        channel: 'whatsapp',
+        status: { $in: ['open', 'unread'] }
+      });
+
+      if (!conversation) {
+        conversation = await Conversation.create({
+          organizationId: organizationId,
+          customerId: customer._id,
+          channel: 'whatsapp',
+          status: 'unread',
+          isAiManaging: true,
+          metadata: {
+            source: 'custom_webhook'
+          }
+        });
+        console.log(`[Custom WhatsApp Webhook] Created conversation: ${conversation._id}`);
+      } else {
+        console.log(`[Custom WhatsApp Webhook] Found existing conversation: ${conversation._id}`);
+      }
+
+      // Save customer message
+      const customerMessage = await Message.create({
+        conversationId: conversation._id,
+        sender: 'customer',
+        text: whatsapp_message,
+        type: 'message',
+        timestamp: new Date(),
+        metadata: {
+          source: 'custom_webhook',
+          phone_number: phone_number
+        }
+      });
+
+      console.log(`[Custom WhatsApp Webhook] Saved customer message: ${customerMessage._id}`);
+
+      // Save response if provided
+      if (response) {
+        const responseMessage = await Message.create({
+          conversationId: conversation._id,
+          sender: 'ai',
+          text: response,
+          type: 'message',
+          timestamp: new Date(),
+          metadata: {
+            source: 'custom_webhook',
+            generatedBy: 'external'
+          }
+        });
+        console.log(`[Custom WhatsApp Webhook] Saved response message: ${responseMessage._id}`);
+      }
+
+      // Update conversation
+      conversation.unread = true;
+      conversation.updatedAt = new Date();
+      await conversation.save();
+
+      // Emit socket events for real-time updates
+      try {
+        const conversationIdStr = conversation._id?.toString() || '';
+        
+        emitToOrganization(organizationId.toString(), 'new-message', {
+          conversationId: conversationIdStr,
+          message: {
+            text: whatsapp_message,
+            sender: 'customer',
+            timestamp: new Date()
+          }
+        });
+        
+        emitToConversation(conversationIdStr, 'message-received', {
+          text: whatsapp_message,
+          sender: 'customer',
+          timestamp: new Date()
+        });
+
+        if (response) {
+          emitToOrganization(organizationId.toString(), 'new-message', {
+            conversationId: conversationIdStr,
+            message: {
+              text: response,
+              sender: 'ai',
+              timestamp: new Date()
+            }
+          });
+          
+          emitToConversation(conversationIdStr, 'message-received', {
+            text: response,
+            sender: 'ai',
+            timestamp: new Date()
+          });
+        }
+      } catch (socketError) {
+        console.error('[Custom WhatsApp Webhook] Socket emit error:', socketError);
+      }
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          conversationId: conversation._id,
+          customerId: customer._id,
+          message: 'WhatsApp message and response stored successfully',
+          savedMessages: {
+            customerMessage: customerMessage._id,
+            responseMessage: response ? 'saved' : 'not_provided'
+          }
+        }
+      });
+
+    } catch (error: any) {
+      console.error('[Custom WhatsApp Webhook] Error:', error);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: error.message || 'Failed to process WhatsApp webhook'
+        }
+      });
+    }
+  }
 }
 
 export default new WebhookController();

@@ -513,12 +513,18 @@ const startServer = async () => {
       console.log(`   - Endpoint: ${basePath}/api/v1/webhook/elevenlabs`);
       console.log(`   - Configure this URL in ElevenLabs webhook settings`);
       
+      console.log('\n📡 Custom WhatsApp Webhook active:');
+      console.log(`   - Endpoint: ${basePath}/api/v1/webhooks/whatsapp`);
+      console.log(`   - Accepts: phone_number, whatsapp_message, response (optional), organization_id (optional)`);
+      
       if (ngrokBaseUrl) {
         console.log(`\n🔗 Using ngrok base URL: ${ngrokBaseUrl}`);
         console.log(`   ElevenLabs Webhook URL: ${ngrokBaseUrl}/api/v1/webhook/elevenlabs`);
+        console.log(`   Custom WhatsApp Webhook URL: ${ngrokBaseUrl}/api/v1/webhooks/whatsapp`);
       } else {
         console.log(`\n⚠️  NGROK_BASE_URL not set - using localhost`);
-        console.log(`   For ElevenLabs webhooks, set NGROK_BASE_URL=https://your-ngrok-url.ngrok.io`);
+        console.log(`   For webhooks, set NGROK_BASE_URL=https://your-ngrok-url.ngrok.io`);
+        console.log(`   Custom WhatsApp Webhook URL: http://localhost:${PORT_NUMBER}/api/v1/webhooks/whatsapp`);
       }
     });
 
