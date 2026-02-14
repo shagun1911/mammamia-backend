@@ -168,7 +168,7 @@ export class AgentController {
 
   /**
    * POST /api/v1/agents/:agent_id/sync
-   * Sync agent to ElevenLabs (tool_ids + enable tool_node for tools to execute)
+   * Sync agent to ElevenLabs (tool_ids + enable tool_node + attach webhook for tools to execute)
    */
   syncAgentToElevenLabs = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {

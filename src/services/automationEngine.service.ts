@@ -1678,7 +1678,103 @@ export class AutomationEngine {
     }
     console.log(`${'━'.repeat(80)}\n`);
 
+    // Trigger external webhooks for batch_call_completed events
+    if (event === 'batch_call_completed') {
+      try {
+        await this.triggerExternalWebhooks(eventData, organizationId);
+      } catch (webhookError: any) {
+        console.error('[Automation Engine] ⚠️ Failed to trigger external webhooks:', webhookError.message);
+        // Non-fatal - don't block automation execution
+      }
+    }
+
     return results;
+  }
+
+  /**
+   * Trigger external webhooks for automations with webhook URLs configured
+   * This sends batch call payload to external services like n8n
+   */
+  private async triggerExternalWebhooks(eventData: any, organizationId: string): Promise<void> {
+    try {
+      // Find all active automations with webhook trigger and webhookUrl configured
+      const webhookAutomations = await Automation.find({
+        isActive: true,
+        organizationId: organizationId,
+        webhookUrl: { $exists: true, $ne: null },
+        'nodes.service': 'webhook' // Has webhook trigger node
+      }).lean();
+
+      if (webhookAutomations.length === 0) {
+        console.log('[Automation Engine] 📡 No webhook automations with URLs configured');
+        return;
+      }
+
+      console.log(`[Automation Engine] 📡 Found ${webhookAutomations.length} webhook automation(s) with external URLs`);
+
+      // Fetch conversation data if available
+      let conversationData: any = null;
+      if (eventData.conversation_id) {
+        try {
+          const conversation: any = await Conversation.findById(eventData.conversation_id).lean();
+          if (conversation) {
+            conversationData = {
+              conversation_id: conversation._id,
+              agent_id: conversation.agent_id,
+              transcript: conversation.transcript,
+              summary: conversation.summary,
+              status: conversation.status,
+              started_at: conversation.started_at,
+              ended_at: conversation.ended_at,
+              metadata: conversation.metadata
+            };
+          }
+        } catch (convError: any) {
+          console.error('[Automation Engine] ⚠️ Failed to fetch conversation:', convError.message);
+        }
+      }
+
+      // Prepare webhook payload
+      const webhookPayload = {
+        event: 'batch_call_completed',
+        timestamp: new Date().toISOString(),
+        organizationId: organizationId,
+        batch_id: eventData.batch_id,
+        contactId: eventData.contactId,
+        freshContactData: eventData.freshContactData,
+        conversation: conversationData,
+        source: eventData.source
+      };
+
+      // Send to each webhook URL
+      for (const automation of webhookAutomations) {
+        const webhookUrl = (automation as any).webhookUrl;
+        
+        try {
+          console.log(`[Automation Engine] 📡 Sending webhook to: ${webhookUrl}`);
+          
+          const response = await axios.post(webhookUrl, webhookPayload, {
+            timeout: 10000,
+            headers: {
+              'Content-Type': 'application/json',
+              'User-Agent': 'Aistein-Automation-Webhook/1.0'
+            }
+          });
+
+          console.log(`[Automation Engine] ✅ Webhook delivered to ${webhookUrl} - Status: ${response.status}`);
+        } catch (webhookError: any) {
+          console.error(`[Automation Engine] ❌ Failed to deliver webhook to ${webhookUrl}:`, {
+            error: webhookError.message,
+            status: webhookError.response?.status,
+            data: webhookError.response?.data
+          });
+          // Continue to next webhook - don't let one failure block others
+        }
+      }
+    } catch (error: any) {
+      console.error('[Automation Engine] ❌ Error in triggerExternalWebhooks:', error.message);
+      throw error;
+    }
   }
 
   private delay(amount: number, unit: string): Promise<void> {

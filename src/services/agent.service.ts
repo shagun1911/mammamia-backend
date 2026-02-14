@@ -197,6 +197,45 @@ export class AgentService {
   }
 
   /**
+   * Attach POST_CALL_WEBHOOK_ID to agent's platform settings
+   * This enables post-call webhook tracking for automations
+   */
+  private async attachWebhookToAgent(agentId: string): Promise<void> {
+    try {
+      const postCallWebhookId = process.env.POST_CALL_WEBHOOK_ID?.trim();
+      
+      if (!postCallWebhookId) {
+        console.warn(`[Agent Service] ⚠️ POST_CALL_WEBHOOK_ID not configured in environment`);
+        return;
+      }
+
+      const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${agentId}`;
+      const requestBody = {
+        platform_settings: {
+          workspace_overrides: {
+            webhooks: {
+              post_call_webhook_id: postCallWebhookId,
+              events: ["transcript"]
+            }
+          }
+        }
+      };
+
+      console.log(`[Agent Service] 🔗 Attaching webhook ${postCallWebhookId} to agent ${agentId}`);
+      
+      await axios.patch(pythonUrl, requestBody, {
+        timeout: 15000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      console.log(`[Agent Service] ✅ Successfully attached POST_CALL_WEBHOOK_ID to agent ${agentId}`);
+    } catch (error: any) {
+      console.error(`[Agent Service] ❌ Failed to attach webhook to agent ${agentId}:`, error.response?.data || error.message);
+      // Non-fatal - webhook attachment failure shouldn't block agent operations
+    }
+  }
+
+  /**
    * CRITICAL: Update voice_id in ElevenLabs conversation_config.tts
    * This is where the ACTUAL voice used in calls is stored.
    * The voice_id in agent prompt is just metadata - this one controls the TTS!
@@ -278,6 +317,9 @@ export class AgentService {
         await this.enableToolNodeForAgent(agentId);
       }
 
+      // Attach POST_CALL_WEBHOOK_ID to agent
+      await this.attachWebhookToAgent(agentId);
+
       // CRITICAL: Update voice_id in conversation_config.tts
       if (agent.voice_id) {
         try {
@@ -287,7 +329,7 @@ export class AgentService {
         }
       }
 
-      console.log(`[ElevenLabs Sync] ✅ Synced agent ${agentId} with ${toolIds.length} tools`);
+      console.log(`[ElevenLabs Sync] ✅ Synced agent ${agentId} with ${toolIds.length} tools and webhook`);
     } catch (error: any) {
       console.error(`[ElevenLabs Sync] ⚠️ Failed to sync agent ${agent.agent_id} to ElevenLabs:`, error.message);
       // Don't throw - this is a background sync, shouldn't block operations
@@ -327,6 +369,9 @@ export class AgentService {
         await this.enableToolNodeForAgent(agentId);
       }
       
+      // Attach POST_CALL_WEBHOOK_ID to agent
+      await this.attachWebhookToAgent(agentId);
+      
       // CRITICAL: Update voice_id in conversation_config.tts
       if ((agent as any).voice_id) {
         try {
@@ -336,7 +381,7 @@ export class AgentService {
         }
       }
       
-      console.log(`[Agent Service] ✅ Updated agent ${agentId} tool_ids in Python API`);
+      console.log(`[Agent Service] ✅ Updated agent ${agentId} tool_ids in Python API with webhook attached`);
     } catch (error: any) {
       console.error(`[Agent Service] ⚠️ Failed to update agent ${agentId} tool_ids in Python API:`, error.message);
       // Don't throw - this is a background update, shouldn't block the main operation
@@ -441,6 +486,13 @@ export class AgentService {
           console.error('[Agent Service] ⚠️ Failed to update voice in conversation_config (non-fatal):', error.message);
           // Don't throw - agent was created successfully
         }
+      }
+
+      // Attach POST_CALL_WEBHOOK_ID to the newly created agent
+      try {
+        await this.attachWebhookToAgent(agent.agent_id);
+      } catch (error: any) {
+        console.error('[Agent Service] ⚠️ Failed to attach webhook after agent creation (non-fatal):', error.message);
       }
 
       // Sync tools to ElevenLabs after agent creation
@@ -612,6 +664,13 @@ export class AgentService {
       // This is where the ACTUAL voice used in calls is stored!
       if (data.voice_id) {
         await this.updateVoiceInConversationConfig(agentId, data.voice_id);
+      }
+
+      // Attach POST_CALL_WEBHOOK_ID to agent after successful update
+      try {
+        await this.attachWebhookToAgent(agentId);
+      } catch (error: any) {
+        console.error('[Agent Service] ⚠️ Failed to attach webhook after agent update (non-fatal):', error.message);
       }
 
       if (data.first_message !== undefined) {
@@ -793,7 +852,7 @@ export class AgentService {
   }
 
   /**
-   * Sync agent config to ElevenLabs (tool_ids + enable tool_node).
+   * Sync agent config to ElevenLabs (tool_ids + enable tool_node + attach webhook).
    * Call this to fix "Unable to execute function" for existing agents.
    */
   async syncAgentToElevenLabs(agentId: string, userId: string): Promise<{ success: boolean; message: string }> {
@@ -804,7 +863,15 @@ export class AgentService {
       }
       const toolIds = await this.buildToolIds(userId);
       await this.updateAgentToolIdsInPython(agentId, toolIds);
-      return { success: true, message: 'Agent synced to ElevenLabs (tools + tool_node enabled)' };
+      
+      // Also attach webhook when syncing
+      try {
+        await this.attachWebhookToAgent(agentId);
+      } catch (error: any) {
+        console.error('[Agent Service] ⚠️ Failed to attach webhook during sync (non-fatal):', error.message);
+      }
+      
+      return { success: true, message: 'Agent synced to ElevenLabs (tools + tool_node + webhook enabled)' };
     } catch (error: any) {
       console.error('[Agent Service] syncAgentToElevenLabs failed:', error.message);
       return { success: false, message: error.message || 'Sync failed' };

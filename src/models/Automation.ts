@@ -17,6 +17,7 @@ export interface IAutomation extends Document {
   isActive: boolean;
   executionCount: number;
   lastExecutedAt?: Date;
+  webhookUrl?: string; // Custom webhook URL for external integrations (n8n, etc.)
   createdAt: Date;
   updatedAt: Date;
 }
@@ -55,7 +56,11 @@ const AutomationSchema = new Schema<IAutomation>({
     type: Number,
     default: 0
   },
-  lastExecutedAt: Date
+  lastExecutedAt: Date,
+  webhookUrl: {
+    type: String,
+    default: null
+  }
 }, { timestamps: true });
 
 AutomationSchema.index({ isActive: 1 });
