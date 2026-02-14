@@ -684,8 +684,8 @@ export class WebhookController {
       }
 
       // Resolve organization ID
-      let organizationId: any = null;
       const mongoose = (await import('mongoose')).default;
+      let organizationId: mongoose.Types.ObjectId | null = null;
 
       if (organization_id) {
         if (mongoose.Types.ObjectId.isValid(organization_id)) {
@@ -707,16 +707,18 @@ export class WebhookController {
         }).sort({ createdAt: -1 }); // Get most recent integration
 
         if (integration && integration.organizationId) {
-          organizationId = integration.organizationId instanceof mongoose.Types.ObjectId
-            ? integration.organizationId
-            : new mongoose.Types.ObjectId(integration.organizationId.toString());
+          const orgId = integration.organizationId;
+          organizationId = orgId instanceof mongoose.Types.ObjectId
+            ? orgId
+            : new mongoose.Types.ObjectId(String(orgId));
         } else {
           // Try to find from customer
           const existingCustomer = await Customer.findOne({ phone: phone_number });
           if (existingCustomer && existingCustomer.organizationId) {
-            organizationId = existingCustomer.organizationId instanceof mongoose.Types.ObjectId
-              ? existingCustomer.organizationId
-              : new mongoose.Types.ObjectId(existingCustomer.organizationId.toString());
+            const orgId = existingCustomer.organizationId;
+            organizationId = orgId instanceof mongoose.Types.ObjectId
+              ? orgId
+              : new mongoose.Types.ObjectId(String(orgId));
           }
         }
 
