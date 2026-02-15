@@ -271,15 +271,147 @@ export class ConversationService {
     // Send via appropriate channel
     try {
       if (channel === 'whatsapp') {
-        const dialog360 = await socialIntegrationService.getDialog360Service(
-          conversation.organizationId.toString(),
-          'whatsapp'
-        );
-        await dialog360.sendWhatsAppMessage({
-          to: customer.phone,
-          type: 'text',
-          text: messageText
+        // Find integration to determine if it's Meta Graph API or 360dialog
+        const SocialIntegration = (await import('../models/SocialIntegration')).default;
+        const integration = await SocialIntegration.findOne({
+          organizationId: conversation.organizationId,
+          platform: 'whatsapp',
+          status: 'connected'
         });
+
+        if (!integration) {
+          throw new AppError(404, 'INTEGRATION_NOT_FOUND', 'WhatsApp integration not found');
+        }
+
+        const phoneNumberId = integration.credentials?.phoneNumberId;
+        const accessToken = (integration as any).getDecryptedApiKey?.();
+        const connectionType = integration.metadata?.connectionType;
+
+        // Check if this is a Meta Graph API connection (manual connection)
+        // Manual connections have connectionType: 'manual' or phoneNumberId in credentials
+        const isMetaConnection = connectionType === 'manual' || 
+                                 (phoneNumberId && accessToken && !accessToken.includes('SANDBOX') && !accessToken.startsWith('AK0'));
+
+        if (isMetaConnection && phoneNumberId && accessToken) {
+          // Use Meta Graph API directly for manual connections
+          const axios = (await import('axios')).default;
+          
+          const requestPayload = {
+            messaging_product: 'whatsapp',
+            recipient_type: 'individual',
+            to: customer.phone,
+            type: 'text',
+            text: {
+              body: messageText
+            }
+          };
+
+          const apiUrl = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+          
+          // Log request details
+          console.log('[WhatsApp Send - Take Control] 📤 Sending message via Meta Graph API:', {
+            conversationId: conversationId.toString(),
+            phoneNumberId: phoneNumberId,
+            to: customer.phone,
+            messagePreview: messageText.substring(0, 100) + (messageText.length > 100 ? '...' : ''),
+            messageLength: messageText.length,
+            apiUrl: apiUrl,
+            hasAttachments: attachments && attachments.length > 0,
+            attachmentCount: attachments?.length || 0
+          });
+
+          try {
+            const response = await axios.post(
+              apiUrl,
+              requestPayload,
+              {
+                headers: {
+                  'Authorization': `Bearer ${accessToken}`,
+                  'Content-Type': 'application/json'
+                }
+              }
+            );
+
+            const whatsappMessageId = response.data.messages?.[0]?.id;
+            
+            // Log full successful response
+            console.log('[WhatsApp Send - Take Control] ✅ Message sent successfully via Meta Graph API:', {
+              conversationId: conversationId.toString(),
+              messageId: message._id.toString(),
+              whatsappMessageId: whatsappMessageId,
+              to: customer.phone,
+              phoneNumberId: phoneNumberId,
+              fullResponse: JSON.stringify(response.data, null, 2),
+              statusCode: response.status,
+              statusText: response.statusText,
+              responseHeaders: response.headers
+            });
+
+            // Update message with WhatsApp message ID and status
+            if (whatsappMessageId) {
+              await Message.findByIdAndUpdate(message._id, {
+                $set: {
+                  messageId: whatsappMessageId,
+                  status: 'sent',
+                  sentAt: new Date(),
+                  'metadata.platform': 'whatsapp',
+                  'metadata.sentVia': 'meta_graph_api',
+                  'metadata.phoneNumberId': phoneNumberId
+                }
+              });
+              console.log('[WhatsApp Send - Take Control] 💾 Updated message in database with WhatsApp message ID:', {
+                messageId: message._id.toString(),
+                whatsappMessageId: whatsappMessageId
+              });
+            }
+          } catch (metaError: any) {
+            // Log full error details for debugging
+            console.error('[WhatsApp Send - Take Control] ❌ Meta Graph API error:', {
+              conversationId: conversationId.toString(),
+              messageId: message._id.toString(),
+              phoneNumberId: phoneNumberId,
+              to: customer.phone,
+              apiUrl: apiUrl,
+              errorMessage: metaError.message,
+              errorCode: metaError.code,
+              statusCode: metaError.response?.status,
+              statusText: metaError.response?.statusText,
+              errorResponse: metaError.response?.data ? JSON.stringify(metaError.response.data, null, 2) : 'No response data',
+              errorHeaders: metaError.response?.headers,
+              requestPayload: JSON.stringify(requestPayload, null, 2),
+              stack: metaError.stack
+            });
+
+            // Update message with error status
+            await Message.findByIdAndUpdate(message._id, {
+              $set: {
+                status: 'failed',
+                failedAt: new Date(),
+                errorCode: metaError.response?.data?.error?.code?.toString(),
+                errorMessage: metaError.response?.data?.error?.message || metaError.message,
+                'metadata.sendError': metaError.response?.data?.error?.message || metaError.message,
+                'metadata.errorDetails': metaError.response?.data ? JSON.stringify(metaError.response.data) : undefined
+              }
+            });
+
+            throw new AppError(
+              metaError.response?.status || 500,
+              'WHATSAPP_SEND_ERROR',
+              metaError.response?.data?.error?.message || 'Failed to send WhatsApp message via Meta Graph API'
+            );
+          }
+        } else {
+          // Fallback to 360dialog for legacy connections
+          const dialog360 = await socialIntegrationService.getDialog360Service(
+            conversation.organizationId.toString(),
+            'whatsapp'
+          );
+          await dialog360.sendWhatsAppMessage({
+            to: customer.phone,
+            type: 'text',
+            text: messageText
+          });
+        }
       } else if (channel === 'social' && metadata.platform === 'instagram') {
         // Instagram uses Meta Graph API, not Dialog360
         const instagramId = customer.metadata?.instagramId;
