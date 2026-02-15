@@ -995,6 +995,104 @@ export class SocialIntegrationController {
       );
     }
   }
+
+  /**
+   * Connect WhatsApp manually using Access Token, Phone Number ID, and WABA ID
+   * POST /api/v1/social-integrations/whatsapp/connect-manual
+   */
+  async connectWhatsAppManual(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?._id?.toString();
+      const organizationId = req.user?.organizationId || req.user?._id;
+      
+      if (!userId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'User ID not found');
+      }
+      
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+
+      const { accessToken, phoneNumberId, wabaId } = req.body;
+
+      // Validate required fields
+      if (!accessToken || !phoneNumberId || !wabaId) {
+        throw new AppError(
+          400,
+          'VALIDATION_ERROR',
+          'accessToken, phoneNumberId, and wabaId are all required'
+        );
+      }
+
+      console.log('[WhatsApp Manual Connect] Connecting with credentials:', {
+        userId,
+        organizationId: organizationId.toString(),
+        phoneNumberId,
+        wabaId: wabaId.substring(0, 10) + '...'
+      });
+
+      // Verify credentials by testing API call to Meta
+      try {
+        const axios = (await import('axios')).default;
+        const testUrl = `https://graph.facebook.com/v19.0/${wabaId}/phone_numbers`;
+        
+        await axios.get(testUrl, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        });
+        
+        console.log('[WhatsApp Manual Connect] ✅ Credentials verified with Meta API');
+      } catch (verifyError: any) {
+        console.error('[WhatsApp Manual Connect] ❌ Credential verification failed:', verifyError.response?.data || verifyError.message);
+        throw new AppError(
+          400,
+          'INVALID_CREDENTIALS',
+          'Invalid WhatsApp credentials. Please check your Access Token and WABA ID.'
+        );
+      }
+
+      // Create integration directly without 360dialog verification
+      // This matches the automation's manual WhatsApp flow
+      const integrationData = {
+        userId,
+        organizationId,
+        platform: 'whatsapp' as const,
+        apiKey: accessToken,
+        phoneNumberId,
+        wabaId,
+        credentials: {
+          apiKey: accessToken,
+          phoneNumberId,
+          wabaId
+        },
+        metadata: {
+          connectedAt: new Date().toISOString(),
+          connectionType: 'manual'
+        },
+        skipVerification: true // IMPORTANT: Skip 360dialog verification, use Meta API directly
+      };
+
+      const integration = await socialIntegrationService.upsertIntegration(integrationData);
+
+      console.log('[WhatsApp Manual Connect] ✅ Integration saved:', integration._id);
+
+      res.json(successResponse(
+        {
+          ...integration.toObject(),
+          credentials: {
+            ...integration.credentials,
+            apiKey: '***********' // Mask in response
+          }
+        },
+        'WhatsApp connected successfully'
+      ));
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export default new SocialIntegrationController();

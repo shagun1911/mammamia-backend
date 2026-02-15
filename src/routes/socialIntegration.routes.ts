@@ -53,6 +53,9 @@ router.post('/:platform/oauth/callback', socialIntegrationController.oauthCallba
 // All other routes require authentication
 router.use(authenticate);
 
+// WhatsApp manual connection (without OAuth)
+router.post('/whatsapp/connect-manual', socialIntegrationController.connectWhatsAppManual.bind(socialIntegrationController));
+
 // Get all integrations
 router.get('/', socialIntegrationController.getAll.bind(socialIntegrationController));
 
