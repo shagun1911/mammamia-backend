@@ -903,11 +903,9 @@ export class MetaWebhookController {
 
           console.log(`[WhatsApp Webhook] Got reply from RAG: ${aiResponse.substring(0, 100)}...`);
 
-          // Save AI message
-          await Message.create({
+          // Save AI message first
+          const aiMessage = await Message.create({
             conversationId: conversation._id,
-            organizationId: conversation.organizationId,
-            customerId: customer._id,
             sender: 'ai',
             text: aiResponse,
             type: 'message',
@@ -919,12 +917,99 @@ export class MetaWebhookController {
           });
 
           // Send response via WhatsApp
-          const dialog360 = await socialIntegrationService.getDialog360Service(userId, 'whatsapp');
-          await dialog360.sendWhatsAppMessage({
-            to: from,
-            type: 'text',
-            text: aiResponse
-          });
+          // Check if this is a Meta Graph API connection (manual) or 360dialog
+          const connectionType = integration.metadata?.connectionType;
+          const phoneNumberId = integration.credentials?.phoneNumberId;
+          const accessToken = (integration as any).getDecryptedApiKey?.();
+          const isMetaConnection = connectionType === 'manual' || 
+                                   (phoneNumberId && accessToken && !accessToken.includes('SANDBOX') && !accessToken.startsWith('AK0'));
+
+          if (isMetaConnection && phoneNumberId && accessToken) {
+            // Use Meta Graph API directly for manual connections
+            const axios = (await import('axios')).default;
+            
+            try {
+              const response = await axios.post(
+                `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
+                {
+                  messaging_product: 'whatsapp',
+                  recipient_type: 'individual',
+                  to: from,
+                  type: 'text',
+                  text: {
+                    body: aiResponse
+                  }
+                },
+                {
+                  headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                  }
+                }
+              );
+
+              const whatsappMessageId = response.data.messages?.[0]?.id;
+              console.log('[WhatsApp Webhook] ✅ AI reply sent via Meta Graph API:', {
+                messageId: whatsappMessageId,
+                to: from,
+                conversationId: conversation._id.toString()
+              });
+
+              // Update AI message with WhatsApp message ID
+              if (whatsappMessageId) {
+                await Message.findByIdAndUpdate(aiMessage._id, {
+                  $set: {
+                    messageId: whatsappMessageId,
+                    status: 'sent',
+                    sentAt: new Date(),
+                    'metadata.platform': 'whatsapp',
+                    'metadata.sentVia': 'meta_graph_api'
+                  }
+                });
+              }
+            } catch (metaError: any) {
+              console.error('[WhatsApp Webhook] ❌ Meta Graph API error sending AI reply:', {
+                error: metaError.response?.data || metaError.message,
+                to: from,
+                phoneNumberId: phoneNumberId,
+                conversationId: conversation._id.toString()
+              });
+              // Update message with error status
+              await Message.findByIdAndUpdate(aiMessage._id, {
+                $set: {
+                  status: 'failed',
+                  failedAt: new Date(),
+                  errorMessage: metaError.response?.data?.error?.message || metaError.message
+                }
+              });
+              // Don't throw - we don't want to break the webhook flow
+            }
+          } else {
+            // Fallback to 360dialog for legacy connections
+            try {
+              const dialog360 = await socialIntegrationService.getDialog360Service(
+                integration.organizationId.toString(),
+                'whatsapp'
+              );
+              await dialog360.sendWhatsAppMessage({
+                to: from,
+                type: 'text',
+                text: aiResponse
+              });
+              console.log('[WhatsApp Webhook] ✅ AI reply sent via 360dialog');
+            } catch (dialogError: any) {
+              console.error('[WhatsApp Webhook] ❌ 360dialog error sending AI reply:', dialogError.message);
+              // Update message with error status
+              await Message.findByIdAndUpdate(aiMessage._id, {
+                $set: {
+                  status: 'failed',
+                  failedAt: new Date(),
+                  errorMessage: dialogError.message
+                }
+              });
+              // Don't throw - we don't want to break the webhook flow
+            }
+          }
 
           // Update conversation
           conversation.updatedAt = new Date();

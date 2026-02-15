@@ -1079,15 +1079,73 @@ export class SocialIntegrationController {
 
       console.log('[WhatsApp Manual Connect] ✅ Integration saved:', integration._id);
 
+      // Attempt to subscribe webhook programmatically
+      let webhookSubscribed = false;
+      try {
+        const axios = (await import('axios')).default;
+        const appId = process.env.META_APP_ID;
+        
+        // Subscribe WABA to receive messages via webhook
+        const subscribeResponse = await axios.post(
+          `https://graph.facebook.com/v19.0/${wabaId}/subscribed_apps`,
+          {
+            subscribed_fields: ['messages', 'message_status']
+          },
+          {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        
+        if (subscribeResponse.data.success === true) {
+          webhookSubscribed = true;
+          console.log('[WhatsApp Manual Connect] ✅ Webhook subscribed successfully via API');
+          
+          // Update integration with webhook status
+          integration.webhookVerified = true;
+          await integration.save();
+        } else {
+          console.warn('[WhatsApp Manual Connect] ⚠️  Webhook subscription returned success: false');
+        }
+      } catch (webhookError: any) {
+        // Webhook subscription might fail if:
+        // 1. Webhook URL not configured in Meta App Dashboard
+        // 2. User doesn't have permission
+        // 3. Webhook already subscribed
+        console.warn('[WhatsApp Manual Connect] ⚠️  Webhook subscription via API failed:', {
+          error: webhookError.response?.data || webhookError.message,
+          note: 'User may need to configure webhook URL manually in Meta App Dashboard'
+        });
+        // Don't fail the connection - user can configure webhook manually
+      }
+
+      // Prepare webhook configuration info for user
+      const baseUrl = process.env.NGROK_BASE_URL || process.env.BACKEND_URL || 'https://your-domain.com';
+      const webhookUrl = `${baseUrl}/api/v1/social-integrations/whatsapp/webhook`;
+      const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'whatsapp_verify_token';
+
       res.json(successResponse(
         {
           ...integration.toObject(),
           credentials: {
             ...integration.credentials,
             apiKey: '***********' // Mask in response
+          },
+          // Add webhook configuration info
+          webhookConfiguration: {
+            url: webhookUrl,
+            verifyToken: verifyToken,
+            subscribed: webhookSubscribed,
+            instructions: webhookSubscribed 
+              ? 'Webhook automatically subscribed! You can still verify it in Meta App Dashboard if needed.'
+              : 'Please configure this webhook in your Meta App Dashboard → WhatsApp → Configuration → Webhooks'
           }
         },
-        'WhatsApp connected successfully'
+        webhookSubscribed 
+          ? 'WhatsApp connected successfully. Webhook automatically subscribed!'
+          : 'WhatsApp connected successfully. Please configure the webhook in your Meta App Dashboard.'
       ));
     } catch (error) {
       next(error);
