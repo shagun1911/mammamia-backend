@@ -178,9 +178,12 @@ export class AIContextService {
     const KnowledgeBase = (await import('../models/KnowledgeBase')).default;
     const resolvedNames: string[] = [];
 
-    const chatbotKbIds = ids.filter((id: string) => id.startsWith('kb_'));
-    const voiceAgentKbIds = ids.filter((id: string) => id.startsWith('KBDoc_'));
-    const legacyKbIds = ids.filter((id: string) =>
+    // Filter out null, undefined, and non-string values before processing
+    const validIds = ids.filter((id: any) => id != null && typeof id === 'string' && id.trim() !== '');
+
+    const chatbotKbIds = validIds.filter((id: string) => id.startsWith('kb_'));
+    const voiceAgentKbIds = validIds.filter((id: string) => id.startsWith('KBDoc_'));
+    const legacyKbIds = validIds.filter((id: string) =>
       !id.startsWith('kb_') && !id.startsWith('KBDoc_') && mongoose.Types.ObjectId.isValid(id)
     );
 
@@ -310,17 +313,27 @@ export class AIContextService {
       // Priority 3: Merge defaultKnowledgeBaseIds array (resolve to collection names)
       // CRITICAL: Support kb_ (ChatbotKnowledgeBase), KBDoc_ (KnowledgeBaseDocument/voice agent), and legacy ObjectId
       if (settings.defaultKnowledgeBaseIds && Array.isArray(settings.defaultKnowledgeBaseIds) && settings.defaultKnowledgeBaseIds.length > 0) {
-        const resolvedNames = await this.resolveIdsToCollectionNames(userId, settings.defaultKnowledgeBaseIds);
-        resolvedNames.forEach(name => collectionNamesSet.add(name));
-        if (resolvedNames.length > 0) {
-          console.log(`[AI Context] ✅ Merged resolved defaultKnowledgeBaseIds:`, resolvedNames);
+        // Filter out null/undefined values before resolving
+        const validIds = settings.defaultKnowledgeBaseIds.filter((id: any) => id != null);
+        if (validIds.length !== settings.defaultKnowledgeBaseIds.length) {
+          console.warn(`[AI Context] ⚠️  Filtered out ${settings.defaultKnowledgeBaseIds.length - validIds.length} null/undefined IDs from defaultKnowledgeBaseIds`);
+        }
+        
+        if (validIds.length > 0) {
+          const resolvedNames = await this.resolveIdsToCollectionNames(userId, validIds);
+          resolvedNames.forEach(name => collectionNamesSet.add(name));
+          if (resolvedNames.length > 0) {
+            console.log(`[AI Context] ✅ Merged resolved defaultKnowledgeBaseIds:`, resolvedNames);
+          } else {
+            console.warn(`[AI Context] ⚠️  Could not resolve collection names from defaultKnowledgeBaseIds`);
+          }
         } else {
-          console.warn(`[AI Context] ⚠️  Could not resolve collection names from defaultKnowledgeBaseIds`);
+          console.warn(`[AI Context] ⚠️  defaultKnowledgeBaseIds array contains only null/undefined values`);
         }
       }
       
       // Priority 4: Merge defaultKnowledgeBaseId (single ID, resolve to collection name)
-      if (settings.defaultKnowledgeBaseId) {
+      if (settings.defaultKnowledgeBaseId && typeof settings.defaultKnowledgeBaseId === 'string' && settings.defaultKnowledgeBaseId.trim() !== '') {
         const resolvedNames = await this.resolveIdsToCollectionNames(userId, [settings.defaultKnowledgeBaseId]);
         resolvedNames.forEach(name => collectionNamesSet.add(name));
         if (resolvedNames.length > 0) {
