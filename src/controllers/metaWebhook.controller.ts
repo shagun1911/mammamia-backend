@@ -142,8 +142,11 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
   // 2. Always check Settings (merge all sources)
   const settings = await Settings.findOne({ userId: userObjectId });
   
+  // CRITICAL: Log full Settings to verify it's the correct user's config
   console.log('[Social Webhook] 🔍 Settings lookup for userId:', userId, {
     settingsFound: !!settings,
+    settingsId: settings?._id?.toString() || 'N/A',
+    settingsUserId: settings?.userId?.toString() || 'N/A',
     hasDefaultKnowledgeBaseNames: !!settings?.defaultKnowledgeBaseNames,
     defaultKnowledgeBaseNames: settings?.defaultKnowledgeBaseNames,
     hasDefaultKnowledgeBaseIds: !!settings?.defaultKnowledgeBaseIds,
@@ -151,8 +154,18 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
     hasDefaultKnowledgeBaseName: !!settings?.defaultKnowledgeBaseName,
     defaultKnowledgeBaseName: settings?.defaultKnowledgeBaseName,
     hasDefaultKnowledgeBaseId: !!settings?.defaultKnowledgeBaseId,
-    defaultKnowledgeBaseId: settings?.defaultKnowledgeBaseId
+    defaultKnowledgeBaseId: settings?.defaultKnowledgeBaseId?.toString() || 'N/A'
   });
+  
+  // CRITICAL: Validate Settings belongs to the correct userId
+  if (settings && settings.userId && settings.userId.toString() !== userId) {
+    console.error('[Social Webhook] ❌ CRITICAL: Settings userId mismatch!', {
+      expectedUserId: userId,
+      actualSettingsUserId: settings.userId.toString(),
+      settingsId: settings._id?.toString()
+    });
+    throw new Error(`Settings userId mismatch: Expected ${userId}, but Settings belongs to ${settings.userId.toString()}`);
+  }
   
   if (settings) {
     const ChatbotKnowledgeBase = (await import('../models/ChatbotKnowledgeBase')).default;
@@ -215,8 +228,30 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
     }
   }
 
-  // 3. NEW: Always check AI Behavior (merge, not just fallback) - SAME AS CHATBOT
+  // 3. Always check AI Behavior (merge, not just fallback) - SAME AS CHATBOT
   const aiBehavior = await aiBehaviorService.get(userId);
+  
+  // CRITICAL: Log AIBehavior details and validate userId
+  console.log('[Social Webhook] 🔍 AIBehavior fetched for userId:', userId, {
+    aiBehaviorId: aiBehavior._id?.toString() || 'N/A',
+    aiBehaviorUserId: aiBehavior.userId?.toString() || 'N/A',
+    hasKnowledgeBaseId: !!aiBehavior.knowledgeBaseId,
+    knowledgeBaseId: aiBehavior.knowledgeBaseId?.toString() || 'N/A',
+    hasChatAgent: !!aiBehavior.chatAgent,
+    hasSystemPrompt: !!aiBehavior.chatAgent?.systemPrompt,
+    systemPromptPreview: aiBehavior.chatAgent?.systemPrompt?.substring(0, 200) || 'N/A'
+  });
+  
+  // CRITICAL: Validate AIBehavior belongs to the correct userId
+  if (aiBehavior.userId && aiBehavior.userId.toString() !== userId) {
+    console.error('[Social Webhook] ❌ CRITICAL: AIBehavior userId mismatch!', {
+      expectedUserId: userId,
+      actualAIBehaviorUserId: aiBehavior.userId.toString(),
+      aiBehaviorId: aiBehavior._id?.toString()
+    });
+    throw new Error(`AIBehavior userId mismatch: Expected ${userId}, but AIBehavior belongs to ${aiBehavior.userId.toString()}`);
+  }
+  
   if (aiBehavior.knowledgeBaseId && aiBehavior.knowledgeBaseId != null) {
     const kbId = typeof aiBehavior.knowledgeBaseId === 'string' 
       ? aiBehavior.knowledgeBaseId 
@@ -921,17 +956,23 @@ export class MetaWebhookController {
 
           // 2. SYSTEM PROMPT: Fetch from AIBehavior using userId ONLY (EXACT SAME AS CHATBOT)
           const aiBehavior = await aiBehaviorService.get(userId);
+          
+          // CRITICAL: Log full AIBehavior to verify it's the correct user's config
           console.log('[WhatsApp Webhook] 🔍 AIBehavior fetched for userId:', userId, {
             hasChatAgent: !!aiBehavior.chatAgent,
             hasSystemPrompt: !!aiBehavior.chatAgent?.systemPrompt,
             systemPromptLength: aiBehavior.chatAgent?.systemPrompt?.length || 0,
-            systemPromptPreview: aiBehavior.chatAgent?.systemPrompt?.substring(0, 100) || 'N/A'
+            systemPromptPreview: aiBehavior.chatAgent?.systemPrompt?.substring(0, 100) || 'N/A',
+            fullSystemPrompt: aiBehavior.chatAgent?.systemPrompt || 'N/A',
+            knowledgeBaseId: aiBehavior.knowledgeBaseId?.toString() || 'N/A',
+            aiBehaviorId: aiBehavior._id?.toString() || 'N/A'
           });
           
           let systemPrompt = aiBehavior.chatAgent.systemPrompt || 
             'You are a helpful AI assistant designed to provide excellent customer service. Be friendly, professional, and helpful.';
           
           console.log('[WhatsApp Webhook] ✅ Using system prompt from AIBehavior.chatAgent.systemPrompt (length:', systemPrompt.length, ')');
+          console.log('[WhatsApp Webhook] ✅ System prompt FULL TEXT:', systemPrompt);
           console.log('[WhatsApp Webhook] ✅ System prompt preview (first 200 chars):', systemPrompt.substring(0, 200));
 
           // 4. Get WooCommerce credentials if available (OPTIONAL)
@@ -1063,20 +1104,51 @@ export class MetaWebhookController {
                 });
               }
             } catch (metaError: any) {
+              const errorData = metaError.response?.data?.error || metaError.response?.data || {};
+              const errorCode = errorData.code;
+              const errorSubcode = errorData.error_subcode;
+              const errorMessage = errorData.message || metaError.message;
+              
               console.error('[WhatsApp Webhook] ❌ Meta Graph API error sending AI reply:', {
-                error: metaError.response?.data || metaError.message,
+                error: errorData,
+                errorCode: errorCode,
+                errorSubcode: errorSubcode,
+                errorMessage: errorMessage,
                 to: from,
                 phoneNumberId: phoneNumberId,
                 conversationId: conversation._id.toString()
               });
-              // Update message with error status
-              await Message.findByIdAndUpdate(aiMessage._id, {
-                $set: {
-                  status: 'failed',
-                  failedAt: new Date(),
-                  errorMessage: metaError.response?.data?.error?.message || metaError.message
-                }
-              });
+              
+              // Check if it's a token expiration error
+              if (errorCode === 190 && (errorSubcode === 463 || errorMessage?.includes('expired'))) {
+                console.error('[WhatsApp Webhook] ⚠️  ACCESS TOKEN EXPIRED - User needs to reconnect WhatsApp integration');
+                console.error('[WhatsApp Webhook] ⚠️  Please go to Settings → Social Integrations → WhatsApp → Reconnect');
+                
+                // Update message with specific expiration error
+                await Message.findByIdAndUpdate(aiMessage._id, {
+                  $set: {
+                    status: 'failed',
+                    failedAt: new Date(),
+                    errorCode: errorCode?.toString(),
+                    errorMessage: 'WhatsApp access token has expired. Please reconnect your WhatsApp integration in Settings → Social Integrations.',
+                    'metadata.sendError': errorMessage,
+                    'metadata.errorDetails': JSON.stringify(errorData),
+                    'metadata.tokenExpired': true
+                  }
+                });
+              } else {
+                // Update message with error status for other errors
+                await Message.findByIdAndUpdate(aiMessage._id, {
+                  $set: {
+                    status: 'failed',
+                    failedAt: new Date(),
+                    errorCode: errorCode?.toString(),
+                    errorMessage: errorMessage,
+                    'metadata.sendError': errorMessage,
+                    'metadata.errorDetails': JSON.stringify(errorData)
+                  }
+                });
+              }
               // Don't throw - we don't want to break the webhook flow
             }
           } else {
