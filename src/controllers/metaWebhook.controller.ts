@@ -15,6 +15,12 @@ import { getEcommerceCredentials } from '../utils/ecommerce.util';
 
 // Helper function to resolve a single KB ID to collection name(s) - SAME AS CHATBOT
 async function resolveSingleKBId(kbId: string, userId: string): Promise<string[]> {
+  // CRITICAL: Validate kbId is not null/undefined/empty before processing
+  if (!kbId || typeof kbId !== 'string' || kbId.trim() === '') {
+    console.warn('[Social Webhook] ⚠️  resolveSingleKBId called with invalid kbId:', kbId);
+    return [];
+  }
+
   const userObjectId = new mongoose.Types.ObjectId(userId);
   const ChatbotKnowledgeBase = (await import('../models/ChatbotKnowledgeBase')).default;
   const KnowledgeBaseDocument = (await import('../models/KnowledgeBaseDocument')).default;
@@ -55,15 +61,24 @@ async function resolveSingleKBId(kbId: string, userId: string): Promise<string[]
 }
 
 // Helper function to resolve multiple KB IDs to collection names - SAME AS CHATBOT
-async function resolveMultipleKBIds(ids: string[], userId: string): Promise<string[]> {
+async function resolveMultipleKBIds(ids: (string | null | undefined)[], userId: string): Promise<string[]> {
   const userObjectId = new mongoose.Types.ObjectId(userId);
   const ChatbotKnowledgeBase = (await import('../models/ChatbotKnowledgeBase')).default;
   const KnowledgeBaseDocument = (await import('../models/KnowledgeBaseDocument')).default;
   const resolvedNames: string[] = [];
 
-  const chatbotKbIds = ids.filter((id: string) => id.startsWith('kb_'));
-  const voiceAgentKbIds = ids.filter((id: string) => id.startsWith('KBDoc_'));
-  const legacyKbIds = ids.filter((id: string) => 
+  // CRITICAL: Filter out null/undefined/empty values BEFORE calling .startsWith()
+  const validIds = ids.filter((id): id is string => {
+    return id != null && typeof id === 'string' && id.trim() !== '';
+  });
+  
+  if (ids.length !== validIds.length) {
+    console.warn(`[Social Webhook] ⚠️  Filtered out ${ids.length - validIds.length} null/empty/invalid knowledge base IDs.`);
+  }
+
+  const chatbotKbIds = validIds.filter((id: string) => id.startsWith('kb_'));
+  const voiceAgentKbIds = validIds.filter((id: string) => id.startsWith('KBDoc_'));
+  const legacyKbIds = validIds.filter((id: string) => 
     !id.startsWith('kb_') && !id.startsWith('KBDoc_') && mongoose.Types.ObjectId.isValid(id)
   );
 
@@ -177,19 +192,29 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
     }
 
     // Priority 4: Merge defaultKnowledgeBaseId (legacy)
-    if (settings.defaultKnowledgeBaseId) {
-      const resolved = await resolveSingleKBId(settings.defaultKnowledgeBaseId.toString(), userId);
-      resolved.forEach(name => collectionNamesSet.add(name));
+    if (settings.defaultKnowledgeBaseId && settings.defaultKnowledgeBaseId != null) {
+      const kbId = typeof settings.defaultKnowledgeBaseId === 'string' 
+        ? settings.defaultKnowledgeBaseId 
+        : settings.defaultKnowledgeBaseId.toString();
+      if (kbId && kbId.trim() !== '') {
+        const resolved = await resolveSingleKBId(kbId, userId);
+        resolved.forEach(name => collectionNamesSet.add(name));
+      }
     }
   }
 
   // 3. NEW: Always check AI Behavior (merge, not just fallback) - SAME AS CHATBOT
   const aiBehavior = await aiBehaviorService.get(userId);
-  if (aiBehavior.knowledgeBaseId) {
-    const resolved = await resolveSingleKBId(aiBehavior.knowledgeBaseId.toString(), userId);
-    resolved.forEach(name => collectionNamesSet.add(name));
-    if (resolved.length > 0) {
-      console.log('[Social Webhook] ✅ Merged AI Behavior knowledgeBaseId:', resolved);
+  if (aiBehavior.knowledgeBaseId && aiBehavior.knowledgeBaseId != null) {
+    const kbId = typeof aiBehavior.knowledgeBaseId === 'string' 
+      ? aiBehavior.knowledgeBaseId 
+      : aiBehavior.knowledgeBaseId.toString();
+    if (kbId && kbId.trim() !== '') {
+      const resolved = await resolveSingleKBId(kbId, userId);
+      resolved.forEach(name => collectionNamesSet.add(name));
+      if (resolved.length > 0) {
+        console.log('[Social Webhook] ✅ Merged AI Behavior knowledgeBaseId:', resolved);
+      }
     }
   }
 
