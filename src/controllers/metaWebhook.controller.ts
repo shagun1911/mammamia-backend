@@ -142,6 +142,18 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
   // 2. Always check Settings (merge all sources)
   const settings = await Settings.findOne({ userId: userObjectId });
   
+  console.log('[Social Webhook] 🔍 Settings lookup for userId:', userId, {
+    settingsFound: !!settings,
+    hasDefaultKnowledgeBaseNames: !!settings?.defaultKnowledgeBaseNames,
+    defaultKnowledgeBaseNames: settings?.defaultKnowledgeBaseNames,
+    hasDefaultKnowledgeBaseIds: !!settings?.defaultKnowledgeBaseIds,
+    defaultKnowledgeBaseIds: settings?.defaultKnowledgeBaseIds,
+    hasDefaultKnowledgeBaseName: !!settings?.defaultKnowledgeBaseName,
+    defaultKnowledgeBaseName: settings?.defaultKnowledgeBaseName,
+    hasDefaultKnowledgeBaseId: !!settings?.defaultKnowledgeBaseId,
+    defaultKnowledgeBaseId: settings?.defaultKnowledgeBaseId
+  });
+  
   if (settings) {
     const ChatbotKnowledgeBase = (await import('../models/ChatbotKnowledgeBase')).default;
     const userChatbotKBs = await ChatbotKnowledgeBase.find({ 
@@ -883,22 +895,44 @@ export class MetaWebhookController {
         console.log('[WhatsApp Webhook] ✅ Using userId from integration.userId:', userId);
 
         try {
-          // 1. KNOWLEDGE BASE: Fetch from Settings using userId ONLY
+          // CRITICAL: Log userId being used for debugging
+          console.log('[WhatsApp Webhook] 🔍 Resolving KB and System Prompt for userId:', userId);
+          console.log('[WhatsApp Webhook] 🔍 Integration details:', {
+            integrationId: integration._id?.toString(),
+            organizationId: integration.organizationId?.toString(),
+            userId: integration.userId?.toString(),
+            platform: integration.platform
+          });
+
+          // 1. KNOWLEDGE BASE: Fetch from Settings using userId ONLY (EXACT SAME AS CHATBOT)
           let collectionNames: string[] = [];
           try {
             collectionNames = await determineCollectionNames(userId);
             console.log('[WhatsApp Webhook] ✅ Resolved Collection Names from Settings:', collectionNames);
+            if (collectionNames.length === 0) {
+              console.warn('[WhatsApp Webhook] ⚠️  WARNING: No collection names resolved! This will cause "I don\'t have enough information" errors.');
+              console.warn('[WhatsApp Webhook] ⚠️  Please configure a knowledge base in Settings → AI Behavior or Settings → Knowledge Base');
+            }
           } catch (error: any) {
             console.error('[WhatsApp Webhook] ❌ Failed to resolve KB from Settings:', error.message);
+            console.error('[WhatsApp Webhook] ❌ Error stack:', error.stack);
             return; // NO REPLY if KB not found
           }
 
-          // 2. SYSTEM PROMPT: Fetch from AIBehavior using userId ONLY
+          // 2. SYSTEM PROMPT: Fetch from AIBehavior using userId ONLY (EXACT SAME AS CHATBOT)
           const aiBehavior = await aiBehaviorService.get(userId);
+          console.log('[WhatsApp Webhook] 🔍 AIBehavior fetched for userId:', userId, {
+            hasChatAgent: !!aiBehavior.chatAgent,
+            hasSystemPrompt: !!aiBehavior.chatAgent?.systemPrompt,
+            systemPromptLength: aiBehavior.chatAgent?.systemPrompt?.length || 0,
+            systemPromptPreview: aiBehavior.chatAgent?.systemPrompt?.substring(0, 100) || 'N/A'
+          });
+          
           let systemPrompt = aiBehavior.chatAgent.systemPrompt || 
             'You are a helpful AI assistant designed to provide excellent customer service. Be friendly, professional, and helpful.';
           
           console.log('[WhatsApp Webhook] ✅ Using system prompt from AIBehavior.chatAgent.systemPrompt (length:', systemPrompt.length, ')');
+          console.log('[WhatsApp Webhook] ✅ System prompt preview (first 200 chars):', systemPrompt.substring(0, 200));
 
           // 4. Get WooCommerce credentials if available (OPTIONAL)
           const ecommerceCredentials = await getEcommerceCredentials(userId);
