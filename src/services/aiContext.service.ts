@@ -171,7 +171,7 @@ export class AIContextService {
    * Resolve KB IDs (kb_, KBDoc_, or legacy ObjectId) to RAG collection names.
    * Chatbot uses ChatbotKnowledgeBase.collection_name; voice agent docs link to ChatbotKB.
    */
-  private async resolveIdsToCollectionNames(userId: string, ids: string[]): Promise<string[]> {
+  private async resolveIdsToCollectionNames(userId: string, ids: (string | null | undefined)[]): Promise<string[]> {
     const userObjectId = new mongoose.Types.ObjectId(userId);
     const ChatbotKnowledgeBase = (await import('../models/ChatbotKnowledgeBase')).default;
     const KnowledgeBaseDocument = (await import('../models/KnowledgeBaseDocument')).default;
@@ -179,7 +179,14 @@ export class AIContextService {
     const resolvedNames: string[] = [];
 
     // Filter out null, undefined, and non-string values before processing
-    const validIds = ids.filter((id: any) => id != null && typeof id === 'string' && id.trim() !== '');
+    // Use type guard to ensure TypeScript knows these are strings
+    const validIds = ids.filter((id): id is string => {
+      return id != null && typeof id === 'string' && id.trim() !== '';
+    });
+    
+    if (ids.length !== validIds.length) {
+      console.warn(`[AI Context] ⚠️  Filtered out ${ids.length - validIds.length} null/empty/invalid knowledge base IDs.`);
+    }
 
     const chatbotKbIds = validIds.filter((id: string) => id.startsWith('kb_'));
     const voiceAgentKbIds = validIds.filter((id: string) => id.startsWith('KBDoc_'));

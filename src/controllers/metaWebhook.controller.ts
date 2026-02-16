@@ -474,8 +474,26 @@ export class MetaWebhookController {
           if (entry.changes && entry.changes.length > 0) {
             for (const change of entry.changes) {
               if (change.field === 'messages' && change.value) {
-                await this.handleWhatsAppMessage(change.value);
+                // Meta can send status updates with field="messages" but payload contains statuses
+                // Check the actual content to determine if it's a message or status update
+                if (change.value.messages && Array.isArray(change.value.messages) && change.value.messages.length > 0) {
+                  // This is an actual incoming message
+                  console.log('[WhatsApp Webhook] Processing incoming message');
+                  await this.handleWhatsAppMessage(change.value);
+                } else if (change.value.statuses && Array.isArray(change.value.statuses) && change.value.statuses.length > 0) {
+                  // This is a status update (sent, delivered, read, etc.) sent with field="messages"
+                  console.log('[WhatsApp Webhook] Processing status update (sent with field="messages")');
+                  await this.handleWhatsAppStatus(change.value);
+                } else {
+                  console.warn('[WhatsApp Webhook] Received field="messages" but no messages or statuses found in payload:', {
+                    hasMessages: !!change.value.messages,
+                    hasStatuses: !!change.value.statuses,
+                    valueKeys: Object.keys(change.value || {})
+                  });
+                }
               } else if (change.field === 'statuses' && change.value?.statuses) {
+                // Explicit status update field
+                console.log('[WhatsApp Webhook] Processing status update (field="statuses")');
                 await this.handleWhatsAppStatus(change.value);
               }
             }
@@ -678,8 +696,26 @@ export class MetaWebhookController {
    */
   private async handleWhatsAppMessage(data: any) {
     try {
+      console.log('[WhatsApp Webhook] handleWhatsAppMessage called with data:', {
+        hasMessages: !!data.messages,
+        messagesLength: data.messages?.length || 0,
+        hasContacts: !!data.contacts,
+        phoneNumberId: data.metadata?.phone_number_id,
+        dataKeys: Object.keys(data || {})
+      });
+      
       const message = data.messages?.[0];
-      if (!message) return;
+      if (!message) {
+        console.warn('[WhatsApp Webhook] No message found in data.messages array');
+        return;
+      }
+      
+      console.log('[WhatsApp Webhook] Processing message:', {
+        messageId: message.id,
+        from: message.from,
+        type: message.type,
+        timestamp: message.timestamp
+      });
 
       const from = message.from; // Customer phone number
       const messageId = message.id;
