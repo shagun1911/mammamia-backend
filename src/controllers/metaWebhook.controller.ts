@@ -195,7 +195,7 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
     if (settings.defaultKnowledgeBaseId && settings.defaultKnowledgeBaseId != null) {
       const kbId = typeof settings.defaultKnowledgeBaseId === 'string' 
         ? settings.defaultKnowledgeBaseId 
-        : settings.defaultKnowledgeBaseId.toString();
+        : String(settings.defaultKnowledgeBaseId);
       if (kbId && kbId.trim() !== '') {
         const resolved = await resolveSingleKBId(kbId, userId);
         resolved.forEach(name => collectionNamesSet.add(name));
@@ -208,7 +208,7 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
   if (aiBehavior.knowledgeBaseId && aiBehavior.knowledgeBaseId != null) {
     const kbId = typeof aiBehavior.knowledgeBaseId === 'string' 
       ? aiBehavior.knowledgeBaseId 
-      : aiBehavior.knowledgeBaseId.toString();
+      : String(aiBehavior.knowledgeBaseId);
     if (kbId && kbId.trim() !== '') {
       const resolved = await resolveSingleKBId(kbId, userId);
       resolved.forEach(name => collectionNamesSet.add(name));
