@@ -223,7 +223,7 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
         : String(settings.defaultKnowledgeBaseId);
       if (kbId && kbId.trim() !== '') {
         const resolved = await resolveSingleKBId(kbId, userId);
-        resolved.forEach(name => collectionNamesSet.add(name));
+      resolved.forEach(name => collectionNamesSet.add(name));
       }
     }
   }
@@ -258,9 +258,9 @@ async function determineCollectionNames(userId: string, knowledgeBaseId?: string
       : String(aiBehavior.knowledgeBaseId);
     if (kbId && kbId.trim() !== '') {
       const resolved = await resolveSingleKBId(kbId, userId);
-      resolved.forEach(name => collectionNamesSet.add(name));
-      if (resolved.length > 0) {
-        console.log('[Social Webhook] ✅ Merged AI Behavior knowledgeBaseId:', resolved);
+    resolved.forEach(name => collectionNamesSet.add(name));
+    if (resolved.length > 0) {
+      console.log('[Social Webhook] ✅ Merged AI Behavior knowledgeBaseId:', resolved);
       }
     }
   }
@@ -551,7 +551,7 @@ export class MetaWebhookController {
                 if (change.value.messages && Array.isArray(change.value.messages) && change.value.messages.length > 0) {
                   // This is an actual incoming message
                   console.log('[WhatsApp Webhook] Processing incoming message');
-                  await this.handleWhatsAppMessage(change.value);
+                await this.handleWhatsAppMessage(change.value);
                 } else if (change.value.statuses && Array.isArray(change.value.statuses) && change.value.statuses.length > 0) {
                   // This is a status update (sent, delivered, read, etc.) sent with field="messages"
                   console.log('[WhatsApp Webhook] Processing status update (sent with field="messages")');
@@ -1158,11 +1158,11 @@ export class MetaWebhookController {
                 integration.organizationId.toString(),
                 'whatsapp'
               );
-              await dialog360.sendWhatsAppMessage({
-                to: from,
-                type: 'text',
-                text: aiResponse
-              });
+          await dialog360.sendWhatsAppMessage({
+            to: from,
+            type: 'text',
+            text: aiResponse
+          });
               console.log('[WhatsApp Webhook] ✅ AI reply sent via 360dialog');
             } catch (dialogError: any) {
               console.error('[WhatsApp Webhook] ❌ 360dialog error sending AI reply:', dialogError.message);
@@ -1304,38 +1304,36 @@ export class MetaWebhookController {
         let senderName = senderPsid;
         try {
           if (pageAccessToken) {
-            const response = await axios.get(
-              `https://graph.facebook.com/v18.0/${senderPsid}?fields=first_name,last_name,name&access_token=${pageAccessToken}`
-            );
-            if (response.data?.name) {
-              senderName = response.data.name;
-            } else if (response.data?.first_name) {
-              senderName = response.data.first_name + (response.data.last_name ? ` ${response.data.last_name}` : '');
-            }
+            const apiUrl = `https://graph.facebook.com/v18.0/${senderPsid}`;
+            const params = { fields: 'first_name,last_name,name', access_token: pageAccessToken };
+            const response = await axios.get(apiUrl, { params });
+            
+            const { name, first_name, last_name } = response.data || {};
+            senderName = name || (first_name ? `${first_name}${last_name ? ` ${last_name}` : ''}` : senderPsid);
+            
             console.log('[Messenger] Fetched sender name:', senderName);
           }
         } catch (error: any) {
           console.warn('[Messenger] Could not fetch sender name, using PSID:', error.message);
         }
         
-          customer = await Customer.create({
-            organizationId: customerOrgId,
-            name: senderName,
-            source: 'facebook',
-            metadata: { facebookId: senderPsid }
-          });
+        customer = await Customer.create({
+          organizationId: customerOrgId,
+          name: senderName,
+          source: 'facebook',
+          metadata: { facebookId: senderPsid }
+        });
       } else if (!customer.name || customer.name === customer.metadata?.facebookId) {
         // Update customer name if it's still an ID
         try {
           if (pageAccessToken) {
-            const response = await axios.get(
-              `https://graph.facebook.com/v18.0/${senderPsid}?fields=first_name,last_name,name&access_token=${pageAccessToken}`
-            );
-            if (response.data?.name) {
-              customer.name = response.data.name;
-              await customer.save();
-            } else if (response.data?.first_name) {
-              customer.name = response.data.first_name + (response.data.last_name ? ` ${response.data.last_name}` : '');
+            const apiUrl = `https://graph.facebook.com/v18.0/${senderPsid}`;
+            const params = { fields: 'first_name,last_name,name', access_token: pageAccessToken };
+            const response = await axios.get(apiUrl, { params });
+            
+            const { name, first_name, last_name } = response.data || {};
+            if (name || first_name) {
+              customer.name = name || `${first_name}${last_name ? ` ${last_name}` : ''}`;
               await customer.save();
             }
           }
