@@ -1151,6 +1151,260 @@ export class SocialIntegrationController {
       next(error);
     }
   }
+
+  /**
+   * Connect Instagram manually using Access Token, Instagram Account ID, and Page ID
+   * POST /api/v1/social-integrations/instagram/connect-manual
+   */
+  async connectInstagramManual(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?._id?.toString();
+      const organizationId = req.user?.organizationId || req.user?._id;
+      
+      if (!userId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'User ID not found');
+      }
+      
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+
+      const { accessToken, instagramAccountId, facebookPageId } = req.body;
+
+      // Validate required fields
+      if (!accessToken || !instagramAccountId || !facebookPageId) {
+        throw new AppError(
+          400,
+          'VALIDATION_ERROR',
+          'accessToken, instagramAccountId, and facebookPageId are all required'
+        );
+      }
+
+      console.log('[Instagram Manual Connect] Connecting with credentials:', {
+        userId,
+        organizationId: organizationId.toString(),
+        instagramAccountId,
+        facebookPageId
+      });
+
+      // Verify credentials by testing API call to Meta
+      try {
+        const axios = (await import('axios')).default;
+        const testUrl = `https://graph.facebook.com/v19.0/${instagramAccountId}`;
+        
+        await axios.get(testUrl, {
+          params: {
+            fields: 'id,username,name',
+            access_token: accessToken
+          },
+          timeout: 10000
+        });
+        
+        console.log('[Instagram Manual Connect] ✅ Credentials verified with Meta API');
+      } catch (verifyError: any) {
+        console.error('[Instagram Manual Connect] ❌ Credential verification failed:', verifyError.response?.data || verifyError.message);
+        throw new AppError(
+          400,
+          'INVALID_CREDENTIALS',
+          'Invalid Instagram credentials. Please check your Access Token and Instagram Account ID.'
+        );
+      }
+
+      // Create integration directly without 360dialog verification
+      const integrationData = {
+        userId,
+        organizationId,
+        platform: 'instagram' as const,
+        apiKey: accessToken,
+        instagramAccountId,
+        facebookPageId,
+        credentials: {
+          apiKey: accessToken,
+          instagramAccountId,
+          facebookPageId,
+          pageAccessToken: accessToken
+        },
+        metadata: {
+          connectedAt: new Date().toISOString(),
+          connectionType: 'manual',
+          chatbotEnabled: true
+        },
+        skipVerification: true // Skip 360dialog verification, use Meta API directly
+      };
+
+      const integration = await socialIntegrationService.upsertIntegration(integrationData);
+
+      console.log('[Instagram Manual Connect] ✅ Integration saved:', integration._id);
+
+      // Get webhook configuration
+      const backendUrl = process.env.BACKEND_URL;
+      const webhookUrl = `${backendUrl}/api/v1/webhooks/instagram`;
+      const verifyToken = process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || 'instagram_verify_M9Qe7KX2R4LpA8';
+
+      res.json(successResponse(
+        {
+          ...integration.toObject(),
+          credentials: {
+            ...integration.credentials,
+            apiKey: '***********' // Mask in response
+          },
+          webhookConfiguration: {
+            url: webhookUrl,
+            verifyToken: verifyToken,
+            subscribed: false
+          }
+        },
+        'Instagram connected successfully. Please configure the webhook in your Meta App Dashboard.'
+      ));
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Connect Facebook manually using Page Access Token and Page ID
+   * POST /api/v1/social-integrations/facebook/connect-manual
+   */
+  async connectFacebookManual(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?._id?.toString();
+      const organizationId = req.user?.organizationId || req.user?._id;
+      
+      if (!userId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'User ID not found');
+      }
+      
+      if (!organizationId) {
+        throw new AppError(401, 'UNAUTHORIZED', 'Organization ID not found');
+      }
+
+      const { pageAccessToken, facebookPageId, appId } = req.body;
+
+      // Validate required fields
+      if (!pageAccessToken || !facebookPageId) {
+        throw new AppError(
+          400,
+          'VALIDATION_ERROR',
+          'pageAccessToken and facebookPageId are required'
+        );
+      }
+
+      // Verify it's a PAGE token (not USER token)
+      if (!pageAccessToken.startsWith('EAAG') && !pageAccessToken.startsWith('EAA')) {
+        throw new AppError(
+          400,
+          'INVALID_TOKEN_TYPE',
+          'Must use a Page Access Token (starts with EAAG or EAA), not a User Access Token'
+        );
+      }
+
+      console.log('[Facebook Manual Connect] Connecting with credentials:', {
+        userId,
+        organizationId: organizationId.toString(),
+        facebookPageId,
+        hasAppId: !!appId
+      });
+
+      // Verify credentials by testing API call to Meta
+      try {
+        const axios = (await import('axios')).default;
+        const testUrl = `https://graph.facebook.com/v19.0/${facebookPageId}`;
+        
+        await axios.get(testUrl, {
+          params: {
+            fields: 'id,name',
+            access_token: pageAccessToken
+          },
+          timeout: 10000
+        });
+        
+        console.log('[Facebook Manual Connect] ✅ Credentials verified with Meta API');
+      } catch (verifyError: any) {
+        console.error('[Facebook Manual Connect] ❌ Credential verification failed:', verifyError.response?.data || verifyError.message);
+        throw new AppError(
+          400,
+          'INVALID_CREDENTIALS',
+          'Invalid Facebook credentials. Please check your Page Access Token and Page ID.'
+        );
+      }
+
+      // Create integration directly without 360dialog verification
+      const integrationData = {
+        userId,
+        organizationId,
+        platform: 'facebook' as const,
+        apiKey: pageAccessToken,
+        facebookPageId,
+        clientId: appId || process.env.META_APP_ID,
+        credentials: {
+          apiKey: pageAccessToken,
+          facebookPageId,
+          pageAccessToken,
+          clientId: appId || process.env.META_APP_ID
+        },
+        metadata: {
+          connectedAt: new Date().toISOString(),
+          connectionType: 'manual',
+          chatbotEnabled: true
+        },
+        skipVerification: true // Skip 360dialog verification, use Meta API directly
+      };
+
+      const integration = await socialIntegrationService.upsertIntegration(integrationData);
+
+      console.log('[Facebook Manual Connect] ✅ Integration saved:', integration._id);
+
+      // Attempt to subscribe webhook programmatically
+      let webhookSubscribed = false;
+      try {
+        const axios = (await import('axios')).default;
+        
+        // Subscribe Page to webhooks
+        const subscribeUrl = `https://graph.facebook.com/v19.0/${facebookPageId}/subscribed_apps`;
+        await axios.post(
+          subscribeUrl,
+          {
+            subscribed_fields: ['messages', 'messaging_postbacks', 'message_reads', 'message_deliveries']
+          },
+          {
+            params: {
+              access_token: pageAccessToken
+            }
+          }
+        );
+        
+        webhookSubscribed = true;
+        console.log('[Facebook Manual Connect] ✅ Webhook automatically subscribed');
+      } catch (webhookError: any) {
+        console.warn('[Facebook Manual Connect] ⚠️ Failed to auto-subscribe webhook:', webhookError.response?.data || webhookError.message);
+      }
+
+      // Get webhook configuration
+      const backendUrl = process.env.BACKEND_URL;
+      const webhookUrl = `${backendUrl}/api/v1/social-integrations/messenger/webhook`;
+      const verifyToken = process.env.MESSENGER_WEBHOOK_VERIFY_TOKEN || 'messenger_verify_token';
+
+      res.json(successResponse(
+        {
+          ...integration.toObject(),
+          credentials: {
+            ...integration.credentials,
+            apiKey: '***********' // Mask in response
+          },
+          webhookConfiguration: {
+            url: webhookUrl,
+            verifyToken: verifyToken,
+            subscribed: webhookSubscribed
+          }
+        },
+        webhookSubscribed 
+          ? 'Facebook connected successfully. Webhook automatically subscribed!'
+          : 'Facebook connected successfully. Please configure the webhook in your Meta App Dashboard.'
+      ));
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export default new SocialIntegrationController();

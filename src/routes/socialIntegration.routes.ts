@@ -56,6 +56,12 @@ router.use(authenticate);
 // WhatsApp manual connection (without OAuth)
 router.post('/whatsapp/connect-manual', socialIntegrationController.connectWhatsAppManual.bind(socialIntegrationController));
 
+// Instagram manual connection (without OAuth)
+router.post('/instagram/connect-manual', socialIntegrationController.connectInstagramManual.bind(socialIntegrationController));
+
+// Facebook manual connection (without OAuth)
+router.post('/facebook/connect-manual', socialIntegrationController.connectFacebookManual.bind(socialIntegrationController));
+
 // Get all integrations
 router.get('/', socialIntegrationController.getAll.bind(socialIntegrationController));
 
