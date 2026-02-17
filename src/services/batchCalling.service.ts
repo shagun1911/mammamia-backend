@@ -384,8 +384,52 @@ export class BatchCallingService {
           });
 
           if (exists) {
-            console.log(`[Batch Calling Service] ⚠️ Conversation already exists for ${phoneNumber}, skipping`);
+            console.log(`[Batch Calling Service] ⚠️ Conversation already exists for ${phoneNumber}, triggering automation anyway`);
             conversationsSkipped++;
+            // Ensure transcript is on the conversation so extraction has content (may have been created before transcript was ready)
+            if (transcript != null && (
+              (Array.isArray(transcript) && transcript.length > 0) ||
+              (typeof transcript === 'string' && transcript.trim().length > 0) ||
+              (transcript.messages && Array.isArray(transcript.messages) && transcript.messages.length > 0)
+            )) {
+              await Conversation.updateOne(
+                { _id: exists._id },
+                { $set: { transcript } }
+              );
+            }
+            const hasEndReason = callResult.end_reason != null && String(callResult.end_reason).trim() !== '';
+            const statusCompleted = callResult.status === 'completed';
+            const callEnded = hasEndReason || statusCompleted;
+            const hasTranscript = transcript != null && (
+              (Array.isArray(transcript) && transcript.length > 0) ||
+              (typeof transcript === 'string' && transcript.trim().length > 0) ||
+              (transcript.messages && Array.isArray(transcript.messages) && transcript.messages.length > 0)
+            );
+            if (callEnded && hasTranscript) {
+              try {
+                const existingCustomer = await Customer.findById(exists.customerId).lean();
+                const { automationService } = await import('./automation.service');
+                await automationService.triggerByEvent('batch_call_completed', {
+                  event: 'batch_call_completed',
+                  batch_id: jobId,
+                  conversation_id: exists._id.toString(),
+                  contactId: (existingCustomer as any)?._id?.toString() || exists.customerId?.toString(),
+                  organizationId: organizationId,
+                  source: 'batch_call',
+                  freshContactData: {
+                    name: customerName,
+                    email: customerEmail,
+                    phone: phoneNumber
+                  }
+                }, {
+                  userId: userId,
+                  organizationId: organizationId
+                });
+                console.log(`[Batch Calling Service] 🚀 Triggered batch_call_completed automation for existing conversation ${exists._id}`);
+              } catch (triggerError: any) {
+                console.error(`[Batch Calling Service] ⚠️ Failed to trigger automation for existing conversation ${exists._id}:`, triggerError.message);
+              }
+            }
             continue;
           }
 
@@ -509,7 +553,22 @@ export class BatchCallingService {
 
           conversationsCreated++;
 
-          // Trigger batch_call_completed automation for this conversation
+          // Only trigger automation when the call has ended AND transcript is loaded (never trigger with empty transcript)
+          const hasEndReason = callResult.end_reason != null && String(callResult.end_reason).trim() !== '';
+          const statusCompleted = callResult.status === 'completed';
+          const callEnded = hasEndReason || statusCompleted;
+          const hasTranscript = transcript != null && (
+            (Array.isArray(transcript) && transcript.length > 0) ||
+            (typeof transcript === 'string' && transcript.trim().length > 0) ||
+            (transcript.messages && Array.isArray(transcript.messages) && transcript.messages.length > 0)
+          );
+          if (!callEnded) {
+            console.log(`[Batch Calling Service] ⏳ Skipping automation for ${phoneNumber} – call may not have ended yet (end_reason: ${callResult.end_reason || 'missing'}, status: ${callResult.status || 'missing'})`);
+          } else if (!hasTranscript) {
+            console.log(`[Batch Calling Service] ⏳ Skipping automation for ${phoneNumber} – no transcript loaded yet (trigger when transcript is available)`);
+          }
+
+          if (callEnded && hasTranscript) {
           try {
             const { automationService } = await import('./automation.service');
 
@@ -536,6 +595,7 @@ export class BatchCallingService {
             console.log(`[Batch Calling Service] 📧 Using fresh email from CSV: ${customerEmail}`);
           } catch (triggerError: any) {
             console.error(`[Batch Calling Service] ⚠️ Failed to trigger automation for conversation ${conversation._id}:`, triggerError.message);
+          }
           }
         } catch (resultError: any) {
           console.error(`[Batch Calling Service] ❌ Failed to create conversation for ${callResult.phone_number}:`, resultError.message);

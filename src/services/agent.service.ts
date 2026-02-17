@@ -6,6 +6,11 @@ import mongoose from 'mongoose';
 // Python API base URL - should match the one used for agents endpoint
 const PYTHON_API_BASE_URL = process.env.PYTHON_API_URL || 'https://elvenlabs-voiceagent.onrender.com';
 
+/** Appended when sending prompt to Python so agent only collects what user instructed (no extra time/date/year, no "there is an issue"). */
+const COLLECT_ONLY_INSTRUCTION = `
+
+IMPORTANT: Only ask for and collect the fields you are instructed to collect above. Do not ask for year, time, date, appointment slot, or any other field unless it is explicitly listed in your instructions. If your instructions do not mention date/time/year, do not ask for them. Do not say "there is an issue", "technical issue", or "something went wrong" – only collect what your instructions say and then confirm or end the call.`;
+
 const WOOCOMMERCE_MASTER_PROMPT = `
 You are a live AI voice agent connected to a WooCommerce store.
 
@@ -292,7 +297,7 @@ export class AgentService {
 
       // Build request body preserving all agent settings
       const requestBody: any = {
-        system_prompt: systemPrompt,
+        system_prompt: (systemPrompt || '').trim() + COLLECT_ONLY_INSTRUCTION,
         tool_ids: toolIds,
         first_message: agent.first_message || '',
         language: agent.language || 'en',
@@ -353,7 +358,7 @@ export class AgentService {
 
       const requestBody = {
         first_message: (agent as any).first_message || '',
-        system_prompt: (agent as any).system_prompt || '',
+        system_prompt: ((agent as any).system_prompt || '').trim() + COLLECT_ONLY_INSTRUCTION,
         language: (agent as any).language || 'en',
         knowledge_base_ids: (agent as any).knowledge_base_ids || [],
         tool_ids: toolIds,
@@ -419,8 +424,8 @@ export class AgentService {
       // Python API only accepts first_message, not greeting_message
       const firstMessageToSend = data.first_message || 'Hello! How can I help you today?';
 
-      // Prepend WooCommerce master prompt to system prompt
-      const systemPromptToSend = `${WOOCOMMERCE_MASTER_PROMPT}\n\n${data.system_prompt || ''}`;
+      // Prepend WooCommerce master prompt and append collect-only restriction (no extra date/time/year)
+      const systemPromptToSend = `${WOOCOMMERCE_MASTER_PROMPT}\n\n${(data.system_prompt || '').trim()}${COLLECT_ONLY_INSTRUCTION}`;
 
       const requestBody: any = {
         name: data.name,
@@ -616,7 +621,8 @@ export class AgentService {
     );
 
     // Prepend WooCommerce master prompt to system prompt
-    const systemPromptToSend = `${WOOCOMMERCE_MASTER_PROMPT}\n\n${data.system_prompt || ''}`;
+    const userPrompt = (data.system_prompt || '').trim();
+    const systemPromptToSend = `${WOOCOMMERCE_MASTER_PROMPT}\n\n${userPrompt}${COLLECT_ONLY_INSTRUCTION}`;
 
     const requestBody: any = {
       first_message: firstMessageToSend,

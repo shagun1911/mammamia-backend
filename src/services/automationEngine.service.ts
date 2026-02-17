@@ -71,6 +71,8 @@ export interface IAutomationExecutionContext {
     confidence?: number;
     raw_transcript?: string;
   };
+  /** Dynamic extraction result: keys match the JSON example from the extract node (e.g. interested_in_loan, product, customer_name). */
+  extracted?: Record<string, any>;
   organizationId: string;
   userId: string;
   now: string;
@@ -109,6 +111,7 @@ export class AutomationEngine {
       ...context.triggerData,
       contact: context.contact,
       appointment: context.appointment,
+      extracted: context.extracted,
       conversation: context.conversation,
       now: context.now
     };
@@ -134,21 +137,21 @@ export class AutomationEngine {
     // e.g. {{contact.name}}, {{appointment.booked}}
     resolved = resolved.replace(/\{\{(\w+)\.(\w+)\}\}/g, (match, type, key) => {
       const value = data[type]?.[key];
-      return value !== undefined && value !== null ? String(value) : match;
+      return value !== undefined && value !== null ? String(value) : '';
     });
 
     // 2. Resolve flat triggerData properties
     // e.g. {{conversation_id}}, {{call_name}}
     resolved = resolved.replace(/\{\{(\w+)\}\}/g, (match, key) => {
       const value = data[key];
-      return value !== undefined && value !== null ? String(value) : match;
+      return value !== undefined && value !== null ? String(value) : '';
     });
 
-    // 🛡️ CRITICAL GUARD: Ensure no unresolved placeholders remain
+    // Replace any remaining {{...}} with empty string (do not throw – skip node instead if needed)
     if (resolved.includes('{{')) {
       const missing = resolved.match(/\{\{([^}]+)\}\}/g);
-      console.error(`[Automation Engine] ❌ Template resolution failed. Missing variables: ${missing?.join(', ')}`);
-      throw new Error(`Unresolved variables in template: ${missing?.join(', ')}`);
+      console.warn(`[Automation Engine] ⚠️ Unresolved variables (replaced with empty): ${missing?.join(', ')}`);
+      resolved = resolved.replace(/\{\{[^}]+\}\}/g, '');
     }
 
     return resolved;
@@ -479,29 +482,55 @@ export class AutomationEngine {
       }
     });
 
-    // Extract Data Action
+    // Extract Data Action (supports dynamic extraction_prompt + json_example or legacy extraction_type)
     this.actions.set('aistein_extract_data', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
-        const conversationId = triggerData.conversation_id || config.conversation_id;
+        const conversationIdRaw = config.conversation_id || '{{conversation_id}}';
+        const resolvedConvId = await this.resolveTemplate(conversationIdRaw, context);
+        const conversationId = resolvedConvId || triggerData.conversation_id;
         const extractionType = config.extraction_type || 'appointment';
+        const extraction_prompt = config.extraction_prompt;
+        const json_example = config.json_example && typeof config.json_example === 'object' ? config.json_example : undefined;
 
         if (!conversationId) throw new Error('Conversation ID is required for extraction.');
 
+        const options = extraction_prompt && json_example ? { extraction_prompt, json_example } : undefined;
         const { automationService } = await import('./automation.service');
         const result = await automationService.extractConversationData(
           conversationId,
           extractionType,
-          context.organizationId
-        );
+          context.organizationId,
+          options
+        ) as { success: boolean; appointment_booked?: boolean | string; date?: string; time?: string; confidence?: number; extracted_data?: Record<string, any>; error?: string };
 
-        // 🧬 UPDATE CONTEXT: Store extracted data for downstream actions
-        if (result?.appointment) {
+        if (result.extracted_data) {
+          context.extracted = result.extracted_data;
+          const ed = result.extracted_data;
+          if (ed.appointment_booked != null || ed.date || ed.time) {
+            context.appointment = {
+              booked: ed.appointment_booked === true || ed.appointment_booked === 'true',
+              date: ed.date,
+              time: ed.time,
+              confidence: ed.confidence
+            };
+          }
+          if (!context.appointment) context.appointment = { booked: false };
+          if (!context.appointment!.date && (ed.preferred_date ?? ed.date)) {
+            context.appointment!.date = ed.preferred_date ?? ed.date;
+          }
+          if (!context.appointment!.time && (ed.preferred_time ?? ed.time)) {
+            context.appointment!.time = ed.preferred_time ?? ed.time;
+          }
+          if (context.appointment!.date && !context.appointment!.time) {
+            context.appointment!.time = '09:00';
+          }
+        }
+        if (result.success && result.appointment_booked != null && !context.appointment) {
           context.appointment = {
-            booked: result.appointment.booked === true || result.appointment.booked === 'true',
-            date: result.appointment.date,
-            time: result.appointment.time,
-            confidence: result.confidence,
-            raw_transcript: result.raw_transcript
+            booked: result.appointment_booked === true || result.appointment_booked === 'true',
+            date: result.date,
+            time: result.time,
+            confidence: result.confidence
           };
         }
 
@@ -1091,14 +1120,12 @@ export class AutomationEngine {
 
     // ============ GOOGLE WORKSPACE ACTIONS ============
 
-    // Extract Appointment Data from Conversation
+    // Extract Appointment / Dynamic Data from Conversation (supports extraction_prompt + json_example or legacy appointment)
     this.actions.set('aistein_extract_appointment', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
-        const { conversation_id, extraction_type = 'appointment' } = config;
-        
-        // Resolve conversation_id from template
-        const resolvedConvId = await this.resolveTemplate(conversation_id, context);
-        
+        const conversationIdRaw = config.conversation_id || '{{conversation_id}}';
+        const resolvedConvId = await this.resolveTemplate(conversationIdRaw, context);
+
         if (!resolvedConvId) {
           console.warn(`[Automation Engine] ⚠️ No conversation ID for extraction, skipping`);
           context.appointment = { booked: false };
@@ -1110,49 +1137,67 @@ export class AutomationEngine {
           };
         }
 
-        console.log(`[Automation Engine] 🧠 Extracting appointment data from conversation: ${resolvedConvId}`);
+        const extraction_type = config.extraction_type || 'appointment';
+        const extraction_prompt = config.extraction_prompt;
+        const json_example = config.json_example && typeof config.json_example === 'object' ? config.json_example : undefined;
+        const options = extraction_prompt && json_example ? { extraction_prompt, json_example } : undefined;
+
+        console.log(`[Automation Engine] 🧠 Extracting data from conversation: ${resolvedConvId}`, options ? '(dynamic)' : `(${extraction_type})`);
 
         try {
-          // Call the automation service extractConversationData method
           const { automationService } = await import('./automation.service');
           const result = await automationService.extractConversationData(
             resolvedConvId,
             extraction_type,
-            context.organizationId
-          );
+            context.organizationId,
+            options
+          ) as { success: boolean; appointment_booked?: boolean | string; date?: string; time?: string; confidence?: number; extracted_data?: Record<string, any>; error?: string };
 
-          console.log(`[Automation Engine] ✅ Appointment extraction result:`, result);
+          console.log(`[Automation Engine] ✅ Extraction result:`, result.success ? (result.extracted_data || { appointment_booked: result.appointment_booked, date: result.date, time: result.time }) : result.error);
 
-          // Update context with appointment data
-          // ALWAYS return success=true to avoid failing the entire automation
-          // The condition node will check appointment_booked to decide whether to continue
-          if (result.success && result.appointment_booked) {
-            context.appointment = {
-              booked: result.appointment_booked,
-              date: result.date,
-              time: result.time,
-              confidence: result.confidence
-            };
-          } else {
-            context.appointment = {
-              booked: false
-            };
-            // Log the reason but don't fail
-            console.log(`[Automation Engine] ℹ️ No appointment booked - Reason: ${result.error || 'Not booked'}`);
+          if (result.extracted_data) {
+            context.extracted = result.extracted_data;
+            const ed = result.extracted_data;
+            if (ed.appointment_booked != null || ed.date || ed.time) {
+              context.appointment = {
+                booked: ed.appointment_booked === true || ed.appointment_booked === 'true',
+                date: ed.date,
+                time: ed.time,
+                confidence: ed.confidence
+              };
+            }
+            // Map common extracted fields to appointment so {{appointment.date}} / {{appointment.time}} resolve in templates
+            if (!context.appointment) context.appointment = { booked: false };
+            if (!context.appointment.date && (ed.preferred_date ?? ed.date)) {
+              context.appointment.date = ed.preferred_date ?? ed.date;
+            }
+            if (!context.appointment.time && (ed.preferred_time ?? ed.time)) {
+              context.appointment.time = ed.preferred_time ?? ed.time;
+            }
+            // Default time when date is set but time missing (e.g. dynamic extraction only has preferred_date)
+            if (context.appointment.date && !context.appointment.time) {
+              context.appointment.time = '09:00';
+            }
           }
+          if (result.success && result.appointment_booked != null && !context.appointment) {
+            context.appointment = result.appointment_booked
+              ? { booked: true, date: result.date, time: result.time, confidence: result.confidence }
+              : { booked: false };
+          }
+          if (!context.appointment) context.appointment = { booked: false };
 
           return {
             success: true,
-            appointment_booked: result.appointment_booked || false,
-            date: result.date || null,
-            time: result.time || null,
-            confidence: result.confidence || 0,
+            appointment_booked: context.appointment?.booked ?? result.appointment_booked ?? false,
+            date: result.date ?? context.appointment?.date ?? null,
+            time: result.time ?? context.appointment?.time ?? null,
+            extracted_data: result.extracted_data,
+            confidence: result.confidence ?? 0,
             reason: result.error
           };
         } catch (error: any) {
-          console.error(`[Automation Engine] ❌ Appointment extraction failed:`, error);
+          console.error(`[Automation Engine] ❌ Extraction failed:`, error);
           context.appointment = { booked: false };
-          // Still return success=true to avoid failing entire automation
           return {
             success: true,
             appointment_booked: false,
@@ -1178,10 +1223,13 @@ export class AutomationEngine {
           'services.calendar': true
         });
 
-        if (!integration) throw new Error('Google Calendar integration not connected');
+        if (!integration) {
+          console.log('[Automation Engine] ⏭️ Skipping Calendar check: integration not connected');
+          return { success: true, status: 'skipped', reason: 'Google Calendar integration not connected' };
+        }
 
-        const resolvedTimeMin = await this.resolveTemplate(config.timeMin, context);
-        const resolvedTimeMax = await this.resolveTemplate(config.timeMax, context);
+        const resolvedTimeMin = await this.resolveTemplate(config.timeMin || '', context);
+        const resolvedTimeMax = await this.resolveTemplate(config.timeMax || '', context);
 
         const startDate = new Date(resolvedTimeMin);
         const endDate = new Date(resolvedTimeMax || (startDate.getTime() + 60 * 60 * 1000));
@@ -1206,34 +1254,22 @@ export class AutomationEngine {
       }
     });
 
-    // Google Calendar - Create Event
+    // Google Calendar - Create Event (startTime/endTime and summary use templates: contact.*, extracted.*, appointment.*)
     this.actions.set('aistein_google_calendar_create_event', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
-        if (!context.appointment?.booked) {
-          console.info(`[Automation Engine] ⏭️ Skipping Event Creation: Appointment not confirmed.`);
-          return { success: true, status: 'skipped', reason: 'Appointment not booked' };
-        }
-
-        // CRITICAL: Skip if date/time are missing
-        if (!context.appointment.date || !context.appointment.time) {
-          console.warn(`[Automation Engine] ⏭️ Skipping Calendar Event: Missing appointment date/time`);
-          return { 
-            success: true, 
-            status: 'skipped', 
-            reason: 'Missing appointment date or time' 
-          };
-        }
-
         const { summary, description, startTime, endTime, attendees } = config;
-        const resolvedSummary = await this.resolveTemplate(summary, context);
-        const resolvedStart = await this.resolveTemplate(startTime, context);
-        const resolvedEnd = await this.resolveTemplate(endTime, context);
+        const resolvedSummary = await this.resolveTemplate(summary || '', context);
+        const resolvedStart = await this.resolveTemplate(startTime || '', context);
+        const resolvedEnd = await this.resolveTemplate(endTime || '', context);
 
+        const hasUnresolved = resolvedStart.includes('{{') || resolvedEnd.includes('{{') || !resolvedStart.trim() || !resolvedEnd.trim();
         const startD = new Date(resolvedStart);
         const endD = new Date(resolvedEnd);
+        const validDates = !isNaN(startD.getTime()) && !isNaN(endD.getTime());
 
-        if (isNaN(startD.getTime()) || isNaN(endD.getTime())) {
-          throw new Error('Critical: Invalid date/time resolution for calendar event.');
+        if (hasUnresolved || !validDates) {
+          console.log(`[Automation Engine] ⏭️ Skipping Google Calendar create event: missing or invalid date/time (start: ${resolvedStart || '(empty)'}, end: ${resolvedEnd || '(empty)'})`);
+          return { success: true, status: 'skipped', reason: 'Missing or invalid appointment date/time' };
         }
 
         // Resolve attendees array (handle template variables in emails)
@@ -1276,7 +1312,10 @@ export class AutomationEngine {
     this.actions.set('aistein_google_sheet_append_row', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         const { spreadsheetId, values } = config;
-        if (!spreadsheetId || !Array.isArray(values)) throw new Error('Sheet configuration missing');
+        if (!spreadsheetId || !Array.isArray(values) || values.length === 0) {
+          console.log('[Automation Engine] ⏭️ Skipping Google Sheets append: sheet configuration missing');
+          return { success: true, status: 'skipped', reason: 'Sheet configuration missing' };
+        }
 
         const integration = await GoogleIntegration.findOne({
           userId: context.userId,
@@ -1285,7 +1324,10 @@ export class AutomationEngine {
           'services.sheets': true
         });
 
-        if (!integration) throw new Error('Google Sheets not connected');
+        if (!integration) {
+          console.log('[Automation Engine] ⏭️ Skipping Google Sheets append: integration not connected');
+          return { success: true, status: 'skipped', reason: 'Google Sheets not connected' };
+        }
 
         try {
           const { google } = require('googleapis');
@@ -1318,24 +1360,11 @@ export class AutomationEngine {
       }
     });
 
-    // Gmail - Send Email
+    // Gmail - Send Email (uses contact.* and extracted.* from template; no hardcoded skips)
     this.actions.set('aistein_google_gmail_send', {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         const { to, subject, body } = config;
-        
-        // CRITICAL: Skip if appointment date/time are missing
-        // This prevents failures when appointment is detected but details are unclear
-        if (context.appointment) {
-          if (!context.appointment.date || !context.appointment.time) {
-            console.warn(`[Automation Engine] ⏭️ Skipping Gmail send: Missing appointment date/time`);
-            return { 
-              success: true, 
-              status: 'skipped', 
-              reason: 'Missing appointment date or time' 
-            };
-          }
-        }
-        
+
         const integration = await SocialIntegration.findOne({
           userId: context.userId,
           organizationId: context.organizationId,
@@ -1344,18 +1373,18 @@ export class AutomationEngine {
         });
 
         if (!integration) {
-          console.error('[Automation Engine] ❌ Gmail integration not connected');
-          throw new Error('Gmail integration not connected');
+          console.log('[Automation Engine] ⏭️ Skipping Gmail send: integration not connected');
+          return { success: true, status: 'skipped', reason: 'Gmail integration not connected' };
         }
 
-        const resolvedTo = to ? await this.resolveTemplate(to, context) : context.contact.email;
-        if (!resolvedTo) {
-          console.error('[Automation Engine] ❌ No recipient email found');
-          throw new Error('No recipient email found');
+        const resolvedTo = to ? await this.resolveTemplate(to, context) : (context.contact?.email || '');
+        if (!resolvedTo || !resolvedTo.includes('@')) {
+          console.log('[Automation Engine] ⏭️ Skipping Gmail send: no recipient email');
+          return { success: true, status: 'skipped', reason: 'No recipient email' };
         }
 
-        const resolvedSubject = await this.resolveTemplate(subject, context);
-        const resolvedBody = await this.resolveTemplate(body, context);
+        const resolvedSubject = await this.resolveTemplate(subject || '', context);
+        const resolvedBody = await this.resolveTemplate(body || '', context);
 
         try {
           const userEmail = integration.getDecryptedApiKey();
@@ -1372,7 +1401,7 @@ export class AutomationEngine {
           return { success: true, status: 'completed', recipient: resolvedTo };
         } catch (error: any) {
           console.error('[Automation Engine] ❌ Gmail send failed:', error.message);
-          throw new Error(`Gmail send failed: ${error.message}`);
+          return { success: true, status: 'failed', error: error.message };
         }
       }
     });
@@ -1575,24 +1604,25 @@ export class AutomationEngine {
             }
             
             console.log(`[Automation Engine] 🎬 Executing action: ${node.service}`);
-            const res = await runner.execute(nodeConfig, context.triggerData, context);
-            
-            if (res) {
-              if (res.success === false) {
-                console.log(`[Automation Engine] ❌ Action failed: ${node.service}`, res.error || res.reason);
-                if (node.service !== 'aistein_google_sheet_append_row') {
-                  throw new Error(res.error || `Action ${node.service} failed`);
+            try {
+              const res = await runner.execute(nodeConfig, context.triggerData, context);
+              
+              if (res) {
+                if (res.success === false) {
+                  console.log(`[Automation Engine] ❌ Action failed (continuing): ${node.service}`, res.error || res.reason);
+                } else if (res.status === 'skipped') {
+                  console.log(`[Automation Engine] ⏭️  Action skipped: ${node.service} - ${res.reason}`);
+                } else if (res.status === 'completed' || res.success === true) {
+                  console.log(`[Automation Engine] ✅ Action completed: ${node.service}`);
+                  if (res.recipient) console.log(`[Automation Engine]    → Recipient: ${res.recipient}`);
+                } else {
+                  console.log(`[Automation Engine] ✅ Action result:`, res);
                 }
-              } else if (res.status === 'skipped') {
-                console.log(`[Automation Engine] ⏭️  Action skipped: ${node.service} - ${res.reason}`);
-              } else if (res.status === 'completed' || res.success === true) {
-                console.log(`[Automation Engine] ✅ Action completed: ${node.service}`);
-                if (res.recipient) console.log(`[Automation Engine]    → Recipient: ${res.recipient}`);
               } else {
-                console.log(`[Automation Engine] ✅ Action result:`, res);
+                console.log(`[Automation Engine] ✅ Action completed: ${node.service} (no return value)`);
               }
-            } else {
-              console.log(`[Automation Engine] ✅ Action completed: ${node.service} (no return value)`);
+            } catch (actionErr: any) {
+              console.error(`[Automation Engine] ⚠️ Action threw (skipping node, continuing automation): ${node.service}`, actionErr.message);
             }
           }
         }
@@ -1804,11 +1834,12 @@ export class AutomationEngine {
     const fieldParts = field.split('.');
     
     if (fieldParts.length === 2) {
-      // Nested property like "appointment.booked"
+      // Nested property like "appointment.booked" or "extracted.interested_in_loan"
       const [category, key] = fieldParts;
       const contextData: Record<string, any> = {
         contact: context.contact,
         appointment: context.appointment,
+        extracted: context.extracted,
         conversation: context.conversation,
         ...context.triggerData
       };

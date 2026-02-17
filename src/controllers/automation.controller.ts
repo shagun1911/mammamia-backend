@@ -1,6 +1,7 @@
 import { Response, NextFunction } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { AutomationService } from '../services/automation.service';
+import { agentService } from '../services/agent.service';
 import { successResponse, paginatedResponse } from '../utils/response.util';
 
 export class AutomationController {
@@ -372,11 +373,12 @@ export class AutomationController {
   /**
    * Extract structured data from conversation using LLM
    * POST /api/v1/automation/extract-data
-   * Body: { conversation_id: string, extraction_type: 'appointment' | 'lead' }
+   * Body: { conversation_id: string, extraction_type?: string, extraction_prompt?: string, json_example?: object }
+   * When extraction_prompt + json_example are provided, returns extracted_data matching json_example; otherwise uses extraction_type (appointment/lead).
    */
   extractData = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const { conversation_id, extraction_type = 'appointment' } = req.body;
+      const { conversation_id, extraction_type = 'appointment', extraction_prompt, json_example } = req.body;
       const organizationId = req.user?.organizationId || req.user?._id;
 
       if (!conversation_id) {
@@ -390,13 +392,60 @@ export class AutomationController {
         throw new Error('Organization ID not found');
       }
 
+      const options =
+        extraction_prompt && json_example && typeof json_example === 'object'
+          ? { extraction_prompt, json_example }
+          : undefined;
+
       const result = await this.automationService.extractConversationData(
         conversation_id,
         extraction_type,
-        organizationId.toString()
+        organizationId.toString(),
+        options
       );
 
       res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /**
+   * Suggest extraction_prompt and json_example from an agent's system prompt.
+   * POST /api/v1/automation/suggest-extraction-schema
+   * Body: { agent_id?: string, system_prompt?: string } — agent_id is MongoDB _id; if provided, fetches agent and uses its system_prompt.
+   */
+  suggestExtractionSchema = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { agent_id, system_prompt: bodyPrompt } = req.body;
+      const organizationId = req.user?.organizationId || req.user?._id;
+      const userId = req.user?.id || req.user?._id;
+
+      if (!organizationId) {
+        throw new Error('Organization ID not found');
+      }
+
+      let systemPrompt: string;
+      if (bodyPrompt && typeof bodyPrompt === 'string' && bodyPrompt.trim()) {
+        systemPrompt = bodyPrompt.trim();
+      } else if (agent_id && typeof agent_id === 'string') {
+        const agent = await agentService.getAgentById(agent_id, userId?.toString() || '');
+        if (!agent || !(agent as any).system_prompt) {
+          return res.status(404).json({
+            success: false,
+            error: 'Agent not found or has no system prompt'
+          });
+        }
+        systemPrompt = (agent as any).system_prompt;
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: 'Provide agent_id or system_prompt in body'
+        });
+      }
+
+      const result = await this.automationService.suggestExtractionSchema(systemPrompt, organizationId.toString());
+      res.json(successResponse(result));
     } catch (error) {
       next(error);
     }

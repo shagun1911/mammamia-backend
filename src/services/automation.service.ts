@@ -219,9 +219,35 @@ export class AutomationService {
     return await this.engine.executeAutomation(automationId, triggerData, context);
   }
 
-  async extractConversationData(conversationId: string, extractionType: string, organizationId: string) {
+  /** Result shape for extractConversationData (legacy and dynamic). */
+  static readonly ExtractResultShape: {
+    success: boolean;
+    error?: string;
+    appointment_booked?: boolean;
+    date?: string;
+    time?: string;
+    confidence?: number;
+    conversation_id?: string;
+    extraction_type?: string;
+    extracted_data?: Record<string, any>;
+    transcript_turns?: number;
+    duration_seconds?: number;
+    method?: string;
+  } = {} as any;
+
+  /**
+   * Extract structured data from a conversation using LLM.
+   * Supports two modes:
+   * 1. Dynamic: pass options.extraction_prompt + options.json_example → returns extracted_data matching json_example shape.
+   * 2. Legacy: pass only extractionType ('appointment' | 'lead') → returns appointment_booked, date, time, etc.
+   */
+  async extractConversationData(
+    conversationId: string,
+    extractionType: string,
+    organizationId: string,
+    options?: { extraction_prompt?: string; json_example?: Record<string, any> }
+  ) {
     try {
-      // Get Conversation model (use existing if already compiled, otherwise import)
       let Conversation: any;
       try {
         Conversation = mongoose.model('Conversation');
@@ -229,7 +255,6 @@ export class AutomationService {
         Conversation = (await import('../models/Conversation')).default;
       }
 
-      // Find conversation
       const conversation = await Conversation.findById(conversationId).lean();
 
       if (!conversation) {
@@ -240,7 +265,6 @@ export class AutomationService {
         };
       }
 
-      // Verify organization ownership
       if (conversation.organizationId?.toString() !== organizationId) {
         return {
           success: false,
@@ -249,38 +273,45 @@ export class AutomationService {
         };
       }
 
-      // Get transcript
+      let transcriptText = '';
       const transcript = conversation.transcript;
 
-      if (!transcript) {
-        return {
-          success: false,
-          error: 'No transcript available',
-          appointment_booked: false
-        };
+      if (transcript) {
+        if (typeof transcript === 'string') {
+          transcriptText = transcript;
+        } else if (Array.isArray(transcript)) {
+          transcriptText = transcript.map((msg: any) => {
+            if (typeof msg === 'string') return msg;
+            if (msg.text) return msg.text;
+            if (msg.message) return msg.message;
+            if (msg.content) return msg.content;
+            return JSON.stringify(msg);
+          }).join('\n');
+        } else if (transcript.messages && Array.isArray(transcript.messages)) {
+          transcriptText = transcript.messages.map((msg: any) => {
+            if (typeof msg === 'string') return msg;
+            if (msg.text) return msg.text;
+            if (msg.message) return msg.message;
+            if (msg.content) return msg.content;
+            return JSON.stringify(msg);
+          }).join('\n');
+        } else {
+          transcriptText = JSON.stringify(transcript);
+        }
       }
 
-      // Extract text from transcript
-      let transcriptText = '';
-
-      if (typeof transcript === 'string') {
-        transcriptText = transcript;
-      } else if (Array.isArray(transcript)) {
-        transcriptText = transcript.map((msg: any) => {
-          if (typeof msg === 'string') return msg;
-          if (msg.text) return msg.text;
-          if (msg.message) return msg.message;
-          return JSON.stringify(msg);
-        }).join('\n');
-      } else if (transcript.messages && Array.isArray(transcript.messages)) {
-        transcriptText = transcript.messages.map((msg: any) => {
-          if (typeof msg === 'string') return msg;
-          if (msg.text) return msg.text;
-          if (msg.message) return msg.message;
-          return JSON.stringify(msg);
-        }).join('\n');
-      } else {
-        transcriptText = JSON.stringify(transcript);
+      // Fallback: build transcript from Message collection (batch sync saves messages separately)
+      if (!transcriptText || transcriptText.trim().length === 0) {
+        const Message = (await import('../models/Message')).default;
+        const messages = await Message.find({ conversationId })
+          .sort({ timestamp: 1 })
+          .lean();
+        if (messages && messages.length > 0) {
+          transcriptText = (messages as any[]).map((m: any) => {
+            const who = m.sender === 'ai' ? 'Agent' : 'Customer';
+            return `${who}: ${(m.text || m.message || '').trim()}`;
+          }).filter((s: string) => s.length > 7).join('\n');
+        }
       }
 
       if (!transcriptText || transcriptText.trim().length === 0) {
@@ -291,7 +322,6 @@ export class AutomationService {
         };
       }
 
-      // Use LLM to extract appointment information
       const apiKeysService = (await import('../services/apiKeys.service')).apiKeysService;
       const apiKeyData = await apiKeysService.getApiKeys(organizationId);
       const apiKey = apiKeyData?.apiKey;
@@ -304,12 +334,31 @@ export class AutomationService {
         };
       }
 
-      // Call OpenAI to extract appointment data
       const OpenAI = require('openai');
       const openai = new OpenAI({ apiKey });
 
-      const systemPrompt = extractionType === 'appointment'
-        ? `You are an AI assistant that extracts appointment information from conversation transcripts.
+      const useDynamicExtraction = options?.extraction_prompt && options?.json_example && typeof options.json_example === 'object';
+
+      let systemPrompt: string;
+      let responseShape: string;
+
+      if (useDynamicExtraction) {
+        const exampleJson = JSON.stringify(options.json_example, null, 2);
+        systemPrompt = `You are an AI assistant that extracts structured information from conversation transcripts.
+
+The user wants you to extract the following. Follow this instruction exactly:
+
+${options.extraction_prompt}
+
+You must respond with a single JSON object that has exactly the same keys as this example. Use the types indicated (string, number, boolean). Use null for missing values. Current year for dates: 2026.
+
+Example shape (match these keys and types):
+${exampleJson}
+
+Respond ONLY with valid JSON matching the above keys. No extra keys, no explanation.`;
+      } else {
+        systemPrompt = extractionType === 'appointment'
+          ? `You are an AI assistant that extracts appointment information from conversation transcripts.
 
 Analyze the conversation and determine if the customer REQUESTED or PROVIDED appointment details (even if the system failed to confirm it).
 
@@ -338,7 +387,8 @@ Respond ONLY with valid JSON:
   "time": "HH:MM" or null,
   "confidence": 0.0-1.0
 }`
-        : `Extract lead information from the conversation.`;
+          : `Extract lead information from the conversation.`;
+      }
 
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
@@ -351,16 +401,58 @@ Respond ONLY with valid JSON:
       });
 
       const responseText = completion.choices[0]?.message?.content || '{}';
-      const extractedData = JSON.parse(responseText);
+      let parsed: Record<string, any>;
+      try {
+        parsed = JSON.parse(responseText);
+      } catch (e) {
+        return {
+          success: false,
+          error: 'Invalid JSON from LLM',
+          appointment_booked: false
+        };
+      }
 
-      console.log('[Automation Service] Extracted data from conversation:', {
-        conversationId,
-        extractedData
-      });
+      if (useDynamicExtraction && options.json_example) {
+        const extracted_data: Record<string, any> = {};
+        for (const key of Object.keys(options.json_example)) {
+          let val = parsed[key];
+          if (val === undefined) val = null;
+          const exampleVal = options.json_example[key];
+          if (typeof exampleVal === 'boolean' && typeof val !== 'boolean') {
+            val = val === true || val === 'true' || val === 1;
+          }
+          if (typeof exampleVal === 'number' && typeof val !== 'number' && val != null) {
+            val = Number(val);
+          }
+          extracted_data[key] = val;
+        }
+        // If we have city and country, remove separate address field (city + country is our address)
+        const hasCity = extracted_data.city != null && String(extracted_data.city).trim() !== '';
+        const hasCountry = extracted_data.country != null && String(extracted_data.country).trim() !== '';
+        if (hasCity && hasCountry && 'address' in extracted_data) {
+          delete extracted_data.address;
+        }
+        const transcriptTurns = Array.isArray(transcript) ? transcript.length : (transcript.messages?.length ?? 0);
+        const durationSeconds = conversation.duration_seconds ?? conversation.duration ?? 0;
+
+        console.log('[Automation Service] Dynamic extraction result:', { conversationId, extracted_data });
+
+        return {
+          success: true,
+          conversation_id: conversationId,
+          extraction_type: extractionType || 'custom',
+          extracted_data,
+          transcript_turns: transcriptTurns,
+          duration_seconds: durationSeconds,
+          method: 'llm'
+        };
+      }
+
+      console.log('[Automation Service] Extracted data from conversation:', { conversationId, extractedData: parsed });
 
       return {
         success: true,
-        ...extractedData
+        ...parsed
       };
 
     } catch (error: any) {
@@ -371,6 +463,57 @@ Respond ONLY with valid JSON:
         appointment_booked: false
       };
     }
+  }
+
+  /**
+   * Suggest extraction_prompt and json_example from an agent's system prompt.
+   * Used when user selects "From agent" in the Extract node so they don't re-enter prompt/JSON.
+   */
+  async suggestExtractionSchema(systemPrompt: string, organizationId: string): Promise<{ extraction_prompt: string; json_example: Record<string, any> }> {
+    const apiKeysService = (await import('../services/apiKeys.service')).apiKeysService;
+    const apiKeyData = await apiKeysService.getApiKeys(organizationId);
+    const apiKey = apiKeyData?.apiKey;
+    if (!apiKey) {
+      throw new Error('OpenAI API key not configured');
+    }
+    const OpenAI = require('openai');
+    const openai = new OpenAI({ apiKey });
+
+    const userPrompt = `Below is the system prompt for a voice agent. The agent uses this prompt to know what to ask the user during a call (e.g. loan interest, address, amount, date, etc.).
+
+Generate two things in valid JSON only (no markdown, no explanation):
+1. "extraction_prompt": A single paragraph instruction for an LLM that will later read conversation transcripts. It should say: extract from the transcript the same data points that this agent was instructed to collect (e.g. whether interested in loan, address, loan amount, preferred date, customer name, city, country, etc.). Be specific and list the kinds of fields.
+2. "json_example": One JSON object whose keys are snake_case and match the data points (e.g. interested_in_loan, address, loan_amount_eur, preferred_date, customer_name, city, country). Use example types: boolean for yes/no, number for amounts, string for names/addresses/dates (use "" for strings). Use null for optional fields. Include every distinct data point the agent is supposed to collect.
+
+Agent system prompt:
+---
+${systemPrompt}
+---
+
+Respond with ONLY a single JSON object: { "extraction_prompt": "...", "json_example": { ... } }`;
+
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'user', content: userPrompt }
+      ],
+      temperature: 0.2,
+      response_format: { type: 'json_object' }
+    });
+
+    const raw = completion.choices[0]?.message?.content || '{}';
+    let parsed: { extraction_prompt?: string; json_example?: Record<string, any> };
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error('Failed to parse suggestion from AI');
+    }
+    const extraction_prompt = typeof parsed.extraction_prompt === 'string' ? parsed.extraction_prompt.trim() : 'Extract from the conversation the information that the agent was instructed to collect.';
+    const json_example = typeof parsed.json_example === 'object' && parsed.json_example !== null && !Array.isArray(parsed.json_example)
+      ? parsed.json_example
+      : { interested_in_loan: true, customer_name: '', address: '', loan_amount_eur: null, preferred_date: '' };
+
+    return { extraction_prompt, json_example };
   }
 
   async triggerByEvent(event: string, eventData: any, context?: any) {

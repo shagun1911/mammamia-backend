@@ -21,6 +21,7 @@ router.post('/:automationId/trigger', controller.trigger);
 router.post('/trigger-event', controller.triggerByEvent);
 router.post('/run-batch', controller.runBatch);
 router.post('/extract-data', controller.extractData);
+router.post('/suggest-extraction-schema', controller.suggestExtractionSchema);
 
 export default router;
 

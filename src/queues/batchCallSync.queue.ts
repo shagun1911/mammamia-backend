@@ -165,14 +165,18 @@ const setupQueueProcessors = () => {
           // Continue with sync even if transcript check fails
         }
         
-        console.log(`[Batch Call Sync Queue] 🚀 Enqueueing SYNC job for batch: ${batch_call_id}`);
+        // Short delay so call is fully ended and transcript is committed (poll already verified transcripts are ready)
+        const syncDelayMs = 5000; // 5 seconds – trigger automation soon after transcript is ready
+        const syncRunAt = new Date(Date.now() + syncDelayMs).toISOString();
+        console.log(`[Batch Call Sync Queue] 🚀 Enqueueing SYNC job for batch: ${batch_call_id} (delay ${syncDelayMs / 1000}s)`);
+        console.log(`[Batch Call Sync Queue] ⏰ Sync scheduled to run at: ${syncRunAt} – look for "SYNC JOB START" in logs after that time`);
 
-        // Enqueue sync job (will create conversations and trigger automations)
         if (batchCallSyncQueue) {
           await batchCallSyncQueue.add('sync', {
             batch_call_id,
             organizationId
           }, {
+            delay: syncDelayMs,
             attempts: 3,
             backoff: {
               type: 'exponential',
@@ -181,15 +185,31 @@ const setupQueueProcessors = () => {
             timeout: 3600000 // 60 minutes timeout for large batches
           });
 
-          console.log(`[Batch Call Sync Queue] ✅ SYNC job enqueued for batch: ${batch_call_id}`);
+          console.log(`[Batch Call Sync Queue] ✅ SYNC job enqueued for batch: ${batch_call_id} (will run after call ends)`);
+
+          // Fallback: run sync in-process after 10s if Bull delayed job doesn't run (e.g. Redis/worker issue)
+          const fallbackDelayMs = 10000;
+          setTimeout(async () => {
+            try {
+              await batchCallingService.syncBatchCallConversations(batch_call_id, organizationId);
+              console.log(`[Batch Call Sync Queue] ✅ Fallback sync completed for batch: ${batch_call_id} (automations triggered if any)`);
+            } catch (fallbackErr: any) {
+              console.error(`[Batch Call Sync Queue] ⚠️ Fallback sync failed for batch: ${batch_call_id}:`, fallbackErr.message);
+            }
+          }, fallbackDelayMs);
+          console.log(`[Batch Call Sync Queue] 📌 Fallback sync also scheduled in ${fallbackDelayMs / 1000}s if queue job does not run`);
         }
 
         // DO NOT re-enqueue poll job - we're done!
         console.log(`[Batch Call Sync Queue] 🏁 POLL JOB COMPLETE - Batch: ${batch_call_id} (stopped polling)`);
         return { completed: true, batch_call_id, finalStatus: status.status };
 
+      } else if (status.status === 'cancelled' || status.status === 'failed') {
+        // Terminal state: do not re-enqueue poll job
+        console.log(`[Batch Call Sync Queue] 🛑 Batch ended (status: ${status.status}), stopping poll for batch: ${batch_call_id}`);
+        return { completed: false, batch_call_id, finalStatus: status.status, reason: 'terminal_status' };
       } else {
-        // Not completed yet - re-enqueue poll job with 2s delay
+        // Not completed yet - re-enqueue poll job with 10s delay
         console.log(`[Batch Call Sync Queue] ⏳ Batch not completed yet (status: ${status.status})`);
         
         // Safety: Stop polling after 24 hours (8640 polls at 10s = 24h)
