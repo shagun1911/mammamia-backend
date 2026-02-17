@@ -413,13 +413,12 @@ export class ConversationService {
           });
         }
       } else if (channel === 'social' && metadata.platform === 'instagram') {
-        // Instagram uses Meta Graph API, not Dialog360
+        // Instagram uses Meta Graph API (same as webhook AI reply): POST /me/messages with Page token
         const instagramId = customer.metadata?.instagramId;
         if (!instagramId) {
           throw new AppError(400, 'INVALID_CUSTOMER', 'Instagram ID not found for customer');
         }
 
-        // Find integration to get page access token
         const SocialIntegration = (await import('../models/SocialIntegration')).default;
         const instagramAccountId = metadata.instagramAccountId;
 
@@ -438,20 +437,19 @@ export class ConversationService {
           throw new AppError(404, 'INTEGRATION_NOT_FOUND', 'Instagram integration not found');
         }
 
-        // Get page access token (Instagram uses the connected Facebook Page's access token)
         let pageAccessToken = integration.credentials?.pageAccessToken;
-        if (!pageAccessToken) {
-          pageAccessToken = (integration as any).getDecryptedApiKey?.();
+        if (!pageAccessToken && typeof (integration as any).getDecryptedApiKey === 'function') {
+          pageAccessToken = (integration as any).getDecryptedApiKey();
         }
 
         if (!pageAccessToken) {
           throw new AppError(400, 'INVALID_TOKEN', 'Page access token not found');
         }
 
-        // Use Meta Graph API to send message to Instagram
+        // Instagram Messaging API: POST /me/messages with Page Access Token (same as webhook send)
         const axios = (await import('axios')).default;
         await axios.post(
-          `https://graph.facebook.com/v18.0/${instagramAccountId}/messages`,
+          'https://graph.facebook.com/v18.0/me/messages',
           {
             recipient: { id: instagramId },
             message: { text: messageText }
