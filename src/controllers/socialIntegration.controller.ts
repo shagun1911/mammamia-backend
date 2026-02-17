@@ -1229,6 +1229,7 @@ export class SocialIntegrationController {
           connectionType: 'manual',
           chatbotEnabled: true
         },
+        webhookVerified: false, // Will be true after user configures webhook in Meta Dashboard
         skipVerification: true // Skip 360dialog verification, use Meta API directly
       };
 
@@ -1347,6 +1348,7 @@ export class SocialIntegrationController {
           connectionType: 'manual',
           chatbotEnabled: true
         },
+        webhookVerified: false, // Will be updated after webhook subscription attempt
         skipVerification: true // Skip 360dialog verification, use Meta API directly
       };
 
@@ -1375,6 +1377,10 @@ export class SocialIntegrationController {
         
         webhookSubscribed = true;
         console.log('[Facebook Manual Connect] ✅ Webhook automatically subscribed');
+        
+        // Update webhookVerified status
+        integration.webhookVerified = true;
+        await integration.save();
       } catch (webhookError: any) {
         console.warn('[Facebook Manual Connect] ⚠️ Failed to auto-subscribe webhook:', webhookError.response?.data || webhookError.message);
       }
