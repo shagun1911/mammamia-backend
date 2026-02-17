@@ -1237,6 +1237,36 @@ export class SocialIntegrationController {
 
       console.log('[Instagram Manual Connect] ✅ Integration saved:', integration._id);
 
+      // Attempt to subscribe webhook programmatically (similar to Facebook)
+      let webhookSubscribed = false;
+      try {
+        const axios = (await import('axios')).default;
+        
+        // Subscribe Instagram account to webhooks via the connected Facebook Page
+        // Instagram webhooks are subscribed via the Page, not directly
+        const subscribeUrl = `https://graph.facebook.com/v19.0/${facebookPageId}/subscribed_apps`;
+        await axios.post(
+          subscribeUrl,
+          {
+            subscribed_fields: ['messages', 'messaging_postbacks', 'message_reactions']
+          },
+          {
+            params: {
+              access_token: accessToken
+            }
+          }
+        );
+        
+        webhookSubscribed = true;
+        console.log('[Instagram Manual Connect] ✅ Webhook automatically subscribed');
+        
+        // Update webhookVerified status
+        integration.webhookVerified = true;
+        await integration.save();
+      } catch (webhookError: any) {
+        console.warn('[Instagram Manual Connect] ⚠️ Failed to auto-subscribe webhook:', webhookError.response?.data || webhookError.message);
+      }
+
       // Get webhook configuration
       const backendUrl = process.env.BACKEND_URL;
       const webhookUrl = `${backendUrl}/api/v1/webhooks/instagram`;
@@ -1252,10 +1282,12 @@ export class SocialIntegrationController {
           webhookConfiguration: {
             url: webhookUrl,
             verifyToken: verifyToken,
-            subscribed: false
+            subscribed: webhookSubscribed
           }
         },
-        'Instagram connected successfully. Please configure the webhook in your Meta App Dashboard.'
+        webhookSubscribed 
+          ? 'Instagram connected successfully. Webhook automatically subscribed!'
+          : 'Instagram connected successfully. Please configure the webhook in your Meta App Dashboard.'
       ));
     } catch (error) {
       next(error);
