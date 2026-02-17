@@ -130,11 +130,11 @@ const setupQueueProcessors = () => {
           if (!hasTranscripts) {
             console.log(`[Batch Call Sync Queue] ⏳ Transcripts not ready yet, will check again in 5 seconds...`);
             
-            // Re-enqueue poll (not sync) with 5s delay to check for transcripts
-            // Max 60 attempts = 5 minutes of transcript waiting
+            // Re-enqueue poll (not sync) with 10s delay to check for transcripts
+            // Max 30 attempts = 5 minutes of transcript waiting
             const transcriptPollCount = (job.data.transcriptPollCount || 0) + 1;
             
-            if (transcriptPollCount < 60) {
+            if (transcriptPollCount < 30) {
               if (batchCallSyncQueue) {
                 await batchCallSyncQueue.add('poll', {
                   batch_call_id,
@@ -142,7 +142,7 @@ const setupQueueProcessors = () => {
                   pollCount: pollCount + 1,
                   transcriptPollCount: transcriptPollCount
                 }, {
-                  delay: 5000, // Check for transcripts every 5 seconds
+                  delay: 10000, // Check for transcripts every 10 seconds
                   attempts: 3,
                   backoff: {
                     type: 'fixed',
@@ -150,7 +150,7 @@ const setupQueueProcessors = () => {
                   }
                 });
                 
-                console.log(`[Batch Call Sync Queue] 🔄 Re-enqueued POLL job to wait for transcripts (check #${transcriptPollCount})`);
+                console.log(`[Batch Call Sync Queue] 🔄 Re-enqueued POLL job to wait for transcripts (check #${transcriptPollCount}, next check in 10s)`);
               }
               return { completed: true, waitingForTranscripts: true, transcriptPollCount };
             } else {
@@ -192,8 +192,8 @@ const setupQueueProcessors = () => {
         // Not completed yet - re-enqueue poll job with 2s delay
         console.log(`[Batch Call Sync Queue] ⏳ Batch not completed yet (status: ${status.status})`);
         
-        // Safety: Stop polling after 24 hours (43200 polls at 2s = 24h)
-        const maxPolls = 43200;
+        // Safety: Stop polling after 24 hours (8640 polls at 10s = 24h)
+        const maxPolls = 8640;
         if (pollCount >= maxPolls) {
           console.warn(`[Batch Call Sync Queue] ⚠️  Max polls reached (${maxPolls}), stopping poll for batch: ${batch_call_id}`);
           return { completed: false, batch_call_id, reason: 'max_polls_reached' };
@@ -205,7 +205,7 @@ const setupQueueProcessors = () => {
             organizationId,
             pollCount: pollCount + 1
           }, {
-            delay: 2000, // Re-poll every 2 seconds
+            delay: 10000, // Re-poll every 10 seconds
             attempts: 3,
             backoff: {
               type: 'fixed',
@@ -213,7 +213,7 @@ const setupQueueProcessors = () => {
             }
           });
 
-          console.log(`[Batch Call Sync Queue] 🔄 Re-enqueued POLL job for batch: ${batch_call_id} (next poll in 2s)`);
+          console.log(`[Batch Call Sync Queue] 🔄 Re-enqueued POLL job for batch: ${batch_call_id} (next poll in 10s)`);
         }
 
         return { completed: false, batch_call_id, currentStatus: status.status, pollCount: pollCount + 1 };
