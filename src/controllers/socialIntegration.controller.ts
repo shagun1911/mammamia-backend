@@ -152,8 +152,7 @@ export class SocialIntegrationController {
         phoneNumberId,
         wabaId,
         instagramAccountId,
-        facebookPageId,
-        pageAccessToken // NEW: For manual Instagram/Facebook integration
+        facebookPageId
       } = req.body;
 
       if (!['whatsapp', 'instagram', 'facebook', 'gmail'].includes(platform)) {
@@ -179,19 +178,6 @@ export class SocialIntegrationController {
         throw new AppError(400, 'MISSING_PAGE_ID', 'Facebook Page ID is required');
       }
 
-      // CRITICAL FIX: For manual Instagram/Facebook integration, build credentials with pageAccessToken
-      let credentials: any = undefined;
-      if ((platform === 'instagram' || platform === 'facebook') && pageAccessToken) {
-        console.log(`[${platform.toUpperCase()} Manual Integration] Building credentials with pageAccessToken`);
-        credentials = {
-          apiKey, // The access token (for reference)
-          clientId,
-          instagramAccountId,
-          facebookPageId,
-          pageAccessToken // CRITICAL: This is needed for sending messages
-        };
-      }
-
       const integration = await socialIntegrationService.upsertIntegration({
         userId, // REQUIRED: User who owns this integration
         organizationId,
@@ -201,8 +187,7 @@ export class SocialIntegrationController {
         phoneNumberId,
         wabaId,
         instagramAccountId,
-        facebookPageId,
-        credentials // Pass the complete credentials object
+        facebookPageId
       });
 
       // Mask API key in response

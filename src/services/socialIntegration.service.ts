@@ -77,22 +77,8 @@ export class SocialIntegrationService {
           phoneNumberId: data.phoneNumberId,
           wabaId: data.wabaId,
           instagramAccountId: data.instagramAccountId,
-          facebookPageId: data.facebookPageId,
-          // CRITICAL FIX: For Instagram/Facebook manual integration, apiKey IS the pageAccessToken
-          // Use it for both apiKey and pageAccessToken so messages can be sent
-          ...(data.platform === 'instagram' || data.platform === 'facebook' 
-            ? { pageAccessToken: data.apiKey } 
-            : {})
+          facebookPageId: data.facebookPageId
         };
-        
-        console.log('[Social Integration Service] Built credentials from individual fields:', {
-          platform: data.platform,
-          hasApiKey: !!credentials.apiKey,
-          hasClientId: !!credentials.clientId,
-          hasPageAccessToken: !!credentials.pageAccessToken,
-          hasFacebookPageId: !!credentials.facebookPageId,
-          hasInstagramAccountId: !!credentials.instagramAccountId
-        });
       }
 
       const updateData: any = {
