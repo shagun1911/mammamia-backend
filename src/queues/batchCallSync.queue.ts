@@ -113,6 +113,58 @@ const setupQueueProcessors = () => {
       // Step 3: Check if completed
       if (status.status === 'completed') {
         console.log(`[Batch Call Sync Queue] ✅ BATCH COMPLETED - Batch: ${batch_call_id}`);
+        
+        // CRITICAL: Check if transcripts are ready before triggering sync
+        // Python API marks batch as "completed" before transcripts are processed
+        console.log(`[Batch Call Sync Queue] 🔍 Checking if transcripts are ready...`);
+        
+        try {
+          const results = await batchCallingService.getBatchJobResults(batch_call_id, true);
+          
+          // Check if at least some results have transcripts
+          const hasTranscripts = results.results && 
+                                Array.isArray(results.results) && 
+                                results.results.length > 0 &&
+                                results.results.some((r: any) => r.transcript && r.transcript.length > 0);
+          
+          if (!hasTranscripts) {
+            console.log(`[Batch Call Sync Queue] ⏳ Transcripts not ready yet, will check again in 5 seconds...`);
+            
+            // Re-enqueue poll (not sync) with 5s delay to check for transcripts
+            // Max 60 attempts = 5 minutes of transcript waiting
+            const transcriptPollCount = (job.data.transcriptPollCount || 0) + 1;
+            
+            if (transcriptPollCount < 60) {
+              if (batchCallSyncQueue) {
+                await batchCallSyncQueue.add('poll', {
+                  batch_call_id,
+                  organizationId,
+                  pollCount: pollCount + 1,
+                  transcriptPollCount: transcriptPollCount
+                }, {
+                  delay: 5000, // Check for transcripts every 5 seconds
+                  attempts: 3,
+                  backoff: {
+                    type: 'fixed',
+                    delay: 5000
+                  }
+                });
+                
+                console.log(`[Batch Call Sync Queue] 🔄 Re-enqueued POLL job to wait for transcripts (check #${transcriptPollCount})`);
+              }
+              return { completed: true, waitingForTranscripts: true, transcriptPollCount };
+            } else {
+              console.warn(`[Batch Call Sync Queue] ⚠️  Max transcript checks reached (${transcriptPollCount}), proceeding with sync anyway`);
+              // Continue to enqueue sync even without transcripts
+            }
+          } else {
+            console.log(`[Batch Call Sync Queue] ✅ Transcripts are ready! Proceeding with sync...`);
+          }
+        } catch (transcriptCheckError: any) {
+          console.warn(`[Batch Call Sync Queue] ⚠️  Could not check transcripts, proceeding with sync:`, transcriptCheckError.message);
+          // Continue with sync even if transcript check fails
+        }
+        
         console.log(`[Batch Call Sync Queue] 🚀 Enqueueing SYNC job for batch: ${batch_call_id}`);
 
         // Enqueue sync job (will create conversations and trigger automations)
@@ -192,6 +244,7 @@ const setupQueueProcessors = () => {
   // SYNC JOB PROCESSOR (Heavy, Low Concurrency)
   // ============================================================
   // Syncs conversations and triggers batch_call_completed automations
+  // NOTE: Poll job already verified transcripts exist before enqueueing this
   batchCallSyncQueue.process('sync', 2, async (job: Bull.Job) => {
     const { batch_call_id, organizationId } = job.data;
 
