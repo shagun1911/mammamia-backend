@@ -285,6 +285,30 @@ export class BatchCallingController {
           });
 
           console.log('[Batch Calling Controller] ✅ Batch call stored in database with ID:', result.id);
+          
+          // ============================================================
+          // ENQUEUE POLL JOB FOR AUTOMATIC BATCH COMPLETION DETECTION
+          // ============================================================
+          // This starts the background polling loop that will:
+          // 1. Poll Python API every 2s to check batch status
+          // 2. When completed, enqueue sync job to create conversations
+          // 3. Sync job triggers batch_call_completed automations
+          // No user action needed - automations fire automatically!
+          try {
+            const { enqueueBatchPoll } = await import('../queues/batchCallSync.queue');
+            const enqueued = await enqueueBatchPoll(result.id, organizationId.toString());
+            
+            if (enqueued) {
+              console.log('[Batch Calling Controller] 🚀 Background polling started for batch:', result.id);
+              console.log('[Batch Calling Controller] ⚡ Automations will trigger automatically when batch completes');
+            } else {
+              console.log('[Batch Calling Controller] ℹ️  Queue not available - batch will rely on BatchCallMonitor fallback');
+            }
+          } catch (queueError: any) {
+            // Don't fail the request if queue enqueue fails
+            console.warn('[Batch Calling Controller] ⚠️  Failed to enqueue batch poll:', queueError.message);
+            console.warn('[Batch Calling Controller] ℹ️  Batch will rely on BatchCallMonitor fallback or user-triggered sync');
+          }
         } else {
           console.warn('[Batch Calling Controller] ⚠️ Could not store batch call - userId or organizationId missing');
         }
