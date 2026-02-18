@@ -488,6 +488,8 @@ export class MetaWebhookController {
   }
   /**
    * Verify webhook (GET request) - Generic handler for all Meta platforms
+   * Meta sends GET with hub.mode=subscribe, hub.verify_token=..., hub.challenge=...
+   * We must return the challenge string exactly (Meta may send challenge as number).
    */
   async verify(req: Request, res: Response, platform: 'whatsapp' | 'messenger' | 'instagram') {
     try {
@@ -495,7 +497,7 @@ export class MetaWebhookController {
       const token = req.query['hub.verify_token'];
       const challenge = req.query['hub.challenge'];
 
-      // Get platform-specific verify token from environment
+      // Get platform-specific verify token from environment (single source of truth)
       let verifyToken: string;
       switch (platform) {
         case 'whatsapp':
@@ -511,18 +513,29 @@ export class MetaWebhookController {
           verifyToken = '';
       }
 
-      if (mode === 'subscribe' && token === verifyToken) {
-        console.log(`[${platform.toUpperCase()} Webhook] Verification successful`);
-        res.status(200).send(challenge);
-      } else {
-        console.log(`[${platform.toUpperCase()} Webhook] Verification failed`, { 
-          mode, 
-          token, 
-          expected: verifyToken,
-          platform 
+      if (mode !== 'subscribe') {
+        console.log(`[${platform.toUpperCase()} Webhook] Verification failed: hub.mode is not 'subscribe'`, { mode });
+        res.sendStatus(403);
+        return;
+      }
+      if (token !== verifyToken) {
+        console.log(`[${platform.toUpperCase()} Webhook] Verification failed: verify_token mismatch`, {
+          receivedLength: typeof token === 'string' ? token.length : 0,
+          expectedLength: verifyToken.length,
+          platform
         });
         res.sendStatus(403);
+        return;
       }
+      if (challenge === undefined || challenge === null || challenge === '') {
+        console.warn(`[${platform.toUpperCase()} Webhook] Verification failed: missing hub.challenge`);
+        res.status(400).type('text/plain').send('Missing hub.challenge');
+        return;
+      }
+
+      const challengeStr = String(challenge);
+      console.log(`[${platform.toUpperCase()} Webhook] Verification successful`);
+      res.status(200).type('text/plain').send(challengeStr);
     } catch (error) {
       console.error(`[${platform.toUpperCase()} Webhook] Verification error:`, error);
       res.sendStatus(500);
@@ -595,8 +608,9 @@ export class MetaWebhookController {
       if (webhookData.object === 'page') {
         // Python: for entry in request.get('entry', []):
         for (const entry of webhookData.entry || []) {
-          // Python: page_id = entry.get('id')
-          const pageId = entry.id;
+          // Normalize to string so DB lookup matches (Meta may send id as number)
+          const pageId = entry.id != null ? String(entry.id) : '';
+          if (!pageId) continue;
           
           // Check for Facebook Lead Ads (changes field)
           if (entry.changes && entry.changes.length > 0) {
@@ -653,8 +667,9 @@ export class MetaWebhookController {
       if (webhookData.object === 'instagram') {
         // Process entries
         for (const entry of webhookData.entry || []) {
-          // Instagram account ID (recipient)
-          const instagramAccountId = entry.id;
+          // Normalize to string so DB lookup matches (Meta may send id as number)
+          const instagramAccountId = entry.id != null ? String(entry.id) : '';
+          if (!instagramAccountId) continue;
           
           // Process messaging events
           for (const event of entry.messaging || []) {
@@ -1225,20 +1240,36 @@ export class MetaWebhookController {
         return;
       }
 
-      // Find integration using page_id (matching OAuth storage structure)
-      // CRITICAL: MUST filter by userId existence to prevent orphan integrations
-      // OAuth stores: credentials.facebookPageId and credentials.pageAccessToken
-      // Webhook only provides page_id, so we use it as the primary key
-      const integration = await SocialIntegration.findOne({
-        'credentials.facebookPageId': pageId,
+      // Find integration using page_id (normalize to string; DB may have string or legacy number)
+      // If same Page is connected by multiple orgs, pick most recently updated (deterministic)
+      const pageIdStr = String(pageId);
+      let integration = await SocialIntegration.findOne({
+        'credentials.facebookPageId': pageIdStr,
         platform: 'facebook',
         status: 'connected',
-        userId: { $exists: true, $ne: null } // CRITICAL: Only get integrations with userId
-      });
+        userId: { $exists: true, $ne: null }
+      }).sort({ updatedAt: -1 });
+      if (!integration && pageIdStr && !isNaN(Number(pageIdStr))) {
+        integration = await SocialIntegration.findOne({
+          'credentials.facebookPageId': Number(pageIdStr),
+          platform: 'facebook',
+          status: 'connected',
+          userId: { $exists: true, $ne: null }
+        }).sort({ updatedAt: -1 });
+      }
+      const duplicateCount = integration ? await SocialIntegration.countDocuments({
+        'credentials.facebookPageId': pageIdStr,
+        platform: 'facebook',
+        status: 'connected',
+        userId: { $exists: true, $ne: null },
+        _id: { $ne: integration._id }
+      }) : 0;
+      if (duplicateCount > 0) {
+        console.warn(`[Messenger Webhook] Same Page (${pageId}) connected by ${duplicateCount + 1} org(s). Using most recent. Only one org receives replies.`);
+      }
 
       if (!integration) {
-        console.warn(`[Messenger Webhook] No integration found for page_id: ${pageId}`);
-        console.warn(`[Messenger Webhook] Searched for: credentials.facebookPageId === ${pageId}, platform: facebook, status: connected, userId exists`);
+        console.warn(`[Messenger Webhook] No integration found for page_id: ${pageId} (tried string and number)`);
         return;
       }
 
@@ -1257,16 +1288,18 @@ export class MetaWebhookController {
         return;
       }
 
-      // Get Page Access Token directly from credentials (matching OAuth storage exactly)
-      // OAuth stores token in: credentials.pageAccessToken
-      const pageAccessToken = integration.credentials.pageAccessToken;
+      // Get Page Access Token: credentials.pageAccessToken or fallback to decrypted apiKey (manual connect stores both)
+      let pageAccessToken = integration.credentials?.pageAccessToken;
+      if (!pageAccessToken && (integration as any).getDecryptedApiKey) {
+        pageAccessToken = (integration as any).getDecryptedApiKey();
+      }
 
       if (!pageAccessToken) {
         console.error(`[Messenger Webhook] ❌ No Page Access Token found for page_id: ${pageId}`);
         console.error(`[Messenger Webhook] Integration credentials:`, {
-          hasFacebookPageId: !!integration.credentials.facebookPageId,
-          hasPageAccessToken: !!integration.credentials.pageAccessToken,
-          facebookPageId: integration.credentials.facebookPageId
+          hasFacebookPageId: !!integration.credentials?.facebookPageId,
+          hasPageAccessToken: !!integration.credentials?.pageAccessToken,
+          facebookPageId: integration.credentials?.facebookPageId
         });
         return;
       }
@@ -1967,18 +2000,36 @@ export class MetaWebhookController {
         return;
       }
 
-      // Find integration using instagramAccountId (matching OAuth storage structure)
-      // CRITICAL: MUST filter by userId existence to prevent orphan integrations
-      const integration = await SocialIntegration.findOne({
-        'credentials.instagramAccountId': instagramAccountId,
+      // Find integration (normalize to string; DB may have string or legacy number)
+      // If same Instagram account is connected by multiple orgs, pick most recently updated (deterministic)
+      const instagramAccountIdStr = String(instagramAccountId);
+      let integration = await SocialIntegration.findOne({
+        'credentials.instagramAccountId': instagramAccountIdStr,
         platform: 'instagram',
         status: 'connected',
-        userId: { $exists: true, $ne: null } // CRITICAL: Only get integrations with userId
-      });
+        userId: { $exists: true, $ne: null }
+      }).sort({ updatedAt: -1 });
+      if (!integration && instagramAccountIdStr && !isNaN(Number(instagramAccountIdStr))) {
+        integration = await SocialIntegration.findOne({
+          'credentials.instagramAccountId': Number(instagramAccountIdStr),
+          platform: 'instagram',
+          status: 'connected',
+          userId: { $exists: true, $ne: null }
+        }).sort({ updatedAt: -1 });
+      }
+      const duplicateCount = integration ? await SocialIntegration.countDocuments({
+        'credentials.instagramAccountId': instagramAccountIdStr,
+        platform: 'instagram',
+        status: 'connected',
+        userId: { $exists: true, $ne: null },
+        _id: { $ne: integration._id }
+      }) : 0;
+      if (duplicateCount > 0) {
+        console.warn(`[Instagram Webhook] Same Instagram account (${instagramAccountId}) connected by ${duplicateCount + 1} org(s). Using most recent. Only one org receives replies.`);
+      }
 
       if (!integration) {
-        console.warn(`[Instagram Webhook] No integration found for instagramAccountId: ${instagramAccountId}`);
-        console.warn(`[Instagram Webhook] Searched for: credentials.instagramAccountId === ${instagramAccountId}, platform: instagram, status: connected, userId exists`);
+        console.warn(`[Instagram Webhook] No integration found for instagramAccountId: ${instagramAccountId} (tried string and number)`);
         return;
       }
 
@@ -2295,9 +2346,11 @@ export class MetaWebhookController {
     integration: any
   ): Promise<void> {
     try {
-      // Get Page Access Token from integration credentials
-      // Instagram DM replies use Page Access Token (EAAG) from Facebook OAuth
-      const pageAccessToken = integration.credentials?.pageAccessToken;
+      // Get Page Access Token: credentials.pageAccessToken or decrypted apiKey (manual connect stores both)
+      let pageAccessToken = integration.credentials?.pageAccessToken;
+      if (!pageAccessToken && integration.getDecryptedApiKey) {
+        pageAccessToken = integration.getDecryptedApiKey();
+      }
 
       if (!pageAccessToken) {
         console.error(`[Instagram Webhook] ❌ No Page Access Token found for instagramAccountId: ${instagramAccountId}`);

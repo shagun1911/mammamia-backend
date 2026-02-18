@@ -5,6 +5,7 @@ import { AppError } from '../middleware/error.middleware';
 import { MetaOAuthService, MetaPage } from '../services/metaOAuth.service';
 import { successResponse } from '../utils/response.util';
 import GoogleIntegration from '../models/GoogleIntegration';
+import SocialIntegration from '../models/SocialIntegration';
 
 export class SocialIntegrationController {
   /**
@@ -116,6 +117,23 @@ export class SocialIntegrationController {
           apiKey: '***********'
         }
       };
+
+      // Include current webhook config so UI always shows the token backend will accept
+      const backendUrl = process.env.BACKEND_URL || '';
+      if (platform === 'instagram') {
+        const verifyToken = process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || 'instagram_verify_M9Qe7KX2R4LpA8';
+        (response as any).webhookConfiguration = {
+          url: backendUrl ? `${backendUrl}/api/v1/webhooks/instagram` : '',
+          verifyToken
+        };
+      }
+      if (platform === 'facebook') {
+        const verifyToken = process.env.MESSENGER_WEBHOOK_VERIFY_TOKEN || 'messenger_verify_token';
+        (response as any).webhookConfiguration = {
+          url: backendUrl ? `${backendUrl}/api/v1/social-integrations/messenger/webhook` : '',
+          verifyToken
+        };
+      }
 
       res.json({
         success: true,
@@ -1187,6 +1205,22 @@ export class SocialIntegrationController {
         facebookPageId
       });
 
+      // Prevent same Instagram account being connected by multiple orgs (only one org can receive replies)
+      const pageIdStr = String(instagramAccountId);
+      const existingOther = await SocialIntegration.findOne({
+        'credentials.instagramAccountId': { $in: [pageIdStr, Number(pageIdStr)] },
+        platform: 'instagram',
+        status: 'connected',
+        organizationId: { $ne: organizationId }
+      });
+      if (existingOther) {
+        throw new AppError(
+          400,
+          'PAGE_ALREADY_CONNECTED',
+          'This Instagram account is already connected to another organization. Each Instagram account can only be connected to one organization so that replies work correctly. Disconnect it from the other organization first, or use a different account.'
+        );
+      }
+
       // Verify credentials by testing API call to Meta
       try {
         const axios = (await import('axios')).default;
@@ -1216,12 +1250,12 @@ export class SocialIntegrationController {
         organizationId,
         platform: 'instagram' as const,
         apiKey: accessToken,
-        instagramAccountId,
-        facebookPageId,
+        instagramAccountId: String(instagramAccountId),
+        facebookPageId: String(facebookPageId),
         credentials: {
           apiKey: accessToken,
-          instagramAccountId,
-          facebookPageId,
+          instagramAccountId: String(instagramAccountId),
+          facebookPageId: String(facebookPageId),
           pageAccessToken: accessToken
         },
         metadata: {
@@ -1338,6 +1372,22 @@ export class SocialIntegrationController {
         hasAppId: !!appId
       });
 
+      // Prevent same Facebook Page being connected by multiple orgs (only one org can receive replies)
+      const pageIdStr = String(facebookPageId);
+      const existingOther = await SocialIntegration.findOne({
+        'credentials.facebookPageId': { $in: [pageIdStr, Number(pageIdStr)] },
+        platform: 'facebook',
+        status: 'connected',
+        organizationId: { $ne: organizationId }
+      });
+      if (existingOther) {
+        throw new AppError(
+          400,
+          'PAGE_ALREADY_CONNECTED',
+          'This Facebook Page is already connected to another organization. Each Page can only be connected to one organization so that replies work correctly. Disconnect it from the other organization first, or use a different Page.'
+        );
+      }
+
       // Verify credentials by testing API call to Meta
       try {
         const axios = (await import('axios')).default;
@@ -1367,11 +1417,11 @@ export class SocialIntegrationController {
         organizationId,
         platform: 'facebook' as const,
         apiKey: pageAccessToken,
-        facebookPageId,
+        facebookPageId: String(facebookPageId),
         clientId: appId || process.env.META_APP_ID,
         credentials: {
           apiKey: pageAccessToken,
-          facebookPageId,
+          facebookPageId: String(facebookPageId),
           pageAccessToken,
           clientId: appId || process.env.META_APP_ID
         },

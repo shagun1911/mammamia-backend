@@ -58,6 +58,9 @@ export class SocialIntegrationService {
         if (!credentials.apiKey && data.apiKey) {
           credentials.apiKey = data.apiKey;
         }
+        // Normalize Meta IDs to string so webhook lookup always matches (Meta may send id as number)
+        if (credentials.facebookPageId != null) credentials.facebookPageId = String(credentials.facebookPageId);
+        if (credentials.instagramAccountId != null) credentials.instagramAccountId = String(credentials.instagramAccountId);
         
         // Log credentials structure for debugging (mask sensitive data)
         console.log('[Social Integration Service] Using provided credentials:', {
