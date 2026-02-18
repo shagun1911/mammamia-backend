@@ -87,13 +87,29 @@ export class ProfileService {
    * Check if organization has available credits
    * DYNAMIC CHECK against current PLAN
    */
-  async checkCredits(orgIdOrUserId: string, type: 'chat' | 'voice' | 'automations', amount: number = 1): Promise<boolean> {
-    const orgId = await this.resolveOrganizationId(orgIdOrUserId);
+  async checkCredits(
+    orgIdOrUserId: string,
+    type: 'chat' | 'voice' | 'automations',
+    amount: number = 1,
+    options?: { userId?: string }
+  ): Promise<boolean> {
+    let orgId = await this.resolveOrganizationId(orgIdOrUserId);
     if (!orgId) throw new AppError(400, 'NO_ORG', 'User not linked to an organization');
 
     // 1. Fetch Organization & Plan
     let org = await Organization.findById(orgId).populate('planId');
-    if (!org) throw new AppError(400, 'ORG_NOT_FOUND', 'Organization not found');
+    if (!org) {
+      // Org missing (stale/invalid id). If we have userId, ensure org and retry.
+      const userIdToTry = options?.userId || orgIdOrUserId.toString();
+      try {
+        const ensuredOrgId = await this.ensureOrganizationForUser(userIdToTry);
+        orgId = ensuredOrgId;
+        org = await Organization.findById(orgId).populate('planId');
+      } catch {
+        // ensureOrganizationForUser failed (e.g. not a valid user id)
+      }
+      if (!org) throw new AppError(400, 'ORG_NOT_FOUND', 'Organization not found');
+    }
 
     // 2. Auto-assign free plan if no plan exists
     if (!org.planId) {

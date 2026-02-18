@@ -102,8 +102,9 @@ export class AutomationController {
     try {
       const { isActive } = req.body;
       if (!req.user?._id) throw new Error('Organization ID not found');
-      const organizationIdStr = await profileService.ensureOrganizationForUser(req.user._id.toString());
-      const automation = await this.automationService.toggle(req.params.automationId, isActive, organizationIdStr);
+      const userIdStr = req.user._id.toString();
+      const organizationIdStr = await profileService.ensureOrganizationForUser(userIdStr);
+      const automation = await this.automationService.toggle(req.params.automationId, isActive, organizationIdStr, userIdStr);
       res.json(successResponse(automation, `Automation ${isActive ? 'activated' : 'deactivated'}`));
     } catch (error) {
       next(error);

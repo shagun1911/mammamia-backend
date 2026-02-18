@@ -134,7 +134,7 @@ export class AutomationService {
     return { message: 'Automation deleted successfully' };
   }
 
-  async toggle(automationId: string, isActive: boolean, organizationId: string) {
+  async toggle(automationId: string, isActive: boolean, organizationId: string, userId?: string) {
     const automation = await Automation.findById(automationId);
 
     if (!automation) {
@@ -155,7 +155,7 @@ export class AutomationService {
       const { usageTrackerService } = await import('./usage/usageTracker.service');
       await usageTrackerService.clearUsageCache(organizationId.toString());
       
-      const hasCredits = await profileService.checkCredits(organizationId, 'automations', 1);
+      const hasCredits = await profileService.checkCredits(organizationId, 'automations', 1, userId ? { userId } : undefined);
       if (!hasCredits) {
         throw new AppError(403, 'LIMIT_REACHED', 'Active automations limit reached. Please upgrade your plan.');
       }

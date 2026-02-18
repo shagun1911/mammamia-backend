@@ -50,21 +50,25 @@ export class BatchCallingController {
 
       // Get phone number from database and resolve to ElevenLabs phone_number_id
       const PhoneNumber = (await import('../models/PhoneNumber')).default;
-      const organizationId = req.user?.organizationId || req.user?._id;
-
-      if (!organizationId) {
+      if (!req.user?._id) {
         return res.status(401).json({
           success: false,
           error: "Unauthorized",
-          detail: "Organization ID or User ID not found"
+          detail: "User ID not found"
         });
       }
+      const userId = req.user._id;
+      const { profileService } = await import('../services/profile.service');
+      const organizationIdStr = await profileService.ensureOrganizationForUser(userId.toString());
+      const organizationId = new mongoose.Types.ObjectId(organizationIdStr);
 
+      // Find by phone_number_id and (organizationId or userId) so we match legacy records stored with userId
       const phoneNumber = await PhoneNumber.findOne({
         phone_number_id,
-        organizationId: organizationId instanceof mongoose.Types.ObjectId
-          ? organizationId
-          : new mongoose.Types.ObjectId(organizationId.toString())
+        $or: [
+          { organizationId },
+          { userId }
+        ]
       }).lean();
 
       if (!phoneNumber) {
