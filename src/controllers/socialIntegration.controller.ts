@@ -4,6 +4,7 @@ import socialIntegrationService from '../services/socialIntegration.service';
 import { AppError } from '../middleware/error.middleware';
 import { MetaOAuthService, MetaPage } from '../services/metaOAuth.service';
 import { successResponse } from '../utils/response.util';
+import mongoose from 'mongoose';
 import GoogleIntegration from '../models/GoogleIntegration';
 import SocialIntegration from '../models/SocialIntegration';
 
@@ -1207,11 +1208,12 @@ export class SocialIntegrationController {
 
       // Prevent same Instagram account being connected by multiple orgs (only one org can receive replies)
       const pageIdStr = String(instagramAccountId);
+      const orgObjectId = new mongoose.Types.ObjectId(organizationId.toString());
       const existingOther = await SocialIntegration.findOne({
         'credentials.instagramAccountId': { $in: [pageIdStr, Number(pageIdStr)] },
         platform: 'instagram',
         status: 'connected',
-        organizationId: { $ne: organizationId }
+        organizationId: { $ne: orgObjectId }
       });
       if (existingOther) {
         throw new AppError(
@@ -1374,11 +1376,12 @@ export class SocialIntegrationController {
 
       // Prevent same Facebook Page being connected by multiple orgs (only one org can receive replies)
       const pageIdStr = String(facebookPageId);
+      const orgObjectId = new mongoose.Types.ObjectId(organizationId.toString());
       const existingOther = await SocialIntegration.findOne({
         'credentials.facebookPageId': { $in: [pageIdStr, Number(pageIdStr)] },
         platform: 'facebook',
         status: 'connected',
-        organizationId: { $ne: organizationId }
+        organizationId: { $ne: orgObjectId }
       });
       if (existingOther) {
         throw new AppError(
