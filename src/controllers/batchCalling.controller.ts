@@ -235,7 +235,7 @@ export class BatchCallingController {
           }
 
           await PhoneNumber.updateOne(
-            { phone_number_id, organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString()) },
+            { phone_number_id, $or: [{ organizationId }, { userId }] },
             { $set: { elevenlabs_phone_number_id: newElevenLabsId } }
           );
           console.log('[Batch Calling Controller] ✅ Re-registered phone number. New ElevenLabs ID:', newElevenLabsId);
@@ -265,9 +265,7 @@ export class BatchCallingController {
         if (userId && organizationId) {
           await BatchCall.create({
             userId: userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId.toString()),
-            organizationId: organizationId instanceof mongoose.Types.ObjectId
-              ? organizationId
-              : new mongoose.Types.ObjectId(organizationId.toString()),
+            organizationId,
             batch_call_id: result.id,
             name: result.name,
             agent_id: result.agent_id,
@@ -300,7 +298,7 @@ export class BatchCallingController {
           // No user action needed - automations fire automatically!
           try {
             const { enqueueBatchPoll } = await import('../queues/batchCallSync.queue');
-            const enqueued = await enqueueBatchPoll(result.id, organizationId.toString());
+            const enqueued = await enqueueBatchPoll(result.id, organizationIdStr);
             
             if (enqueued) {
               console.log('[Batch Calling Controller] 🚀 Background polling started for batch:', result.id);
