@@ -26,6 +26,17 @@ import CampaignRecipient from '../models/CampaignRecipient';
 import File from '../models/File';
 import Folder from '../models/Folder';
 import Label from '../models/Label';
+import EmailTemplate from '../models/EmailTemplate';
+import Payment from '../models/Payment';
+import PaymentIntent from '../models/PaymentIntent';
+import PhoneNumber from '../models/PhoneNumber';
+import Agent from '../models/Agent';
+import BatchCall from '../models/BatchCall';
+import ChatbotKnowledgeBase from '../models/ChatbotKnowledgeBase';
+import OutboundAgentConfig from '../models/OutboundAgentConfig';
+import KnowledgeBase from '../models/KnowledgeBase';
+import CSVImport from '../models/CSVImport';
+import InboundNumber from '../models/InboundNumber';
 import { getPlanLimits } from '../config/planLimits';
 
 export class AuthService {
@@ -508,10 +519,21 @@ export class AuthService {
         GoogleIntegration.deleteMany({ userId: userObjectId }),
         PhoneSettings.deleteMany({ userId: userObjectId }),
         InboundAgentConfig.deleteMany({ userId: userObjectId }),
+        OutboundAgentConfig.deleteMany({ userId: userObjectId }),
         AIBehavior.deleteMany({ userId: userObjectId }),
         Tool.deleteMany({ userId: userObjectId }),
         Automation.deleteMany({ userId: userObjectId }),
         KnowledgeBaseDocument.deleteMany({ userId: userObjectId }),
+        KnowledgeBase.deleteMany({ userId: userObjectId }),
+        ChatbotKnowledgeBase.deleteMany({ userId: userObjectId }),
+        Agent.deleteMany({ userId: userObjectId }),
+        EmailTemplate.deleteMany({ userId: userObjectId }),
+        Payment.deleteMany({ userId: userObjectId }),
+        PaymentIntent.deleteMany({ userId: userObjectId }),
+        PhoneNumber.deleteMany({ userId: userObjectId }),
+        InboundNumber.deleteMany({ userId: userObjectId }),
+        BatchCall.deleteMany({ userId: userObjectId }),
+        CSVImport.deleteMany({ userId }),
       ]);
 
       console.log('[Auth] Direct deletions completed:', {
@@ -522,10 +544,21 @@ export class AuthService {
         googleIntegrations: directDeletions[4].deletedCount,
         phoneSettings: directDeletions[5].deletedCount,
         inboundAgentConfigs: directDeletions[6].deletedCount,
-        aiBehaviors: directDeletions[7].deletedCount,
-        tools: directDeletions[8].deletedCount,
-        automations: directDeletions[9].deletedCount,
-        knowledgeBases: directDeletions[10].deletedCount,
+        outboundAgentConfigs: directDeletions[7].deletedCount,
+        aiBehaviors: directDeletions[8].deletedCount,
+        tools: directDeletions[9].deletedCount,
+        automations: directDeletions[10].deletedCount,
+        knowledgeBaseDocuments: directDeletions[11].deletedCount,
+        knowledgeBases: directDeletions[12].deletedCount,
+        chatbotKnowledgeBases: directDeletions[13].deletedCount,
+        agents: directDeletions[14].deletedCount,
+        emailTemplates: directDeletions[15].deletedCount,
+        payments: directDeletions[16].deletedCount,
+        paymentIntents: directDeletions[17].deletedCount,
+        phoneNumbers: directDeletions[18].deletedCount,
+        inboundNumbers: directDeletions[19].deletedCount,
+        batchCalls: directDeletions[20].deletedCount,
+        csvImports: directDeletions[21].deletedCount,
       });
 
       // Delete data linked through organizationId (if user owns organizations)

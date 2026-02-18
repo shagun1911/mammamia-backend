@@ -596,6 +596,7 @@ export class MetaWebhookController {
    * Matches Python reference implementation exactly
    */
   async handleMessenger(req: Request, res: Response) {
+    console.log('[Messenger Webhook] POST hit', { hasBody: !!req.body, object: req.body?.object });
     try {
       // Acknowledge receipt immediately (like Python script)
       res.sendStatus(200);
