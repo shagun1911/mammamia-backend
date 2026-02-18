@@ -28,14 +28,22 @@ export class ProfileService {
   }
 
   /**
-   * Ensure user has an organization; create and link one if missing.
+   * Ensure user has a valid organization; create and link one if missing or if current org is invalid.
    * Returns organization ID for the user (existing or newly created).
-   * When creating a new org, migrates resources that used userId as organizationId.
+   * Handles stale/invalid organizationId (e.g. deleted org, or userId stored as orgId by mistake).
    */
   async ensureOrganizationForUser(userId: string): Promise<string> {
     const user = await User.findById(userId).select('organizationId firstName companyName');
     if (!user) throw new AppError(404, 'USER_NOT_FOUND', 'User not found');
-    if (user.organizationId) return user.organizationId.toString();
+
+    let staleOrgId: mongoose.Types.ObjectId | undefined;
+    if (user.organizationId) {
+      const existingOrg = await Organization.findById(user.organizationId);
+      if (existingOrg) return existingOrg._id.toString();
+      staleOrgId = user.organizationId as mongoose.Types.ObjectId;
+      user.organizationId = undefined;
+      await user.save();
+    }
 
     const freePlan = await Plan.findOne({ slug: 'free' });
     const orgName = (user as any).companyName || ((user as any).firstName ? `${(user as any).firstName}'s Organization` : 'My Organization');
@@ -56,6 +64,12 @@ export class ProfileService {
       { organizationId: userObjectId },
       { $set: { organizationId: org._id } }
     );
+    if (staleOrgId) {
+      await Automation.updateMany(
+        { organizationId: staleOrgId },
+        { $set: { organizationId: org._id } }
+      );
+    }
 
     return org._id.toString();
   }

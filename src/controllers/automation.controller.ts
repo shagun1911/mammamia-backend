@@ -101,14 +101,8 @@ export class AutomationController {
   toggle = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const { isActive } = req.body;
-      let organizationIdStr: string;
-      if (req.user?.organizationId) {
-        organizationIdStr = req.user.organizationId.toString();
-      } else if (req.user?._id) {
-        organizationIdStr = await profileService.ensureOrganizationForUser(req.user._id.toString());
-      } else {
-        throw new Error('Organization ID not found');
-      }
+      if (!req.user?._id) throw new Error('Organization ID not found');
+      const organizationIdStr = await profileService.ensureOrganizationForUser(req.user._id.toString());
       const automation = await this.automationService.toggle(req.params.automationId, isActive, organizationIdStr);
       res.json(successResponse(automation, `Automation ${isActive ? 'activated' : 'deactivated'}`));
     } catch (error) {
