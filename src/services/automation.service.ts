@@ -479,18 +479,18 @@ Respond ONLY with valid JSON:
     const OpenAI = require('openai');
     const openai = new OpenAI({ apiKey });
 
-    const userPrompt = `Below is the system prompt for a voice agent. The agent uses this prompt to know what to ask the user during a call (e.g. loan interest, address, amount, date, etc.).
+    const userPrompt = `CRITICAL: Read the agent's system prompt below and derive extraction fields ONLY from it. Do NOT add any field (e.g. loan, address, booking, customer_name, city, country) unless that concept appears in the system prompt. If the prompt only checks yes/no interest, your json_example must have only a single boolean (e.g. interested or said_yes). If the prompt collects no structured data, use minimal keys like "interested" (boolean).
 
-Generate two things in valid JSON only (no markdown, no explanation):
-1. "extraction_prompt": A single paragraph instruction for an LLM that will later read conversation transcripts. It should say: extract from the transcript the same data points that this agent was instructed to collect (e.g. whether interested in loan, address, loan amount, preferred date, customer name, city, country, etc.). Be specific and list the kinds of fields.
-2. "json_example": One JSON object whose keys are snake_case and match the data points (e.g. interested_in_loan, address, loan_amount_eur, preferred_date, customer_name, city, country). Use example types: boolean for yes/no, number for amounts, string for names/addresses/dates (use "" for strings). Use null for optional fields. Include every distinct data point the agent is supposed to collect.
+Generate valid JSON only (no markdown, no explanation):
+1. "extraction_prompt": One paragraph telling an LLM to extract from a call transcript exactly the data points this agent's prompt refers to. Mention only what is in the prompt (e.g. "whether the user said yes/interest or no", or "name and date" only if the prompt asks for those).
+2. "json_example": One JSON object. Keys must be snake_case and must correspond ONLY to data this agent's prompt actually refers to. Types: boolean for yes/no interest, string for names/dates (""), number only if amounts are mentioned. Use null for optional. If the agent only asks one yes/no question, json_example should have one boolean key, e.g. {"interested": true}. Do not include interested_in_loan, address, loan_amount_eur, preferred_date, customer_name, city, country unless the system prompt below explicitly mentions loans, address, amount, date, customer name, or location.
 
 Agent system prompt:
 ---
 ${systemPrompt}
 ---
 
-Respond with ONLY a single JSON object: { "extraction_prompt": "...", "json_example": { ... } }`;
+Respond with ONLY this JSON object and nothing else: { "extraction_prompt": "...", "json_example": { ... } }`;
 
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -511,7 +511,7 @@ Respond with ONLY a single JSON object: { "extraction_prompt": "...", "json_exam
     const extraction_prompt = typeof parsed.extraction_prompt === 'string' ? parsed.extraction_prompt.trim() : 'Extract from the conversation the information that the agent was instructed to collect.';
     const json_example = typeof parsed.json_example === 'object' && parsed.json_example !== null && !Array.isArray(parsed.json_example)
       ? parsed.json_example
-      : { interested_in_loan: true, customer_name: '', address: '', loan_amount_eur: null, preferred_date: '' };
+      : { extracted_field: null };
 
     return { extraction_prompt, json_example };
   }
