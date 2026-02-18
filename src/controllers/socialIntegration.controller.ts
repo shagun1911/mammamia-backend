@@ -1358,17 +1358,7 @@ export class SocialIntegrationController {
         );
       }
 
-      // Accept valid Meta token types: EAAG/EAA (Page) and EAF (Meta token)
-      const tokenPrefix = pageAccessToken.trim().substring(0, 3);
-      const allowedPrefixes = ['EAA', 'EAF'];
-      if (!allowedPrefixes.some((p) => tokenPrefix.startsWith(p))) {
-        throw new AppError(
-          400,
-          'INVALID_TOKEN_TYPE',
-          'Use a valid Page Access Token from Meta (e.g. starts with EAAG, EAA, or EAF). Get it from Meta Business Suite → your Page → Page access.'
-        );
-      }
-
+      // No prefix check: any token is allowed; validity is determined by the Meta API verification below.
       console.log('[Facebook Manual Connect] Connecting with credentials:', {
         userId,
         organizationId: organizationId.toString(),
@@ -1393,11 +1383,11 @@ export class SocialIntegrationController {
         );
       }
 
-      // Verify credentials by testing API call to Meta
+      // Verify credentials by testing API call to Meta (when app has pages_read_engagement / Page access)
+      const axios = (await import('axios')).default;
+      let verificationSkippedDueToPermission = false;
       try {
-        const axios = (await import('axios')).default;
         const testUrl = `https://graph.facebook.com/v19.0/${facebookPageId}`;
-        
         await axios.get(testUrl, {
           params: {
             fields: 'id,name',
@@ -1405,15 +1395,24 @@ export class SocialIntegrationController {
           },
           timeout: 10000
         });
-        
         console.log('[Facebook Manual Connect] ✅ Credentials verified with Meta API');
       } catch (verifyError: any) {
-        console.error('[Facebook Manual Connect] ❌ Credential verification failed:', verifyError.response?.data || verifyError.message);
-        throw new AppError(
-          400,
-          'INVALID_CREDENTIALS',
-          'Invalid Facebook credentials. Please check your Page Access Token and Page ID.'
-        );
+        const metaError = verifyError.response?.data?.error;
+        const code = metaError?.code;
+        const message = metaError?.message || verifyError.message || '';
+
+        // Error 100 = missing permission (e.g. pages_read_engagement) or object not accessible. Token may still work for messaging.
+        if (code === 100 && (message.includes('permission') || message.includes('Page Public') || message.includes('does not exist'))) {
+          verificationSkippedDueToPermission = true;
+          console.warn('[Facebook Manual Connect] ⚠️ Page read verification skipped (app missing pages_read_engagement or similar). Proceeding to save; token may still work for messaging.');
+        } else {
+          console.error('[Facebook Manual Connect] ❌ Credential verification failed:', verifyError.response?.data || verifyError.message);
+          throw new AppError(
+            400,
+            'INVALID_CREDENTIALS',
+            metaError?.message || 'Invalid Facebook credentials. Please check your Page Access Token and Page ID.'
+          );
+        }
       }
 
       // Create integration directly without 360dialog verification
@@ -1477,6 +1476,13 @@ export class SocialIntegrationController {
       const webhookUrl = `${backendUrl}/api/v1/social-integrations/messenger/webhook`;
       const verifyToken = process.env.MESSENGER_WEBHOOK_VERIFY_TOKEN || 'messenger_verify_token';
 
+      const successMessage = webhookSubscribed
+        ? 'Facebook connected successfully. Webhook automatically subscribed!'
+        : 'Facebook connected successfully. Please configure the webhook in your Meta App Dashboard.';
+      const messageWithWarning = verificationSkippedDueToPermission
+        ? successMessage + ' (Page read permission was not verified; if messaging fails, add pages_read_engagement or Page Public Metadata Access to your Meta app.)'
+        : successMessage;
+
       res.json(successResponse(
         {
           ...integration.toObject(),
@@ -1488,11 +1494,10 @@ export class SocialIntegrationController {
             url: webhookUrl,
             verifyToken: verifyToken,
             subscribed: webhookSubscribed
-          }
+          },
+          ...(verificationSkippedDueToPermission && { warning: 'Verification skipped: app may need pages_read_engagement or Page Public Metadata Access for full features.' })
         },
-        webhookSubscribed 
-          ? 'Facebook connected successfully. Webhook automatically subscribed!'
-          : 'Facebook connected successfully. Please configure the webhook in your Meta App Dashboard.'
+        messageWithWarning
       ));
     } catch (error) {
       next(error);
