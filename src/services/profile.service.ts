@@ -16,12 +16,48 @@ export class ProfileService {
     if (mongoose.isValidObjectId(input)) {
       // Check if it's a user first
       const user = await User.findById(input).select('organizationId');
-      if (user && user.organizationId) return user.organizationId.toString();
-
-      // If not user, assume it's organizationId
+      if (user) {
+        if (user.organizationId) return user.organizationId.toString();
+        // User exists but has no organization — do not treat userId as orgId
+        return '';
+      }
+      // Not a user ID, assume it's organizationId
       return input.toString();
     }
     return input.toString();
+  }
+
+  /**
+   * Ensure user has an organization; create and link one if missing.
+   * Returns organization ID for the user (existing or newly created).
+   * When creating a new org, migrates resources that used userId as organizationId.
+   */
+  async ensureOrganizationForUser(userId: string): Promise<string> {
+    const user = await User.findById(userId).select('organizationId firstName companyName');
+    if (!user) throw new AppError(404, 'USER_NOT_FOUND', 'User not found');
+    if (user.organizationId) return user.organizationId.toString();
+
+    const freePlan = await Plan.findOne({ slug: 'free' });
+    const orgName = (user as any).companyName || ((user as any).firstName ? `${(user as any).firstName}'s Organization` : 'My Organization');
+    const slug = `org-${userId.slice(-8)}-${Date.now()}`;
+    const org = await Organization.create({
+      name: orgName,
+      slug,
+      status: 'active',
+      plan: 'free',
+      planId: freePlan?._id,
+      ownerId: user._id
+    });
+    user.organizationId = org._id as mongoose.Types.ObjectId;
+    await user.save();
+
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+    await Automation.updateMany(
+      { organizationId: userObjectId },
+      { $set: { organizationId: org._id } }
+    );
+
+    return org._id.toString();
   }
 
   /**
