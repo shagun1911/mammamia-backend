@@ -1358,12 +1358,14 @@ export class SocialIntegrationController {
         );
       }
 
-      // Verify it's a PAGE token (not USER token)
-      if (!pageAccessToken.startsWith('EAAG') && !pageAccessToken.startsWith('EAA')) {
+      // Accept valid Meta token types: EAAG/EAA (Page) and EAF (Meta token)
+      const tokenPrefix = pageAccessToken.trim().substring(0, 3);
+      const allowedPrefixes = ['EAA', 'EAF'];
+      if (!allowedPrefixes.some((p) => tokenPrefix.startsWith(p))) {
         throw new AppError(
           400,
           'INVALID_TOKEN_TYPE',
-          'Must use a Page Access Token (starts with EAAG or EAA), not a User Access Token'
+          'Use a valid Page Access Token from Meta (e.g. starts with EAAG, EAA, or EAF). Get it from Meta Business Suite → your Page → Page access.'
         );
       }
 
