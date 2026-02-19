@@ -1223,11 +1223,11 @@ export class SocialIntegrationController {
         );
       }
 
-      // Verify credentials by testing API call to Meta
+      // Verify credentials by testing API call to Meta (skip and proceed if app lacks permissions)
+      const axios = (await import('axios')).default;
+      let verificationSkippedDueToPermission = false;
       try {
-        const axios = (await import('axios')).default;
         const testUrl = `https://graph.facebook.com/v19.0/${instagramAccountId}`;
-        
         await axios.get(testUrl, {
           params: {
             fields: 'id,username,name',
@@ -1235,15 +1235,31 @@ export class SocialIntegrationController {
           },
           timeout: 10000
         });
-        
         console.log('[Instagram Manual Connect] ✅ Credentials verified with Meta API');
       } catch (verifyError: any) {
-        console.error('[Instagram Manual Connect] ❌ Credential verification failed:', verifyError.response?.data || verifyError.message);
-        throw new AppError(
-          400,
-          'INVALID_CREDENTIALS',
-          'Invalid Instagram credentials. Please check your Access Token and Instagram Account ID.'
-        );
+        const metaError = verifyError.response?.data?.error;
+        const code = metaError?.code;
+        const subcode = metaError?.error_subcode;
+        const message = String(metaError?.message || verifyError.message || '').toLowerCase();
+
+        // Error 100 / subcode 33 or "does not exist" / "missing permissions" = Meta blocked read; token may still work for messaging
+        const permissionOrObjectError =
+          code === 100 &&
+          (subcode === 33 || message.includes('does not exist') || message.includes('missing permission'));
+
+        if (permissionOrObjectError) {
+          verificationSkippedDueToPermission = true;
+          console.warn(
+            '[Instagram Manual Connect] ⚠️ Verification skipped (missing permissions). Proceeding to save; token may still work for messaging.'
+          );
+        } else {
+          console.error('[Instagram Manual Connect] ❌ Credential verification failed:', verifyError.response?.data || verifyError.message);
+          throw new AppError(
+            400,
+            'INVALID_CREDENTIALS',
+            metaError?.message || 'Invalid Instagram credentials. Please check your Access Token and Instagram Account ID.'
+          );
+        }
       }
 
       // Create integration directly without 360dialog verification
@@ -1308,6 +1324,14 @@ export class SocialIntegrationController {
       const webhookUrl = `${backendUrl}/api/v1/webhooks/instagram`;
       const verifyToken = process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || 'instagram_verify_M9Qe7KX2R4LpA8';
 
+      const successMsg =
+        webhookSubscribed
+          ? 'Instagram connected successfully. Webhook automatically subscribed!'
+          : 'Instagram connected successfully. Please configure the webhook in your Meta App Dashboard.';
+      const finalMessage = verificationSkippedDueToPermission
+        ? successMsg + ' (Verification was skipped due to app permissions; messaging may still work.)'
+        : successMsg;
+
       res.json(successResponse(
         {
           ...integration.toObject(),
@@ -1319,11 +1343,10 @@ export class SocialIntegrationController {
             url: webhookUrl,
             verifyToken: verifyToken,
             subscribed: webhookSubscribed
-          }
+          },
+          ...(verificationSkippedDueToPermission && { warning: 'Verification skipped: app may need additional Meta permissions for full features.' })
         },
-        webhookSubscribed 
-          ? 'Instagram connected successfully. Webhook automatically subscribed!'
-          : 'Instagram connected successfully. Please configure the webhook in your Meta App Dashboard.'
+        finalMessage
       ));
     } catch (error) {
       next(error);
