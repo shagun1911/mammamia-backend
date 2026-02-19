@@ -2363,19 +2363,8 @@ export class MetaWebhookController {
         throw new Error('Page Access Token not found. Please re-authenticate Instagram OAuth.');
       }
 
-      // HARD SAFETY CHECK: Only accept Page tokens (EAAG) for Instagram messaging
-      const tokenPrefix = pageAccessToken.substring(0, 4);
-      console.log(`[Instagram Webhook] Token prefix (first 4 chars): ${tokenPrefix}`);
-
-      if (!tokenPrefix.startsWith('EAAG') && !tokenPrefix.startsWith('EAA')) {
-        console.error(`[Instagram Webhook] ❌ REJECTED: Token does not start with "EAAG" or "EAA"`);
-        console.error(`[Instagram Webhook] Instagram DM replies require Page Access Token (EAAG)`);
-        console.error(`[Instagram Webhook] Got token starting with: ${tokenPrefix}`);
-        console.error(`[Instagram Webhook] Please re-authenticate using Facebook OAuth`);
-        throw new Error(`Invalid token type: Expected Page Access Token (EAAG), got token starting with: ${tokenPrefix}`);
-      }
-
-      console.log(`[Instagram Webhook] ✅ Found valid Page Access Token (EAAG) for instagramAccountId: ${instagramAccountId}`);
+      // No prefix check; token validity is determined by the Meta API call below.
+      console.log(`[Instagram Webhook] Sending reply for instagramAccountId: ${instagramAccountId}`);
 
       // Defensive logging: App mode and permissions check
       const appMode = process.env.NODE_ENV || 'development';
