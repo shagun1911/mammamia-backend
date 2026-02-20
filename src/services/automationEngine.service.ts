@@ -534,12 +534,8 @@ export class AutomationEngine {
             // Store in database
             const BatchCall = (await import('../models/BatchCall')).default;
             await BatchCall.create({
-              userId: context.userId instanceof mongoose.Types.ObjectId 
-                ? context.userId 
-                : new mongoose.Types.ObjectId(context.userId.toString()),
-              organizationId: context.organizationId instanceof mongoose.Types.ObjectId
-                ? context.organizationId
-                : new mongoose.Types.ObjectId(context.organizationId.toString()),
+              userId: new mongoose.Types.ObjectId(context.userId.toString()),
+              organizationId: new mongoose.Types.ObjectId(context.organizationId.toString()),
               batch_call_id: result.id,
               name: result.name,
               agent_id: result.agent_id,
