@@ -23,25 +23,33 @@ export class ConversationController {
         throw new AppError(401, 'UNAUTHORIZED', 'Organization ID or User ID not found');
       }
 
-      // Sync pending batch call conversations before returning list
-      // This ensures conversations are always materialized even if background sync failed
+      // Sync pending batch call conversations BEFORE returning the list.
+      // We await (with a timeout) so that the first page load already shows conversations
+      // from any batch calls that completed or have partial finished calls.
       try {
         const BatchCall = (await import('../models/BatchCall')).default;
         const { batchCallingService } = await import('../services/batchCalling.service');
         const mongoose = (await import('mongoose')).default;
         const userId = req.user?._id;
 
-        // Find ALL batch calls that haven't been synced (regardless of status in database)
-        // We'll check the Python API status in real-time
+        const orgObjectId = organizationId instanceof mongoose.Types.ObjectId
+          ? organizationId
+          : new mongoose.Types.ObjectId(organizationId.toString());
+        const userObjectId = userId instanceof mongoose.Types.ObjectId
+          ? userId
+          : new mongoose.Types.ObjectId(userId.toString());
+
+        // Find unsynced batches (completed OR in_progress with finished calls)
         const pendingBatches = await BatchCall.find({
           $and: [
             {
               $or: [
-                { userId: userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId.toString()) },
-                { organizationId: organizationId instanceof mongoose.Types.ObjectId ? organizationId : new mongoose.Types.ObjectId(organizationId.toString()) }
+                { userId: userObjectId },
+                { organizationId: orgObjectId }
               ]
             },
             { conversations_synced: { $ne: true } },
+            { status: { $nin: ['cancelled', 'canceled'] } },
             {
               $or: [
                 { syncErrorCount: { $exists: false } },
@@ -52,32 +60,33 @@ export class ConversationController {
         }).lean() as any[];
 
         if (pendingBatches.length > 0) {
-          console.log(`[Conversation Controller] 🔄 Found ${pendingBatches.length} batch calls to check for sync`);
+          console.log(`[Conversation Controller] 🔄 Syncing ${pendingBatches.length} batch call(s) before responding`);
 
-          // Check each batch call status and sync if completed
-          // Process asynchronously to not block the response
-          pendingBatches.forEach(async (batch) => {
+          const syncTasks = pendingBatches.map(async (batch) => {
             try {
-              // Check real-time status from Python API
               const status = await batchCallingService.getBatchJobStatus(batch.batch_call_id);
-              
-              // Update database with latest status
+
+              // Update DB with latest status
               await BatchCall.updateOne(
                 { batch_call_id: batch.batch_call_id },
                 {
                   $set: {
                     status: status.status,
-                    total_calls_dispatched: status.total_calls_dispatched || batch.total_calls_dispatched,
-                    total_calls_scheduled: status.total_calls_scheduled || batch.total_calls_scheduled,
-                    total_calls_finished: status.total_calls_finished || batch.total_calls_finished,
+                    total_calls_dispatched: status.total_calls_dispatched ?? batch.total_calls_dispatched,
+                    total_calls_scheduled: status.total_calls_scheduled ?? batch.total_calls_scheduled,
+                    total_calls_finished: status.total_calls_finished ?? batch.total_calls_finished,
                     last_updated_at_unix: status.last_updated_at_unix || Math.floor(Date.now() / 1000)
                   }
                 }
               );
-              
-              // If completed, sync conversations
-              if (status.status === 'completed') {
-                console.log(`[Conversation Controller] 🚀 Batch call ${batch.batch_call_id} completed! Syncing conversations...`);
+
+              // Sync conversations for completed batches OR in-progress batches that have
+              // at least some finished calls (partial sync - idempotent, safe to call multiple times)
+              const shouldSync =
+                status.status === 'completed' ||
+                (status.status === 'in_progress' && (status.total_calls_finished ?? 0) > 0);
+
+              if (shouldSync) {
                 await batchCallingService.syncBatchCallConversations(
                   batch.batch_call_id,
                   organizationId.toString()
@@ -85,14 +94,19 @@ export class ConversationController {
               }
             } catch (err: any) {
               console.error(
-                `[Conversation Controller] ❌ Failed to check/sync batch call ${batch.batch_call_id}:`,
+                `[Conversation Controller] ❌ Failed to sync batch ${batch.batch_call_id}:`,
                 err.message
               );
             }
           });
+
+          // Wait up to 8 seconds for syncs to complete; return what we have if it takes longer
+          await Promise.race([
+            Promise.allSettled(syncTasks),
+            new Promise<void>(resolve => setTimeout(resolve, 20000))
+          ]);
         }
       } catch (syncError: any) {
-        // Don't fail the request if batch sync fails
         console.error('[Conversation Controller] ⚠️ Batch sync error (non-blocking):', syncError.message);
       }
 

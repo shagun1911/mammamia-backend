@@ -8,7 +8,7 @@ import mongoose from 'mongoose';
 export class BatchCallMonitor {
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
-  private checkIntervalMs = 3000; // Check every 3 seconds for immediate automation triggering
+  private checkIntervalMs = 60000; // Check every 60 seconds (poll queue handles real-time detection)
 
   /**
    * Start the batch call monitor
@@ -19,8 +19,7 @@ export class BatchCallMonitor {
       return;
     }
 
-    console.log('[Batch Call Monitor] 🚀 Starting automatic sync monitor');
-    console.log(`[Batch Call Monitor] Check interval: ${this.checkIntervalMs / 1000}s`);
+    console.log(`[Batch Call Monitor] Started (fallback check every ${this.checkIntervalMs / 1000}s)`);
 
     this.isRunning = true;
     
@@ -68,33 +67,20 @@ export class BatchCallMonitor {
         return; // Nothing to sync
       }
 
-      console.log(`[Batch Call Monitor] 📋 Found ${unsyncedBatches.length} completed batch call(s) to sync`);
+      console.log(`[Batch Call Monitor] Found ${unsyncedBatches.length} unsynced batch(es)`);
 
-      // Sync each batch call
       for (const batch of unsyncedBatches) {
         const batchId = batch.batch_call_id;
         const orgId = batch.organizationId?.toString();
-
-        if (!orgId) {
-          console.log(`[Batch Call Monitor] ⚠️  Skipping ${batchId}: No organization ID`);
-          continue;
-        }
+        if (!orgId) continue;
 
         try {
-          console.log(`[Batch Call Monitor] 🔄 Syncing batch: ${batchId}`);
-          
-          // Sync conversations from Python API
           await batchCallingService.syncBatchCallConversations(batchId, orgId);
-          
-          console.log(`[Batch Call Monitor] ✅ Synced batch: ${batchId}`);
-          
+          console.log(`[Batch Call Monitor] ✅ Synced: ${batchId}`);
         } catch (error: any) {
           console.error(`[Batch Call Monitor] ❌ Failed to sync ${batchId}:`, error.message);
-          // Continue with next batch even if this one fails
         }
       }
-
-      console.log(`[Batch Call Monitor] ✅ Sync check complete`);
       
     } catch (error: any) {
       console.error('[Batch Call Monitor] ❌ Error during sync check:', error.message);

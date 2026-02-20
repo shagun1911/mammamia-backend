@@ -84,19 +84,11 @@ const setupQueueProcessors = () => {
   batchCallSyncQueue.process('poll', 50, async (job: Bull.Job) => {
     const { batch_call_id, organizationId, pollCount = 0 } = job.data;
 
-    console.log(`[Batch Call Sync Queue] 🔍 POLL JOB START - Batch: ${batch_call_id}, Poll #${pollCount + 1}`);
-
     try {
-      // Import BatchCall model
       const BatchCall = (await import('../models/BatchCall')).default;
-
-      // Step 1: Call Python API to get current status
       const status = await batchCallingService.getBatchJobStatus(batch_call_id);
 
-      console.log(`[Batch Call Sync Queue] 📊 Status from Python: ${status.status}`);
-      console.log(`[Batch Call Sync Queue] 📈 Progress: ${status.total_calls_finished}/${status.total_calls_scheduled}`);
-
-      // Step 2: Update BatchCall in DB with latest status
+      // Update DB with latest status (silent - no log every 10s)
       await BatchCall.updateOne(
         { batch_call_id },
         {
@@ -110,153 +102,82 @@ const setupQueueProcessors = () => {
         }
       );
 
-      // Step 3: Check if completed
       if (status.status === 'completed') {
-        console.log(`[Batch Call Sync Queue] ✅ BATCH COMPLETED - Batch: ${batch_call_id}`);
-        
-        // CRITICAL: Check if transcripts are ready before triggering sync
-        // Python API marks batch as "completed" before transcripts are processed
-        console.log(`[Batch Call Sync Queue] 🔍 Checking if transcripts are ready...`);
-        
+        console.log(`[Batch Call Sync Queue] ✅ Batch completed: ${batch_call_id} (${status.total_calls_finished}/${status.total_calls_scheduled} calls)`);
+
+        // Check if transcripts are ready before triggering sync
         try {
           const results = await batchCallingService.getBatchJobResults(batch_call_id, true);
-          
-          // Check if at least some results have transcripts
-          const hasTranscripts = results.results && 
-                                Array.isArray(results.results) && 
-                                results.results.length > 0 &&
-                                results.results.some((r: any) => r.transcript && r.transcript.length > 0);
-          
+          const hasTranscripts = results.results &&
+            Array.isArray(results.results) &&
+            results.results.length > 0 &&
+            results.results.some((r: any) => r.transcript && r.transcript.length > 0);
+
           if (!hasTranscripts) {
-            console.log(`[Batch Call Sync Queue] ⏳ Transcripts not ready yet, will check again in 5 seconds...`);
-            
-            // Re-enqueue poll (not sync) with 10s delay to check for transcripts
-            // Max 30 attempts = 5 minutes of transcript waiting
             const transcriptPollCount = (job.data.transcriptPollCount || 0) + 1;
-            
             if (transcriptPollCount < 30) {
               if (batchCallSyncQueue) {
                 await batchCallSyncQueue.add('poll', {
-                  batch_call_id,
-                  organizationId,
+                  batch_call_id, organizationId,
                   pollCount: pollCount + 1,
-                  transcriptPollCount: transcriptPollCount
-                }, {
-                  delay: 10000, // Check for transcripts every 10 seconds
-                  attempts: 3,
-                  backoff: {
-                    type: 'fixed',
-                    delay: 5000
-                  }
-                });
-                
-                console.log(`[Batch Call Sync Queue] 🔄 Re-enqueued POLL job to wait for transcripts (check #${transcriptPollCount}, next check in 10s)`);
+                  transcriptPollCount
+                }, { delay: 10000, attempts: 3, backoff: { type: 'fixed', delay: 5000 } });
               }
               return { completed: true, waitingForTranscripts: true, transcriptPollCount };
-            } else {
-              console.warn(`[Batch Call Sync Queue] ⚠️  Max transcript checks reached (${transcriptPollCount}), proceeding with sync anyway`);
-              // Continue to enqueue sync even without transcripts
             }
-          } else {
-            console.log(`[Batch Call Sync Queue] ✅ Transcripts are ready! Proceeding with sync...`);
+            console.warn(`[Batch Call Sync Queue] ⚠️ Max transcript checks reached for ${batch_call_id}, syncing anyway`);
           }
         } catch (transcriptCheckError: any) {
-          console.warn(`[Batch Call Sync Queue] ⚠️  Could not check transcripts, proceeding with sync:`, transcriptCheckError.message);
-          // Continue with sync even if transcript check fails
+          console.warn(`[Batch Call Sync Queue] ⚠️ Could not check transcripts for ${batch_call_id}:`, transcriptCheckError.message);
         }
-        
-        // Short delay so call is fully ended and transcript is committed (poll already verified transcripts are ready)
-        const syncDelayMs = 5000; // 5 seconds – trigger automation soon after transcript is ready
-        const syncRunAt = new Date(Date.now() + syncDelayMs).toISOString();
-        console.log(`[Batch Call Sync Queue] 🚀 Enqueueing SYNC job for batch: ${batch_call_id} (delay ${syncDelayMs / 1000}s)`);
-        console.log(`[Batch Call Sync Queue] ⏰ Sync scheduled to run at: ${syncRunAt} – look for "SYNC JOB START" in logs after that time`);
 
         if (batchCallSyncQueue) {
-          await batchCallSyncQueue.add('sync', {
-            batch_call_id,
-            organizationId
-          }, {
-            delay: syncDelayMs,
+          await batchCallSyncQueue.add('sync', { batch_call_id, organizationId }, {
+            delay: 5000,
             attempts: 3,
-            backoff: {
-              type: 'exponential',
-              delay: 300000 // 5 minutes between retries
-            },
-            timeout: 3600000 // 60 minutes timeout for large batches
+            backoff: { type: 'exponential', delay: 300000 },
+            timeout: 3600000
           });
-
-          console.log(`[Batch Call Sync Queue] ✅ SYNC job enqueued for batch: ${batch_call_id} (will run after call ends)`);
-
-          // Fallback: run sync in-process after 10s if Bull delayed job doesn't run (e.g. Redis/worker issue)
-          const fallbackDelayMs = 10000;
+          // Fallback sync in-process
           setTimeout(async () => {
             try {
               await batchCallingService.syncBatchCallConversations(batch_call_id, organizationId);
-              console.log(`[Batch Call Sync Queue] ✅ Fallback sync completed for batch: ${batch_call_id} (automations triggered if any)`);
             } catch (fallbackErr: any) {
-              console.error(`[Batch Call Sync Queue] ⚠️ Fallback sync failed for batch: ${batch_call_id}:`, fallbackErr.message);
+              console.error(`[Batch Call Sync Queue] ⚠️ Fallback sync failed: ${batch_call_id}:`, fallbackErr.message);
             }
-          }, fallbackDelayMs);
-          console.log(`[Batch Call Sync Queue] 📌 Fallback sync also scheduled in ${fallbackDelayMs / 1000}s if queue job does not run`);
+          }, 10000);
         }
 
-        // DO NOT re-enqueue poll job - we're done!
-        console.log(`[Batch Call Sync Queue] 🏁 POLL JOB COMPLETE - Batch: ${batch_call_id} (stopped polling)`);
         return { completed: true, batch_call_id, finalStatus: status.status };
 
       } else if (status.status === 'cancelled' || status.status === 'failed') {
-        // Terminal state: do not re-enqueue poll job
-        console.log(`[Batch Call Sync Queue] 🛑 Batch ended (status: ${status.status}), stopping poll for batch: ${batch_call_id}`);
+        console.log(`[Batch Call Sync Queue] 🛑 Batch terminal (${status.status}): ${batch_call_id}`);
         return { completed: false, batch_call_id, finalStatus: status.status, reason: 'terminal_status' };
       } else {
-        // Not completed yet - re-enqueue poll job with 10s delay
-        console.log(`[Batch Call Sync Queue] ⏳ Batch not completed yet (status: ${status.status})`);
-        
-        // Safety: Stop polling after 24 hours (8640 polls at 10s = 24h)
-        const maxPolls = 8640;
+        // Still running – re-enqueue silently
+        const maxPolls = 8640; // 24 hours at 10s intervals
         if (pollCount >= maxPolls) {
-          console.warn(`[Batch Call Sync Queue] ⚠️  Max polls reached (${maxPolls}), stopping poll for batch: ${batch_call_id}`);
+          console.warn(`[Batch Call Sync Queue] ⚠️ Max polls reached for ${batch_call_id}`);
           return { completed: false, batch_call_id, reason: 'max_polls_reached' };
         }
 
         if (batchCallSyncQueue) {
           await batchCallSyncQueue.add('poll', {
-            batch_call_id,
-            organizationId,
-            pollCount: pollCount + 1
-          }, {
-            delay: 10000, // Re-poll every 10 seconds
-            attempts: 3,
-            backoff: {
-              type: 'fixed',
-              delay: 5000
-            }
-          });
-
-          console.log(`[Batch Call Sync Queue] 🔄 Re-enqueued POLL job for batch: ${batch_call_id} (next poll in 10s)`);
+            batch_call_id, organizationId, pollCount: pollCount + 1
+          }, { delay: 10000, attempts: 3, backoff: { type: 'fixed', delay: 5000 } });
         }
 
         return { completed: false, batch_call_id, currentStatus: status.status, pollCount: pollCount + 1 };
       }
 
     } catch (error: any) {
-      console.error(`[Batch Call Sync Queue] ❌ POLL JOB ERROR - Batch: ${batch_call_id}:`, error.message);
-      
-      // On error, still try to re-enqueue if not max retries
-      if (pollCount < 10) { // Retry up to 10 times on error
-        if (batchCallSyncQueue) {
-          await batchCallSyncQueue.add('poll', {
-            batch_call_id,
-            organizationId,
-            pollCount: pollCount + 1
-          }, {
-            delay: 5000, // Wait 5s before retry on error
-            attempts: 3
-          });
-        }
+      console.error(`[Batch Call Sync Queue] ❌ Poll error for ${batch_call_id}:`, error.message);
+      if (pollCount < 10 && batchCallSyncQueue) {
+        await batchCallSyncQueue.add('poll', {
+          batch_call_id, organizationId, pollCount: pollCount + 1
+        }, { delay: 5000, attempts: 3 });
       }
-
-      throw error; // Let Bull handle retry logic
+      throw error;
     }
   });
 
@@ -268,58 +189,31 @@ const setupQueueProcessors = () => {
   batchCallSyncQueue.process('sync', 2, async (job: Bull.Job) => {
     const { batch_call_id, organizationId } = job.data;
 
-    console.log(`[Batch Call Sync Queue] 🔄 SYNC JOB START - Batch: ${batch_call_id}`);
-    console.log(`[Batch Call Sync Queue] 📋 Organization: ${organizationId}`);
-
     try {
-      // Call existing sync service (this creates conversations and triggers automations)
-      await batchCallingService.syncBatchCallConversations(batch_call_id, organizationId);
+      const BatchCall = (await import('../models/BatchCall')).default;
+      const batchCall = await BatchCall.findOne({ batch_call_id }).lean();
+      if (batchCall?.status === 'cancelled') {
+        return { skipped: true, reason: 'cancelled', batch_call_id };
+      }
 
-      console.log(`[Batch Call Sync Queue] ✅ SYNC JOB COMPLETE - Batch: ${batch_call_id}`);
-      console.log(`[Batch Call Sync Queue] 🎯 Automations triggered for batch: ${batch_call_id}`);
+      console.log(`[Batch Call Sync Queue] Syncing conversations for batch: ${batch_call_id}`);
+      await batchCallingService.syncBatchCallConversations(batch_call_id, organizationId);
+      console.log(`[Batch Call Sync Queue] ✅ Sync complete: ${batch_call_id}`);
 
       return { success: true, batch_call_id, organizationId };
 
     } catch (error: any) {
-      console.error(`[Batch Call Sync Queue] ❌ SYNC JOB ERROR - Batch: ${batch_call_id}:`, error.message);
-      console.error(`[Batch Call Sync Queue] Stack trace:`, error.stack);
-      
-      throw error; // Let Bull handle retry logic
+      console.error(`[Batch Call Sync Queue] ❌ Sync error for ${batch_call_id}:`, error.message);
+      throw error;
     }
   });
 
-  // ============================================================
-  // QUEUE EVENT HANDLERS (Logging & Debugging)
-  // ============================================================
-
-  batchCallSyncQueue.on('completed', (job: Bull.Job, result: any) => {
-    console.log(`[Batch Call Sync Queue] ✅ Job completed:`, {
-      type: job.name,
-      batch_call_id: job.data.batch_call_id,
-      result
-    });
-  });
-
   batchCallSyncQueue.on('failed', (job: Bull.Job | undefined, err: Error) => {
-    console.error(`[Batch Call Sync Queue] ❌ Job failed:`, {
-      type: job?.name,
-      batch_call_id: job?.data?.batch_call_id,
-      error: err.message,
-      attempts: job?.attemptsMade,
-      maxAttempts: job?.opts?.attempts
-    });
+    // Only log sync job failures (poll failures are normal and retried automatically)
+    if (job?.name === 'sync') {
+      console.error(`[Batch Call Sync Queue] ❌ Sync job failed for ${job?.data?.batch_call_id}:`, err.message);
+    }
   });
-
-  batchCallSyncQueue.on('stalled', (job: Bull.Job) => {
-    console.warn(`[Batch Call Sync Queue] ⚠️  Job stalled:`, {
-      type: job.name,
-      batch_call_id: job.data.batch_call_id
-    });
-  });
-
-  console.log('[Batch Call Sync Queue] ✅ Processors set up successfully');
-  console.log('[Batch Call Sync Queue] 📊 Poll processor: 50 concurrent jobs');
-  console.log('[Batch Call Sync Queue] 📊 Sync processor: 2 concurrent jobs');
 };
 
 /**
@@ -328,31 +222,19 @@ const setupQueueProcessors = () => {
  */
 export const enqueueBatchPoll = async (batch_call_id: string, organizationId: string): Promise<boolean> => {
   if (!batchCallSyncQueue) {
-    console.log(`[Batch Call Sync Queue] ⚠️  Queue not available - cannot enqueue poll for batch: ${batch_call_id}`);
-    console.log(`[Batch Call Sync Queue] ℹ️  Batch will rely on BatchCallMonitor fallback or user-triggered sync`);
+    console.warn(`[Batch Call Sync Queue] ⚠️ Queue not available - batch ${batch_call_id} will use BatchCallMonitor fallback`);
     return false;
   }
 
   try {
     await batchCallSyncQueue.add('poll', {
-      batch_call_id,
-      organizationId,
-      pollCount: 0
-    }, {
-      delay: 10000, // Start polling after 10 seconds (give Python time to initialize)
-      attempts: 3,
-      backoff: {
-        type: 'fixed',
-        delay: 5000
-      }
-    });
+      batch_call_id, organizationId, pollCount: 0
+    }, { delay: 10000, attempts: 3, backoff: { type: 'fixed', delay: 5000 } });
 
-    console.log(`[Batch Call Sync Queue] ✅ Initial POLL job enqueued for batch: ${batch_call_id}`);
-    console.log(`[Batch Call Sync Queue] ⏰ First poll will run in 10 seconds`);
-    
+    console.log(`[Batch Call Sync Queue] Polling started for batch: ${batch_call_id}`);
     return true;
   } catch (error: any) {
-    console.error(`[Batch Call Sync Queue] ❌ Failed to enqueue poll for batch: ${batch_call_id}:`, error.message);
+    console.error(`[Batch Call Sync Queue] ❌ Failed to enqueue poll for ${batch_call_id}:`, error.message);
     return false;
   }
 };

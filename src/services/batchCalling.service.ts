@@ -101,16 +101,13 @@ export class BatchCallingService {
         })
       };
 
-      // Log complete payload before submitting
-      console.log('\n========================================');
-      console.log('[Batch Calling Service] 🚀 COMPLETE BATCH CALL PAYLOAD:');
-      console.log('========================================');
-      console.log(JSON.stringify(payload, null, 2));
-      console.log('========================================');
-      console.log('Recipients count:', payload.recipients.length);
-      console.log('Agent ID:', payload.agent_id);
-      console.log('Phone Number ID:', payload.phone_number_id);
-      console.log('========================================\n');
+      // Log summary only (do not log full payload – no PII in logs; cancelled batches must not leave contact data in logs)
+      console.log('[Batch Calling Service] 🚀 Submitting batch:', {
+        recipients_count: payload.recipients.length,
+        agent_id: payload.agent_id,
+        phone_number_id: payload.phone_number_id,
+        call_name: payload.call_name
+      });
 
       // Make the request
       console.log('[Batch Calling Service] Making POST request to:', pythonUrl);
@@ -126,10 +123,11 @@ export class BatchCallingService {
         }
       );
 
-      console.log('[Batch Calling Service] ✅ Batch call submitted successfully');
-      console.log('[Batch Calling Service] Response status:', response.status);
-      console.log('[Batch Calling Service] Response body:');
-      console.log(JSON.stringify(response.data, null, 2));
+      console.log('[Batch Calling Service] ✅ Batch call submitted successfully', {
+        status: response.status,
+        batch_id: response.data?.id,
+        batch_status: response.data?.status
+      });
 
       return response.data;
     } catch (error: any) {
@@ -148,30 +146,13 @@ export class BatchCallingService {
    */
   async getBatchJobStatus(jobId: string): Promise<BatchCallResponse> {
     try {
-      const pythonUrl = `${COMM_API_URL}/api/v1/batch-calling/${jobId}`;
-
-      console.log('[Batch Calling Service] ===== GETTING BATCH JOB STATUS =====');
-      console.log('[Batch Calling Service] Python API URL:', pythonUrl);
-      console.log('[Batch Calling Service] Job ID:', jobId);
-
       const response = await axios.get<BatchCallResponse>(
-        pythonUrl,
-        {
-          timeout: 30000, // 30 seconds timeout
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        }
+        `${COMM_API_URL}/api/v1/batch-calling/${jobId}`,
+        { timeout: 30000, headers: { 'Content-Type': 'application/json' } }
       );
-
-      console.log('[Batch Calling Service] ✅ Batch job status fetched successfully');
-      console.log('[Batch Calling Service] Response status:', response.status);
-      console.log('[Batch Calling Service] Job ID:', jobId);
-      console.log('[Batch Calling Service] Response body:', JSON.stringify(response.data, null, 2));
-
       return response.data;
     } catch (error: any) {
-      console.error('[Batch Calling Service] ❌ Failed to get batch job status:', error.response?.data || error.message);
+      console.error('[Batch Calling Service] ❌ Failed to get batch status:', jobId, error.response?.data || error.message);
       throw new AppError(
         error.response?.status || 500,
         'BATCH_CALL_ERROR',
@@ -187,10 +168,7 @@ export class BatchCallingService {
   async cancelBatchJob(jobId: string): Promise<{ success: boolean; message: string }> {
     try {
       const pythonUrl = `${COMM_API_URL}/api/v1/batch-calling/${jobId}/cancel`;
-
-      console.log('[Batch Calling Service] ===== CANCELLING BATCH JOB =====');
-      console.log('[Batch Calling Service] Python API URL:', pythonUrl);
-      console.log('[Batch Calling Service] Job ID:', jobId);
+      console.log('[Batch Calling Service] Cancelling batch:', jobId);
 
       const response = await axios.post<{ success: boolean; message: string }>(
         pythonUrl,
@@ -232,32 +210,15 @@ export class BatchCallingService {
     }
   ): Promise<BatchJobCallsResponse> {
     try {
-      const pythonUrl = `${COMM_API_URL}/api/v1/batch-calling/${jobId}/calls`;
-
-      console.log('[Batch Calling Service] ===== GETTING BATCH JOB CALLS =====');
-      console.log('[Batch Calling Service] Python API URL:', pythonUrl);
-      console.log('[Batch Calling Service] Job ID:', jobId);
-      console.log('[Batch Calling Service] Options:', options);
-
       const params: Record<string, any> = {};
       if (options?.status) params.status = options.status;
       if (options?.cursor) params.cursor = options.cursor;
       if (options?.page_size) params.page_size = options.page_size;
 
       const response = await axios.get<BatchJobCallsResponse>(
-        pythonUrl,
-        {
-          params,
-          timeout: 30000, // 30 seconds timeout
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        }
+        `${COMM_API_URL}/api/v1/batch-calling/${jobId}/calls`,
+        { params, timeout: 30000, headers: { 'Content-Type': 'application/json' } }
       );
-
-      console.log('[Batch Calling Service] ✅ Batch job calls fetched successfully');
-      console.log('[Batch Calling Service] Response status:', response.status);
-      console.log('[Batch Calling Service] Calls count:', response.data.calls?.length || 0);
 
       return response.data;
     } catch (error: any) {
@@ -291,35 +252,17 @@ export class BatchCallingService {
     includeTranscript: boolean = true
   ): Promise<any> {
     try {
-      const pythonUrl = `${COMM_API_URL}/api/v1/batch-calling/${jobId}/results`;
-
-      console.log('[Batch Calling Service] ===== GETTING BATCH JOB RESULTS =====');
-      console.log('[Batch Calling Service] Python API URL:', pythonUrl);
-      console.log('[Batch Calling Service] Job ID:', jobId);
-      console.log('[Batch Calling Service] Include Transcript:', includeTranscript);
-
       const params: Record<string, any> = {};
-      if (includeTranscript !== undefined) {
-        params.include_transcript = includeTranscript;
-      }
+      if (includeTranscript !== undefined) params.include_transcript = includeTranscript;
 
       const response = await axios.get<any>(
-        pythonUrl,
-        {
-          params,
-          timeout: 60000, // 60 seconds timeout (transcripts can be large)
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        }
+        `${COMM_API_URL}/api/v1/batch-calling/${jobId}/results`,
+        { params, timeout: 60000, headers: { 'Content-Type': 'application/json' } }
       );
-
-      console.log('[Batch Calling Service] ✅ Batch job results fetched successfully');
-      console.log('[Batch Calling Service] Response status:', response.status);
 
       return response.data;
     } catch (error: any) {
-      console.error('[Batch Calling Service] ❌ Failed to get batch job results:', error.response?.data || error.message);
+      console.error('[Batch Calling Service] ❌ Failed to get batch job results:', jobId, error.response?.data || error.message);
       throw new AppError(
         error.response?.status || 500,
         'BATCH_CALL_ERROR',
@@ -335,8 +278,16 @@ export class BatchCallingService {
    */
   async syncBatchCallConversations(jobId: string, organizationId: string): Promise<void> {
     try {
-      console.log('[Batch Calling Service] ===== SYNCING BATCH CALL CONVERSATIONS =====');
-      console.log('[Batch Calling Service] Job ID:', jobId);
+      const BatchCall = (await import('../models/BatchCall')).default;
+
+      // Skip sync for cancelled batches – do not create/update conversations or log contact data
+      const batchCall = await BatchCall.findOne({ batch_call_id: jobId }).lean();
+      if (batchCall?.status === 'cancelled') {
+        console.log('[Batch Calling Service] ⏭️ Skipping sync for cancelled batch:', jobId);
+        return;
+      }
+
+      console.log('[Batch Calling Service] Syncing batch call conversations, job:', jobId);
 
       // Fetch results with transcripts from Python API
       const results = await this.getBatchJobResults(jobId, true);
@@ -349,11 +300,10 @@ export class BatchCallingService {
       const Conversation = (await import('../models/Conversation')).default;
       const Customer = (await import('../models/Customer')).default;
       const Message = (await import('../models/Message')).default;
-      const BatchCall = (await import('../models/BatchCall')).default;
       const mongoose = (await import('mongoose')).default;
+      const { emitToOrganization } = await import('../config/socket');
 
-      // Get batch call info for userId
-      const batchCall = await BatchCall.findOne({ batch_call_id: jobId }).lean();
+      // batchCall already loaded above (for cancelled check)
       if (!batchCall) {
         console.error('[Batch Calling Service] ❌ Batch call not found in database');
         return;
@@ -500,6 +450,17 @@ export class BatchCallingService {
 
           console.log(`[Batch Calling Service] ✅ Created conversation ${conversation._id} for ${customerName}`);
 
+          // Notify frontend immediately so the conversations list auto-refreshes
+          try {
+            emitToOrganization(organizationId, 'conversation:new', {
+              conversationId: conversation._id.toString(),
+              channel: 'phone',
+              source: 'batch',
+              customerId: customer._id.toString(),
+              customerName: customerName
+            });
+          } catch (_emitErr) { /* non-critical */ }
+
           // Create messages from transcript if available
           if (transcript && Array.isArray(transcript) && transcript.length > 0) {
             const messages: any[] = [];
@@ -541,11 +502,14 @@ export class BatchCallingService {
               console.log(`[Batch Calling Service] ✅ Created ${messages.length} messages for conversation ${conversation._id}`);
             }
           } else {
-            // Add internal note if no transcript available
+            // Add internal note if no transcript available (clarify: individual call outcome, not batch)
+            const outcomeText = callResult.call_successful
+              ? 'Call completed successfully.'
+              : 'Call did not complete successfully.';
             await Message.create({
               conversationId: conversation._id,
               type: 'internal_note',
-              text: `Batch call completed to ${customerName} (${phoneNumber}). ${callResult.call_successful ? 'Call was successful.' : 'Call failed.'}`,
+              text: `Batch call to ${customerName} (${phoneNumber}). ${outcomeText}`,
               sender: 'ai',
               timestamp: new Date()
             });
@@ -603,16 +567,32 @@ export class BatchCallingService {
         }
       }
 
-      // Mark batch call as synced
-      await BatchCall.updateOne(
-        { batch_call_id: jobId },
-        {
-          $set: { conversations_synced: true },
-          $unset: { syncErrorCount: "" }
-        }
-      );
+      // Only mark as fully synced when the batch itself is completed.
+      // For in-progress batches (partial sync), leave conversations_synced=false so
+      // the next request picks up any newly finished calls.
+      const finalBatchState = await BatchCall.findOne({ batch_call_id: jobId }).lean() as any;
+      if (finalBatchState?.status === 'completed') {
+        await BatchCall.updateOne(
+          { batch_call_id: jobId },
+          {
+            $set: { conversations_synced: true },
+            $unset: { syncErrorCount: "" }
+          }
+        );
+      }
 
       console.log(`[Batch Calling Service] ✅ Synced batch call conversations: ${conversationsCreated} created, ${conversationsSkipped} skipped`);
+
+      // Tell the frontend to refresh the conversations list
+      if (conversationsCreated > 0 || conversationsSkipped > 0) {
+        try {
+          emitToOrganization(organizationId, 'batch:conversations-synced', {
+            batch_call_id: jobId,
+            conversationsCreated,
+            conversationsSkipped
+          });
+        } catch (_emitErr) { /* non-critical */ }
+      }
     } catch (error: any) {
       console.error('[Batch Calling Service] ❌ Error syncing batch call conversations:', error.message);
 

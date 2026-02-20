@@ -172,16 +172,12 @@ export class BatchCallingController {
           recipients: prepareRecipients(recipients)
         };
 
-        // Log complete payload before submitting
-        console.log('\n========================================');
-        console.log('[Batch Calling Controller] 📋 COMPLETE REQUEST PAYLOAD:');
-        console.log('========================================');
-        console.log(JSON.stringify(payload, null, 2));
-        console.log('========================================');
-        console.log('Recipients count:', payload.recipients.length);
-        console.log('Agent ID:', payload.agent_id);
-        console.log('Phone Number ID:', payload.phone_number_id);
-        console.log('========================================\n');
+        // Log summary only (no PII – do not log full recipient list)
+        console.log('[Batch Calling Controller] Submitting batch:', {
+          recipients_count: payload.recipients.length,
+          agent_id: payload.agent_id,
+          phone_number_id: payload.phone_number_id
+        });
 
         return batchCallingService.submitBatchCall(payload);
       };
@@ -299,8 +295,7 @@ export class BatchCallingController {
         }
       }
 
-      console.log('[Batch Calling Controller] ✅ Batch call submitted:');
-      console.log(JSON.stringify(result, null, 2));
+      console.log('[Batch Calling Controller] ✅ Batch call submitted:', { id: result?.id, status: result?.status });
 
       // Store batch call response in database
       try {
@@ -538,6 +533,7 @@ export class BatchCallingController {
   async getBatchCalls(req: AuthRequest, res: Response, next: NextFunction) {
     try {
       const organizationId = req.user?.organizationId || req.user?._id;
+      const includeCancelled = req.query.includeCancelled === 'true';
 
       if (!organizationId) {
         return res.status(401).json({
@@ -548,12 +544,16 @@ export class BatchCallingController {
       }
 
       const BatchCall = (await import('../models/BatchCall')).default;
-
-      const batchCalls = await BatchCall.find({
+      const query: any = {
         organizationId: organizationId instanceof mongoose.Types.ObjectId
           ? organizationId
           : new mongoose.Types.ObjectId(organizationId.toString())
-      })
+      };
+      if (!includeCancelled) {
+        query.status = { $ne: 'cancelled' };
+      }
+
+      const batchCalls = await BatchCall.find(query)
         .sort({ createdAt: -1 })
         .lean();
 
