@@ -66,20 +66,17 @@ const httpServer = createServer(app);
 initializeSocket(httpServer);
 
 // ============================================================================
-// STEP 1: GLOBAL REQUEST VISIBILITY (MANDATORY)
-// This MUST be the first middleware to log EVERY request hitting Express
+// STEP 1: GLOBAL REQUEST LOGGING (optional, dev-only to reduce noise)
+// Set LOG_REQUESTS=1 to log every request; otherwise one line in development only
 // ============================================================================
+const logRequests = process.env.LOG_REQUESTS === '1';
+const isDev = process.env.NODE_ENV !== 'production';
 app.use((req, res, next) => {
-  console.log('🌍 [GLOBAL REQUEST] ============================================');
-  console.log('🌍 [GLOBAL REQUEST] Method:', req.method);
-  console.log('🌍 [GLOBAL REQUEST] Original URL:', req.originalUrl);
-  console.log('🌍 [GLOBAL REQUEST] Base URL:', req.baseUrl);
-  console.log('🌍 [GLOBAL REQUEST] Path:', req.path);
-  console.log('🌍 [GLOBAL REQUEST] Headers:', {
-    'content-type': req.headers['content-type'] || 'MISSING',
-    'authorization': req.headers.authorization ? 'Bearer ***' : 'MISSING'
-  });
-  console.log('🌍 [GLOBAL REQUEST] ============================================');
+  if (logRequests) {
+    console.log(`[REQ] ${req.method} ${req.originalUrl}`);
+  } else if (isDev && (req.method !== 'OPTIONS' && req.path !== '/health')) {
+    console.log(`[REQ] ${req.method} ${req.path}`);
+  }
   next();
 });
 
@@ -560,6 +557,22 @@ const startServer = async () => {
         console.log(`   For webhooks, set NGROK_BASE_URL=https://your-ngrok-url.ngrok.io`);
         console.log(`   Custom WhatsApp Webhook URL: http://localhost:${PORT_NUMBER}/api/v1/webhooks/whatsapp`);
       }
+
+      // Resync agents with tools in background (do not block startup)
+      setTimeout(async () => {
+        try {
+          const { agentService } = await import('./services/agent.service');
+          const Agent = (await import('./models/Agent')).default;
+          const allAgents = await Agent.find({ tool_ids: { $exists: true } }).lean();
+          const agentsWithTools = allAgents.filter((a: any) => a.tool_ids?.length > 0);
+          if (agentsWithTools.length === 0) return;
+          logger.info(`[ElevenLabs Sync] Resyncing ${agentsWithTools.length} agents in background...`);
+          await Promise.allSettled(agentsWithTools.map((agent: any) => agentService.syncAgentToolsToElevenLabs(agent)));
+          logger.info(`[ElevenLabs Sync] ✅ Startup resync completed for ${agentsWithTools.length} agents`);
+        } catch (err: any) {
+          logger.warn('[ElevenLabs Sync] Startup resync failed:', err.message);
+        }
+      }, 2000);
     });
 
     // ============================================================================

@@ -180,7 +180,7 @@ export class AgentService {
    * Call this when agent has tool_ids - without it, "Unable to execute function" occurs.
    * Uses PATCH /agents/{id} with conversation_config (per OpenAPI).
    */
-  private async enableToolNodeForAgent(agentId: string): Promise<void> {
+  private async enableToolNodeForAgent(agentId: string, quiet?: boolean): Promise<void> {
     try {
       const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${agentId}`;
       const requestBody = {
@@ -194,7 +194,7 @@ export class AgentService {
         timeout: 15000,
         headers: { 'Content-Type': 'application/json' }
       });
-      console.log(`[Agent Service] ✅ Enabled tool_node for agent ${agentId}`);
+      if (!quiet) console.log(`[Agent Service] ✅ Enabled tool_node for agent ${agentId}`);
     } catch (error: any) {
       console.warn(`[Agent Service] ⚠️ Could not enable tool_node for ${agentId}:`, error.message);
       // Non-fatal - tools may still work on some ElevenLabs versions
@@ -205,7 +205,7 @@ export class AgentService {
    * Attach POST_CALL_WEBHOOK_ID to agent's platform settings
    * This enables post-call webhook tracking for automations
    */
-  private async attachWebhookToAgent(agentId: string): Promise<void> {
+  private async attachWebhookToAgent(agentId: string, quiet?: boolean): Promise<void> {
     try {
       const postCallWebhookId = process.env.POST_CALL_WEBHOOK_ID?.trim();
       
@@ -226,14 +226,14 @@ export class AgentService {
         }
       };
 
-      console.log(`[Agent Service] 🔗 Attaching webhook ${postCallWebhookId} to agent ${agentId}`);
+      if (!quiet) console.log(`[Agent Service] 🔗 Attaching webhook ${postCallWebhookId} to agent ${agentId}`);
       
       await axios.patch(pythonUrl, requestBody, {
         timeout: 15000,
         headers: { 'Content-Type': 'application/json' }
       });
       
-      console.log(`[Agent Service] ✅ Successfully attached POST_CALL_WEBHOOK_ID to agent ${agentId}`);
+      if (!quiet) console.log(`[Agent Service] ✅ Successfully attached POST_CALL_WEBHOOK_ID to agent ${agentId}`);
     } catch (error: any) {
       console.error(`[Agent Service] ❌ Failed to attach webhook to agent ${agentId}:`, error.response?.data || error.message);
       // Non-fatal - webhook attachment failure shouldn't block agent operations
@@ -245,7 +245,7 @@ export class AgentService {
    * This is where the ACTUAL voice used in calls is stored.
    * The voice_id in agent prompt is just metadata - this one controls the TTS!
    */
-  private async updateVoiceInConversationConfig(agentId: string, voiceId: string): Promise<void> {
+  private async updateVoiceInConversationConfig(agentId: string, voiceId: string, quiet?: boolean): Promise<void> {
     try {
       const pythonUrl = `${PYTHON_API_BASE_URL}/api/v1/agents/${agentId}`;
       const requestBody = {
@@ -256,18 +256,14 @@ export class AgentService {
         }
       };
       
-      console.log(`[Agent Service] 🎤 Updating TTS voice_id in conversation_config:`, {
-        agent_id: agentId,
-        voice_id: voiceId,
-        url: pythonUrl
-      });
+      if (!quiet) console.log(`[Agent Service] 🎤 Updating TTS voice_id in conversation_config:`, { agent_id: agentId, voice_id: voiceId, url: pythonUrl });
       
       await axios.patch(pythonUrl, requestBody, {
         timeout: 15000,
         headers: { 'Content-Type': 'application/json' }
       });
       
-      console.log(`[Agent Service] ✅ Successfully updated voice_id in conversation_config to: ${voiceId}`);
+      if (!quiet) console.log(`[Agent Service] ✅ Successfully updated voice_id in conversation_config to: ${voiceId}`);
     } catch (error: any) {
       console.error(`[Agent Service] ❌ Failed to update voice_id in conversation_config:`, error.response?.data || error.message);
       throw new Error(`Failed to update voice in ElevenLabs: ${error.response?.data?.detail || error.message}`);
@@ -334,7 +330,6 @@ export class AgentService {
         }
       }
 
-      console.log(`[ElevenLabs Sync] ✅ Synced agent ${agentId} with ${toolIds.length} tools and webhook`);
     } catch (error: any) {
       console.error(`[ElevenLabs Sync] ⚠️ Failed to sync agent ${agent.agent_id} to ElevenLabs:`, error.message);
       // Don't throw - this is a background sync, shouldn't block operations

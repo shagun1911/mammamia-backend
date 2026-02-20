@@ -10,13 +10,23 @@ const router = Router();
 // Validation rules
 const signupValidation = [
   body('name').trim().notEmpty().withMessage('Name is required'),
-  body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email'),
+  body('email')
+    .trim()
+    .customSanitizer((value) => value?.replace(/\s/g, '') ?? '')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Please provide a valid email'),
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters')
 ];
 
 const loginValidation = [
-  body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email'),
-  body('password').notEmpty().withMessage('Password is required')
+  body('email')
+    .trim()
+    .customSanitizer((value) => (typeof value === 'string' ? value.replace(/\s/g, '') : value))
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Please provide a valid email'),
+  body('password').trim().notEmpty().withMessage('Password is required')
 ];
 
 const refreshTokenValidation = [
