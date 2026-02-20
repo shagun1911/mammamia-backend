@@ -140,6 +140,28 @@ export class BatchCallingController {
         }
       }
 
+      // Helper to prepare recipients payload
+      const prepareRecipients = (recipientsList: any[]) => {
+        return recipientsList.map((r: any) => {
+          const recipient: any = {
+            phone_number: r.phone_number,
+            name: r.name
+          };
+
+          // Extract email from dynamic_variables if present and add it as a top-level field
+          const email = r.email || r.dynamic_variables?.email || r.dynamic_variables?.customer_email || r.dynamic_variables?.['contact.email'];
+          if (email) {
+            recipient.email = email;
+          }
+
+          // Include dynamic_variables ONLY if provided (preserve exactly as received)
+          if (r.dynamic_variables !== undefined && r.dynamic_variables !== null) {
+            recipient.dynamic_variables = r.dynamic_variables;
+          }
+          return recipient;
+        });
+      };
+
       // Helper to submit batch call (used for initial attempt and retry after re-register)
       const doSubmit = (elevenLabsId: string) => {
         // Build payload with ONLY the required fields - no transformations, no enrichment
@@ -147,24 +169,7 @@ export class BatchCallingController {
           agent_id,
           call_name,
           phone_number_id: elevenLabsId,
-          recipients: recipients.map((r: any) => {
-            const recipient: any = {
-              phone_number: r.phone_number,
-              name: r.name
-            };
-
-            // Extract email from dynamic_variables if present and add it as a top-level field
-            const email = r.email || r.dynamic_variables?.email || r.dynamic_variables?.customer_email || r.dynamic_variables?.['contact.email'];
-            if (email) {
-              recipient.email = email;
-            }
-
-            // Include dynamic_variables ONLY if provided (preserve exactly as received)
-            if (r.dynamic_variables !== undefined && r.dynamic_variables !== null) {
-              recipient.dynamic_variables = r.dynamic_variables;
-            }
-            return recipient;
-          })
+          recipients: prepareRecipients(recipients)
         };
 
         // Log complete payload before submitting
@@ -181,8 +186,48 @@ export class BatchCallingController {
         return batchCallingService.submitBatchCall(payload);
       };
 
-      // Call Python service to submit batch call
-      console.log('[Batch Calling Controller] Calling Python service...');
+      // Check if queue is available - use it for background processing
+      const { enqueueBatchCall, isBatchCallQueueAvailable } = await import('../queues/batchCall.queue');
+      const queueAvailable = isBatchCallQueueAvailable();
+
+      if (queueAvailable) {
+        console.log('[Batch Calling Controller] 🚀 Queue available - enqueueing batch call job for background processing');
+        console.log('[Batch Calling Controller] Recipients count:', recipients.length);
+        
+        // Prepare recipients for queue
+        const preparedRecipients = prepareRecipients(recipients);
+        
+        // Enqueue job
+        const job = await enqueueBatchCall({
+          agent_id,
+          call_name,
+          recipients: preparedRecipients,
+          phone_number_id: elevenlabsPhoneNumberId,
+          userId,
+          organizationId
+        });
+
+        if (job) {
+          console.log('[Batch Calling Controller] ✅ Batch call job enqueued:', job.id);
+          
+          // Return immediately with job info (batch will be processed in background)
+          return res.status(202).json({
+            success: true,
+            message: 'Batch call job enqueued for processing',
+            job_id: job.id.toString(),
+            recipients_count: recipients.length,
+            status: 'queued'
+          });
+        } else {
+          console.warn('[Batch Calling Controller] ⚠️  Failed to enqueue job, falling back to synchronous processing');
+          // Fall through to synchronous processing
+        }
+      } else {
+        console.log('[Batch Calling Controller] ℹ️  Queue not available - using synchronous processing');
+      }
+
+      // Synchronous processing (fallback or when queue unavailable)
+      console.log('[Batch Calling Controller] Calling Python service synchronously...');
       console.log('[Batch Calling Controller] Using ElevenLabs phone_number_id:', elevenlabsPhoneNumberId);
       let result: Awaited<ReturnType<typeof doSubmit>>;
       try {

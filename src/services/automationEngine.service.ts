@@ -450,6 +450,140 @@ export class AutomationEngine {
 
         console.info(`[Automation Engine] 🚀 Dispatching batch call: ${call_name} to ${contacts.length} recipients`);
 
+        // For large batches (>= 50), use batch calling service with queue
+        // For small batches, use individual calls (backward compatibility)
+        const LARGE_BATCH_THRESHOLD = 50;
+        const useBatchService = contacts.length >= LARGE_BATCH_THRESHOLD;
+
+        if (useBatchService) {
+          console.info(`[Automation Engine] 📦 Large batch detected (${contacts.length} recipients) - using batch calling service`);
+          
+          try {
+            // Prepare recipients for batch calling service
+            const recipients = contacts
+              .filter(c => c.phone)
+              .map(c => {
+                const recipient: any = {
+                  phone_number: c.phone,
+                  name: c.name || 'Customer'
+                };
+                
+                if (c.email) {
+                  recipient.email = c.email;
+                }
+                
+                // Include dynamic variables from trigger data
+                const dynamicVars: any = {
+                  name: c.name || 'Customer',
+                  ...(triggerData || {})
+                };
+                
+                if (c.email) {
+                  dynamicVars.email = c.email;
+                }
+                
+                recipient.dynamic_variables = dynamicVars;
+                
+                return recipient;
+              });
+
+            if (recipients.length === 0) {
+              throw new Error('No recipients with valid phone numbers found.');
+            }
+
+            // Check if queue is available
+            const { enqueueBatchCall, isBatchCallQueueAvailable } = await import('../queues/batchCall.queue');
+            const queueAvailable = isBatchCallQueueAvailable();
+
+            if (queueAvailable) {
+              // Enqueue job for background processing
+              console.info(`[Automation Engine] 🚀 Enqueueing batch call job for ${recipients.length} recipients`);
+              
+              const job = await enqueueBatchCall({
+                agent_id,
+                call_name: call_name || `Automation Batch - ${new Date().toISOString()}`,
+                recipients,
+                phone_number_id,
+                userId: context.userId,
+                organizationId: context.organizationId
+              });
+
+              if (job) {
+                console.info(`[Automation Engine] ✅ Batch call job enqueued: ${job.id}`);
+                return {
+                  success: true,
+                  total: recipients.length,
+                  batch_job_id: job.id.toString(),
+                  status: 'queued',
+                  message: 'Batch call job enqueued for background processing'
+                };
+              }
+            }
+
+            // Fallback: use batch calling service synchronously
+            console.info(`[Automation Engine] ⚠️  Queue not available, using synchronous batch calling service`);
+            const { batchCallingService } = await import('../services/batchCalling.service');
+            
+            const result = await batchCallingService.submitBatchCall({
+              agent_id,
+              call_name: call_name || `Automation Batch - ${new Date().toISOString()}`,
+              phone_number_id,
+              recipients
+            });
+
+            // Store in database
+            const BatchCall = (await import('../models/BatchCall')).default;
+            await BatchCall.create({
+              userId: context.userId instanceof mongoose.Types.ObjectId 
+                ? context.userId 
+                : new mongoose.Types.ObjectId(context.userId.toString()),
+              organizationId: context.organizationId instanceof mongoose.Types.ObjectId
+                ? context.organizationId
+                : new mongoose.Types.ObjectId(context.organizationId.toString()),
+              batch_call_id: result.id,
+              name: result.name,
+              agent_id: result.agent_id,
+              status: result.status,
+              phone_number_id: result.phone_number_id,
+              phone_provider: result.phone_provider,
+              created_at_unix: result.created_at_unix,
+              scheduled_time_unix: result.scheduled_time_unix,
+              timezone: result.timezone || 'UTC',
+              total_calls_dispatched: result.total_calls_dispatched,
+              total_calls_scheduled: result.total_calls_scheduled,
+              total_calls_finished: result.total_calls_finished,
+              last_updated_at_unix: result.last_updated_at_unix,
+              retry_count: result.retry_count,
+              agent_name: result.agent_name,
+              call_name: call_name,
+              recipients_count: recipients.length,
+              conversations_synced: false
+            });
+
+            // Enqueue poll job
+            try {
+              const { enqueueBatchPoll } = await import('../queues/batchCallSync.queue');
+              await enqueueBatchPoll(result.id, context.organizationId.toString());
+            } catch (pollError: any) {
+              console.warn(`[Automation Engine] ⚠️  Failed to enqueue batch poll:`, pollError.message);
+            }
+
+            return {
+              success: true,
+              total: recipients.length,
+              batch_call_id: result.id,
+              status: 'submitted'
+            };
+          } catch (batchError: any) {
+            console.error(`[Automation Engine] ❌ Batch calling service failed:`, batchError.message);
+            // Fall through to individual calls as last resort
+            console.info(`[Automation Engine] ⚠️  Falling back to individual calls`);
+          }
+        }
+
+        // Individual calls (for small batches or as fallback)
+        console.info(`[Automation Engine] 📞 Processing ${contacts.length} recipients with individual calls`);
+        
         const batchResults = [];
         for (const contact of contacts) {
           if (!contact.phone) {

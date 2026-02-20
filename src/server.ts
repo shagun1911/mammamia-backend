@@ -206,7 +206,11 @@ app.get('/api/v1/health', async (req, res) => {
     
     // Get batch call sync queue status
     const { isBatchCallSyncQueueAvailable } = await import('./queues/batchCallSync.queue');
-    const queueAvailable = isBatchCallSyncQueueAvailable();
+    const syncQueueAvailable = isBatchCallSyncQueueAvailable();
+    
+    // Get batch call queue status
+    const { isBatchCallQueueAvailable } = await import('./queues/batchCall.queue');
+    const batchCallQueueAvailable = isBatchCallQueueAvailable();
     
     const uptimeSeconds = Math.floor((Date.now() - SERVER_START_TIME) / 1000);
     
@@ -227,8 +231,12 @@ app.get('/api/v1/health', async (req, res) => {
         checkInterval: `${monitorStatus.checkIntervalSeconds}s`
       },
       batchCallSyncQueue: {
-        enabled: queueAvailable,
-        status: queueAvailable ? 'active' : 'unavailable (using fallback)'
+        enabled: syncQueueAvailable,
+        status: syncQueueAvailable ? 'active' : 'unavailable (using fallback)'
+      },
+      batchCallQueue: {
+        enabled: batchCallQueueAvailable,
+        status: batchCallQueueAvailable ? 'active' : 'unavailable (using synchronous processing)'
       }
     });
   } catch (error) {
@@ -452,6 +460,15 @@ const startServer = async () => {
       logger.info('✅ Batch Call Sync queue module loaded');
     } catch (error: any) {
       logger.warn('⚠️  Could not load Batch Call Sync queue:', error.message);
+    }
+
+    // Initialize Batch Call queue (for background processing of large batch calls)
+    try {
+      await import('./queues/batchCall.queue');
+      // Queue creation happens asynchronously after Redis connection
+      logger.info('✅ Batch Call queue module loaded');
+    } catch (error: any) {
+      logger.warn('⚠️  Could not load Batch Call queue:', error.message);
     }
 
     // Resync all agents with tool_ids to ElevenLabs on startup

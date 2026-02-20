@@ -119,7 +119,7 @@ export class BatchCallingService {
         pythonUrl,
         payload,
         {
-          timeout: 60000, // 60 seconds timeout
+          timeout: 600000, // 10 minutes timeout
           headers: {
             'Content-Type': 'application/json'
           }
