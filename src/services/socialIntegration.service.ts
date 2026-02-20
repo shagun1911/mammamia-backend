@@ -260,7 +260,7 @@ export class SocialIntegrationService {
       }
     }
 
-    // Update integration status
+    // Update integration status and wipe credentials from DB
     await SocialIntegration.findOneAndUpdate(
       {
         organizationId: new mongoose.Types.ObjectId(organizationId),
@@ -270,12 +270,15 @@ export class SocialIntegrationService {
         $set: {
           status: 'disconnected',
           webhookVerified: false,
-          'metadata.chatbotEnabled': false // Disable chatbot
+          'metadata.chatbotEnabled': false
+        },
+        $unset: {
+          credentials: ''
         }
       }
     );
 
-    console.log(`[Social Integration] ✅ ${platform} integration disconnected for organization ${organizationId}`);
+    console.log(`[Social Integration] ✅ ${platform} integration disconnected and credentials deleted for organization ${organizationId}`);
   }
 
   /**
