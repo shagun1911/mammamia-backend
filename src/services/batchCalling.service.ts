@@ -516,9 +516,16 @@ export class BatchCallingService {
             continue;
           }
 
-          const convDuration = conversation.metadata?.call_duration_secs || conversation.metadata?.duration_seconds || 0;
-          const convTerminationReason = conversation.metadata?.termination_reason || conversation.metadata?.end_reason;
-          const convHasTranscript = hasTranscript(conversation.transcript);
+          // Refresh conversation from DB to get latest transcript (webhook might have just saved it)
+          const freshConversation = await Conversation.findById(conversationId).lean() as any;
+          if (!freshConversation) {
+            console.log(`[Batch Calling Service] ⚠️ Conversation ${conversationId} not found in DB`);
+            continue;
+          }
+
+          const convDuration = freshConversation.metadata?.call_duration_secs || freshConversation.metadata?.duration_seconds || 0;
+          const convTerminationReason = freshConversation.metadata?.termination_reason || freshConversation.metadata?.end_reason;
+          const convHasTranscript = hasTranscript(freshConversation.transcript);
           
           console.log(`[Batch Calling Service] 🔍 Checking conversation ${phone}: duration=${convDuration}s, hasTranscript=${convHasTranscript}, termination=${convTerminationReason ? 'yes' : 'no'}`);
 
@@ -533,15 +540,15 @@ export class BatchCallingService {
           
           if (definitelySuccessful) {
             // Get customer info
-            const customer = await Customer.findById(conversation.customerId).lean() as any;
-            const name = customer?.name || conversation.metadata?.name || 'Unknown';
-            const email = customer?.email || conversation.metadata?.email;
+            const customer = await Customer.findById(freshConversation.customerId).lean() as any;
+            const name = customer?.name || freshConversation.metadata?.name || 'Unknown';
+            const email = customer?.email || freshConversation.metadata?.email;
 
             console.log(`[Batch Calling Service] ✅ Call ${phone} confirmed successful (duration: ${convDuration}s, termination: ${convTerminationReason ? 'yes' : 'no'})`);
             
             successfulCalls.push({
               conversationId,
-              contactId: conversation.customerId?.toString() || '',
+              contactId: freshConversation.customerId?.toString() || '',
               phone,
               name,
               email

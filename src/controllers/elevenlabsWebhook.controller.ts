@@ -421,15 +421,22 @@ export class ElevenLabsWebhookController {
     const data = webhookBody?.data;
     const phoneNumber: string | undefined = data?.metadata?.phone_call?.external_number || data?.user_id;
     const agentId: string | undefined = data?.agent_id;
+    const conversationId = data?.conversation_id;
+    const transcript = data?.transcript || [];
+    const metadata = data?.metadata || {};
+    const phoneCall = metadata?.phone_call || {};
+    const status = data?.status || 'unknown';
 
     if (!phoneNumber || !agentId) {
       console.log('[ElevenLabs Webhook] Outbound webhook missing phoneNumber or agentId – skipping batch sync');
       return;
     }
 
-    console.log(`[ElevenLabs Webhook] 📞 Outbound call transcript received for ${phoneNumber} – will sync batch in 5 s`);
+    console.log(`[ElevenLabs Webhook] 📞 Outbound call transcript received for ${phoneNumber} – saving transcript and syncing batch`);
 
     const BatchCall = (await import('../models/BatchCall')).default;
+    const Conversation = (await import('../models/Conversation')).default;
+    const mongoose = (await import('mongoose')).default;
 
     // Find the most recent active (not-yet-synced) batch
     const activeBatch = await BatchCall.findOne({
@@ -442,9 +449,62 @@ export class ElevenLabsWebhookController {
       return;
     }
 
-    // Wait 5 s so the Python API has time to store the transcript/duration for this call
+    const organizationId = activeBatch.organizationId?.toString();
+    if (!organizationId) {
+      console.log('[ElevenLabs Webhook] Batch missing organizationId – skipping');
+      return;
+    }
+
+    const orgObjectId = new mongoose.Types.ObjectId(organizationId);
+
+    // CRITICAL: Save transcript to conversation BEFORE syncing
+    // Find conversation by phone number and batch_call_id
+    const conversation = await Conversation.findOne({
+      organizationId: orgObjectId,
+      channel: 'phone',
+      'metadata.batch_call_id': activeBatch.batch_call_id,
+      'metadata.phone_number': phoneNumber
+    });
+
+    if (conversation) {
+      console.log(`[ElevenLabs Webhook] ✅ Found conversation ${conversation._id} for ${phoneNumber} - saving transcript`);
+      
+      // Update conversation with transcript and metadata
+      conversation.transcript = transcript;
+      conversation.status = status === 'done' ? 'closed' : 'open';
+      conversation.metadata = {
+        ...conversation.metadata,
+        conversation_id: conversationId || conversation.metadata?.conversation_id,
+        agent_id: agentId || conversation.metadata?.agent_id,
+        agent_name: data?.agent_name || conversation.metadata?.agent_name,
+        call_duration_secs: metadata.call_duration_secs || conversation.metadata?.call_duration_secs || 0,
+        duration_seconds: metadata.call_duration_secs || conversation.metadata?.duration_seconds || 0,
+        call_sid: phoneCall.call_sid || conversation.metadata?.call_sid,
+        phone_number_id: phoneCall.phone_number_id || conversation.metadata?.phone_number_id,
+        agent_number: phoneCall.agent_number || conversation.metadata?.agent_number,
+        external_number: phoneCall.external_number || conversation.metadata?.external_number,
+        direction: phoneCall.direction || conversation.metadata?.direction || 'outbound',
+        termination_reason: metadata.termination_reason || conversation.metadata?.termination_reason,
+        end_reason: metadata.termination_reason || conversation.metadata?.end_reason,
+        call_successful: metadata.termination_reason ? true : (conversation.metadata?.call_successful !== false),
+        callInitiated: metadata.start_time_unix_secs 
+          ? new Date(metadata.start_time_unix_secs * 1000) 
+          : (conversation.metadata?.callInitiated || new Date()),
+        callCompletedAt: metadata.accepted_time_unix_secs 
+          ? new Date((metadata.accepted_time_unix_secs + (metadata.call_duration_secs || 0)) * 1000)
+          : (conversation.metadata?.callCompletedAt || new Date()),
+        source: 'batch'
+      };
+      
+      await conversation.save();
+      console.log(`[ElevenLabs Webhook] ✅ Saved transcript to conversation ${conversation._id} (${transcript.length} transcript items)`);
+    } else {
+      console.log(`[ElevenLabs Webhook] ⚠️ Conversation not found for ${phoneNumber} in batch ${activeBatch.batch_call_id} - will be created during sync`);
+    }
+
+    // Wait 2 s so the Python API has time to store the transcript/duration for this call
     // before we query it. Without this delay we can see stale duration_seconds=0 data.
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     // Refresh the batch status from the Python API so `batchIsCompleted` is accurate
     // inside syncBatchCallConversations (the DB status can lag by one poll interval).
@@ -469,7 +529,7 @@ export class ElevenLabsWebhookController {
       console.log(`[ElevenLabs Webhook] 🔄 Triggering immediate sync for batch: ${activeBatch.batch_call_id}`);
       await batchCallingService.syncBatchCallConversations(
         activeBatch.batch_call_id,
-        activeBatch.organizationId?.toString() || activeBatch.userId?.toString()
+        organizationId
       );
       console.log(`[ElevenLabs Webhook] ✅ Immediate batch sync complete for: ${activeBatch.batch_call_id}`);
     } catch (err: any) {
