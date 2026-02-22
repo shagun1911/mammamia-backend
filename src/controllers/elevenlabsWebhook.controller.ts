@@ -406,8 +406,16 @@ export class ElevenLabsWebhookController {
 
   /**
    * When ElevenLabs sends a post_call_transcription webhook for an OUTBOUND (batch) call,
-   * immediately kick off a sync pass for the matching batch so we don't have to wait for
-   * the next 30-second poll tick to pick up the transcript and fire automation.
+   * kick off a sync pass for the matching batch so we don't have to wait for the next
+   * 30-second poll tick.
+   *
+   * Design notes:
+   * - ElevenLabs fires this webhook the instant a call ends, but the Python API batch-results
+   *   endpoint may take a few seconds to reflect the updated duration/transcript for that call.
+   *   We wait 5 s before syncing to avoid hitting a stale Python API response and mistakenly
+   *   treating the just-completed call as "not yet dispatched".
+   * - We also refresh the batch status from the Python API before syncing so that
+   *   `batchIsCompleted` is accurate (the DB status can lag by up to one 30 s poll interval).
    */
   private async processBatchCallWebhook(webhookBody: any) {
     const data = webhookBody?.data;
@@ -419,11 +427,11 @@ export class ElevenLabsWebhookController {
       return;
     }
 
-    console.log(`[ElevenLabs Webhook] 📞 Outbound call transcript received for ${phoneNumber} – triggering immediate batch sync`);
+    console.log(`[ElevenLabs Webhook] 📞 Outbound call transcript received for ${phoneNumber} – will sync batch in 5 s`);
 
     const BatchCall = (await import('../models/BatchCall')).default;
 
-    // Find the most recent active (not-yet-synced) batch that contains this phone number
+    // Find the most recent active (not-yet-synced) batch
     const activeBatch = await BatchCall.findOne({
       conversations_synced: { $ne: true },
       status: { $in: ['pending', 'in_progress', 'completed'] }
@@ -434,15 +442,39 @@ export class ElevenLabsWebhookController {
       return;
     }
 
-    console.log(`[ElevenLabs Webhook] 🔄 Triggering immediate sync for batch: ${activeBatch.batch_call_id}`);
+    // Wait 5 s so the Python API has time to store the transcript/duration for this call
+    // before we query it. Without this delay we can see stale duration_seconds=0 data.
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
-    const { batchCallingService } = await import('../services/batchCalling.service');
-    await batchCallingService.syncBatchCallConversations(
-      activeBatch.batch_call_id,
-      activeBatch.organizationId?.toString() || activeBatch.userId?.toString()
-    );
+    // Refresh the batch status from the Python API so `batchIsCompleted` is accurate
+    // inside syncBatchCallConversations (the DB status can lag by one poll interval).
+    try {
+      const { batchCallingService } = await import('../services/batchCalling.service');
+      const liveStatus = await batchCallingService.getBatchJobStatus(activeBatch.batch_call_id);
+      if (liveStatus?.status && liveStatus.status !== activeBatch.status) {
+        await BatchCall.updateOne(
+          { batch_call_id: activeBatch.batch_call_id },
+          {
+            $set: {
+              status: liveStatus.status,
+              total_calls_dispatched: liveStatus.total_calls_dispatched,
+              total_calls_scheduled: liveStatus.total_calls_scheduled,
+              total_calls_finished: liveStatus.total_calls_finished
+            }
+          }
+        );
+        console.log(`[ElevenLabs Webhook] 🔄 Batch ${activeBatch.batch_call_id} status refreshed: ${activeBatch.status} → ${liveStatus.status}`);
+      }
 
-    console.log(`[ElevenLabs Webhook] ✅ Immediate batch sync complete for: ${activeBatch.batch_call_id}`);
+      console.log(`[ElevenLabs Webhook] 🔄 Triggering immediate sync for batch: ${activeBatch.batch_call_id}`);
+      await batchCallingService.syncBatchCallConversations(
+        activeBatch.batch_call_id,
+        activeBatch.organizationId?.toString() || activeBatch.userId?.toString()
+      );
+      console.log(`[ElevenLabs Webhook] ✅ Immediate batch sync complete for: ${activeBatch.batch_call_id}`);
+    } catch (err: any) {
+      console.error(`[ElevenLabs Webhook] ⚠️ Batch sync failed for ${activeBatch.batch_call_id}:`, err.message);
+    }
   }
 }
 

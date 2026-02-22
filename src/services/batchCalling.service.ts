@@ -272,41 +272,42 @@ export class BatchCallingService {
   }
 
   /**
-   * Incremental sync: process any call whose transcript has arrived since the last pass.
+   * Simple incremental sync – called every 30s poll tick AND on ElevenLabs webhook.
    *
-   * Key design principles (production-ready for 1000+ call batches):
-   * - Called on EVERY poll tick (every 30 s), not just when batch is 'completed'
-   * - processed_call_ids in BatchCall tracks which phones were already fully handled
-   *   → stored in MongoDB so safe across server restarts and horizontal scaling
-   * - Automation fires per-call the moment: transcript ready + call ended
-   *   → no need to wait for the full batch to complete
-   * - conversations_synced=true only when: batch completed + 0 calls still awaiting transcript
-   * - Fully idempotent: safe to call multiple times, never double-processes a call
+   * Logic per call:
+   *   1. Already in processed_call_ids? → skip (done)
+   *   2. duration > 0 AND transcript has messages? → create conversation, trigger automation, mark done
+   *   3. duration = 0 AND batch completed? → create conversation (failed call), NO automation, mark done
+   *   4. Everything else → skip, try again next tick
    */
   async syncBatchCallConversations(jobId: string, organizationId: string): Promise<void> {
     const BatchCall = (await import('../models/BatchCall')).default;
 
     try {
       const batchCall = await BatchCall.findOne({ batch_call_id: jobId }).lean() as any;
-
       if (!batchCall) {
-        console.error('[Batch Calling Service] ❌ Batch call not found in database:', jobId);
+        console.error('[Batch Calling Service] ❌ Batch not found:', jobId);
         return;
       }
       if (batchCall.status === 'cancelled') {
-        console.log('[Batch Calling Service] ⏭️ Skipping sync for cancelled batch:', jobId);
+        console.log('[Batch Calling Service] ⏭️ Skipping cancelled batch:', jobId);
         return;
       }
 
-      // Load already-processed phone numbers into a Set for O(1) lookup
       const alreadyProcessed = new Set<string>(batchCall.processed_call_ids || []);
-      const batchIsCompleted = batchCall.status === 'completed';
 
-      // Fetch all results with transcripts from the Python API
       const results = await this.getBatchJobResults(jobId, true);
       if (!results.results || !Array.isArray(results.results)) {
-        console.warn('[Batch Calling Service] ⚠️ No results in response for batch:', jobId);
+        console.warn('[Batch Calling Service] ⚠️ No results for batch:', jobId);
         return;
+      }
+
+      // Use live status from Python API so we're never blocked by stale DB
+      const liveStatus = (results.batch_status || results.status || batchCall.status || '').toLowerCase();
+      const batchDone = liveStatus === 'completed';
+      if (liveStatus && liveStatus !== batchCall.status) {
+        await BatchCall.updateOne({ batch_call_id: jobId }, { $set: { status: liveStatus } });
+        console.log(`[Batch Calling Service] 🔄 Status refreshed: ${batchCall.status} → ${liveStatus}`);
       }
 
       const Conversation = (await import('../models/Conversation')).default;
@@ -318,247 +319,155 @@ export class BatchCallingService {
       const orgObjectId = new mongoose.Types.ObjectId(organizationId);
       const userId = batchCall.userId?.toString() || organizationId;
 
-      // ── helpers ──────────────────────────────────────────────────────────────
-      const transcriptReady = (t: any): boolean =>
+      const hasTranscript = (t: any): boolean =>
         t != null && (
           (Array.isArray(t) && t.length > 0) ||
           (typeof t === 'string' && t.trim().length > 0) ||
           (t.messages && Array.isArray(t.messages) && t.messages.length > 0)
         );
 
-      // A call is "connected" (and therefore expected to produce a transcript) when duration > 0
-      const callWasConnected = (r: any): boolean =>
-        r.duration_seconds != null && Number(r.duration_seconds) > 0;
-      // ─────────────────────────────────────────────────────────────────────────
+      let created = 0;
+      let skipped = 0;
+      let waiting = 0;
+      const newlyProcessed: string[] = [];
 
-      let conversationsCreated = 0;
-      let conversationsSkipped = 0;
-      let callsMissingTranscript = 0;
-      const newlyProcessed: string[] = []; // phones FULLY done this run (conversation + automation)
-
-      for (const callResult of results.results) {
+      for (const call of results.results) {
         try {
-          const phoneNumber: string = callResult.phone_number;
-          const wasConnected = callWasConnected(callResult);
-          const transcript = callResult.transcript;
-          const hasTranscript = transcriptReady(transcript);
-          const hasEndReason = callResult.end_reason != null && String(callResult.end_reason).trim() !== '';
+          const phone: string = call.phone_number;
+          const duration = Number(call.duration_seconds || 0);
+          const transcript = call.transcript;
+          const connected = duration > 0;
+          const ready = hasTranscript(transcript);
 
-          // ── SKIP: call not yet dispatched (batch still pending/in_progress) ──────
-          // When a batch is pending or in_progress, calls with duration_seconds=0 have
-          // NOT failed – they simply haven't been placed yet. NEVER create a conversation
-          // for these until the batch is 'completed' (then duration=0 truly means failed/no-answer).
-          // This prevents the "Call did not complete successfully" ghost conversations that
-          // get created before calls even start, locking phones out of processed_call_ids.
-          if (!wasConnected && !batchIsCompleted) {
-            console.log(`[Batch Calling Service] ⏳ ${phoneNumber} – call not yet dispatched (batch still ${batchCall.status}), skipping until batch completes`);
+          // 1. Already done? skip.
+          if (alreadyProcessed.has(phone)) { skipped++; continue; }
+
+          // 2. Duration > 0 but transcript not ready yet? wait for next tick.
+          if (connected && !ready) {
+            waiting++;
+            console.log(`[Batch Calling Service] ⏳ ${phone} – ${duration}s call, transcript not ready yet`);
             continue;
           }
 
-          // ── SKIP: connected call with no transcript yet ───────────────────────
-          // A connected call (duration > 0) WILL have a transcript once the call ends.
-          // Leave it for the next 30s tick; do NOT mark as processed.
-          if (wasConnected && !hasTranscript) {
-            callsMissingTranscript++;
-            console.log(`[Batch Calling Service] ⏳ ${phoneNumber} – connected (${callResult.duration_seconds}s) but transcript not ready yet`);
-            continue;
-          }
+          // 3. Duration = 0 and batch not done yet? call hasn't been placed, skip.
+          if (!connected && !batchDone) { continue; }
 
-          // ── Extract contact info ─────────────────────────────────────────────
-          const dynamicVars = callResult.dynamic_variables || {};
-          const customerName  = dynamicVars.name || dynamicVars.customer_name || 'Unknown';
-          const customerEmail = dynamicVars.email || dynamicVars.customer_email;
-          const conversationId = callResult.conversation_id;
+          // ── At this point we WILL process this call ──────────────────────────
+          // Either: (a) connected + transcript ready, or (b) not connected + batch done
+          const vars = call.dynamic_variables || {};
+          const name = vars.name || vars.customer_name || 'Unknown';
+          const email = vars.email || vars.customer_email;
 
-          // A call is "ended" when:
-          // - end_reason is set (most reliable), OR
-          // - call status is completed, OR
-          // - transcript exists (a transcript CANNOT exist on an active call)
-          // NOTE: for not-connected calls (duration=0) that reach here, batch is already
-          // 'completed' so the call truly failed/no-answer – treat it as ended.
-          const callEnded = hasEndReason || callResult.status === 'completed' || hasTranscript || (!wasConnected && batchIsCompleted);
-
-          // ── Check for existing conversation BEFORE checking processed_call_ids ──────
-          // IMPORTANT: a conversation may have been created prematurely (e.g. before the call
-          // started, when duration_seconds was 0) and added to processed_call_ids as "not-connected".
-          // In that case, we MUST still update the transcript and trigger automation once it arrives.
-          // Only truly skip if already processed AND automation has already fired (i.e. phone is in
-          // processed_call_ids AND the conversation has a transcript, meaning we already did the work).
+          // Check if conversation already exists (e.g. from a previous deploy/crash)
           const existing = await Conversation.findOne({
             organizationId: orgObjectId,
             channel: 'phone',
             'metadata.batch_call_id': jobId,
-            'metadata.phone_number': phoneNumber
+            'metadata.phone_number': phone
           });
 
           if (existing) {
-            const existingHasTranscript = transcriptReady((existing as any).transcript);
-            // If phone is already processed AND existing conversation already has a transcript,
-            // automation was already triggered – truly skip.
-            if (alreadyProcessed.has(phoneNumber) && existingHasTranscript) {
-              conversationsSkipped++;
-              continue;
-            }
-            conversationsSkipped++;
-            // Always patch latest transcript onto the conversation
-            if (hasTranscript) {
+            // Conversation exists – just make sure transcript + automation are handled
+            if (ready) {
               await Conversation.updateOne({ _id: existing._id }, { $set: { transcript } });
             }
-            // Trigger automation – only when call is fully done + has transcript
-            if (callEnded && hasTranscript) {
+            if (connected && ready) {
               try {
-                const existingCustomer = await Customer.findById(existing.customerId).lean();
+                const cust = await Customer.findById(existing.customerId).lean() as any;
                 const { automationService } = await import('./automation.service');
                 await automationService.triggerByEvent('batch_call_completed', {
                   event: 'batch_call_completed',
                   batch_id: jobId,
                   conversation_id: existing._id.toString(),
-                  contactId: (existingCustomer as any)?._id?.toString() || existing.customerId?.toString(),
+                  contactId: cust?._id?.toString() || existing.customerId?.toString(),
                   organizationId,
                   source: 'batch_call',
-                  freshContactData: { name: customerName, email: customerEmail, phone: phoneNumber }
+                  freshContactData: { name, email, phone }
                 }, { userId, organizationId });
-                console.log(`[Batch Calling Service] 🚀 Automation triggered for existing conversation ${existing._id} (${phoneNumber})`);
-                // Mark as fully processed ONLY after automation fires
-                newlyProcessed.push(phoneNumber);
+                console.log(`[Batch Calling Service] 🚀 Automation triggered (existing) ${phone}`);
               } catch (err: any) {
-                console.error(`[Batch Calling Service] ⚠️ Automation failed for existing conversation ${existing._id}:`, err.message);
-                // Do NOT add to processed_call_ids – retry next poll
+                console.error(`[Batch Calling Service] ⚠️ Automation failed ${phone}:`, err.message);
+                continue; // don't mark as processed – retry next tick
               }
-            } else {
-              // Conversation exists but call not yet fully ended – retry next poll
-              console.log(`[Batch Calling Service] ⏳ Existing conversation for ${phoneNumber} – waiting for call to end before triggering automation`);
             }
+            newlyProcessed.push(phone);
+            skipped++;
             continue;
           }
 
-          // ── SKIP: already FULLY processed, no existing conversation to update ──
-          // (should rarely happen – just a safety guard)
-          if (alreadyProcessed.has(phoneNumber)) {
-            conversationsSkipped++;
-            continue;
-          }
-
-          // ── Find or create Customer ──────────────────────────────────────────
-          let customer = await Customer.findOne({ phone: phoneNumber, organizationId: orgObjectId });
-
+          // ── Find or create customer ────────────────────────────────────────
+          let customer = await Customer.findOne({ phone, organizationId: orgObjectId });
           if (!customer) {
             customer = await Customer.create({
-              name: customerName,
-              phone: phoneNumber,
-              email: customerEmail,
+              name, phone, email,
               organizationId: orgObjectId,
               source: 'phone',
               color: `#${Math.floor(Math.random() * 16777215).toString(16)}`
             });
-            console.log(`[Batch Calling Service] ✅ Created customer: ${customer.name} (${customer.phone})`);
           } else {
             let updated = false;
-            if (customerName !== 'Unknown' && customer.name !== customerName) {
-              customer.name = customerName;
-              updated = true;
-            }
-            if (customerEmail && customer.email !== customerEmail) {
-              console.log(`[Batch Calling Service] 📧 Updating email: ${customer.email} → ${customerEmail}`);
-              customer.email = customerEmail;
-              updated = true;
-            }
-            if (updated) {
-              await customer.save();
-              console.log(`[Batch Calling Service] ✅ Updated customer: ${customer.name}`);
-            }
+            if (name !== 'Unknown' && customer.name !== name) { customer.name = name; updated = true; }
+            if (email && customer.email !== email) { customer.email = email; updated = true; }
+            if (updated) await customer.save();
           }
 
-          // ── Create Conversation ──────────────────────────────────────────────
+          // ── Create conversation ────────────────────────────────────────────
           const conversation = await Conversation.create({
             organizationId: orgObjectId,
             customerId: customer._id,
             channel: 'phone',
-            status: callResult.call_successful ? 'closed' : 'open',
+            status: call.call_successful ? 'closed' : 'open',
             transcript: transcript || undefined,
             isAiManaging: true,
             unread: false,
             metadata: {
               batch_call_id: jobId,
-              conversation_id: conversationId,
-              recipient_id: callResult.recipient_id,
-              phone_number: phoneNumber,
-              callerId: conversationId,
-              duration_seconds: callResult.duration_seconds,
-              call_successful: callResult.call_successful,
-              end_reason: callResult.end_reason,
-              recording_url: callResult.recording_url || callResult.audio_url,
-              audio_url: callResult.recording_url || callResult.audio_url,
-              callInitiated: new Date(
-                callResult.duration_seconds
-                  ? Date.now() - callResult.duration_seconds * 1000
-                  : Date.now()
-              ),
+              conversation_id: call.conversation_id,
+              recipient_id: call.recipient_id,
+              phone_number: phone,
+              callerId: call.conversation_id,
+              duration_seconds: duration,
+              call_successful: call.call_successful,
+              end_reason: call.end_reason,
+              recording_url: call.recording_url || call.audio_url,
+              audio_url: call.recording_url || call.audio_url,
+              callInitiated: new Date(duration ? Date.now() - duration * 1000 : Date.now()),
               callCompletedAt: new Date(),
               source: 'batch'
             }
           });
 
-          console.log(`[Batch Calling Service] ✅ Conversation ${conversation._id} created for ${customerName} (${phoneNumber})`);
+          console.log(`[Batch Calling Service] ✅ Conversation ${conversation._id} created for ${name} (${phone})`);
+          try { emitToOrganization(organizationId, 'conversation:new', { conversationId: conversation._id.toString(), channel: 'phone', source: 'batch', customerId: customer._id.toString(), customerName: name }); } catch (_) {}
 
-          // Notify frontend so list refreshes in real-time
-          try {
-            emitToOrganization(organizationId, 'conversation:new', {
-              conversationId: conversation._id.toString(),
-              channel: 'phone',
-              source: 'batch',
-              customerId: customer._id.toString(),
-              customerName
-            });
-          } catch (_) { /* non-critical */ }
-
-          // ── Save Messages from transcript ────────────────────────────────────
-          if (transcript && Array.isArray(transcript) && transcript.length > 0) {
-            const messages: any[] = [];
+          // ── Save messages ──────────────────────────────────────────────────
+          if (ready && Array.isArray(transcript)) {
+            const msgs: any[] = [];
             for (const entry of transcript) {
-              const messageText = entry.message;
-              if (!messageText?.trim()) continue;
-              const role = entry.role;
-              let sender: 'customer' | 'ai' = 'customer';
-              if (role === 'agent' || role === 'assistant') sender = 'ai';
-              else if (role === 'user' || role === 'customer') sender = 'customer';
-              messages.push({
+              if (!entry.message?.trim()) continue;
+              msgs.push({
                 conversationId: conversation._id,
-                sender,
-                text: messageText.trim(),
+                sender: (entry.role === 'agent' || entry.role === 'assistant') ? 'ai' : 'customer',
+                text: entry.message.trim(),
                 type: 'message',
-                attachments: [],
-                sourcesUsed: [],
-                topics: [],
+                attachments: [], sourcesUsed: [], topics: [],
                 timestamp: new Date(),
-                metadata: { transcriptItemId: `${callResult.recipient_id}_${messages.length}`, fromBatchCall: true }
+                metadata: { transcriptItemId: `${call.recipient_id}_${msgs.length}`, fromBatchCall: true }
               });
             }
-            if (messages.length > 0) {
-              await Message.insertMany(messages);
-              console.log(`[Batch Calling Service] ✅ Saved ${messages.length} messages for conversation ${conversation._id}`);
+            if (msgs.length > 0) {
+              await Message.insertMany(msgs);
+              console.log(`[Batch Calling Service] ✅ Saved ${msgs.length} messages for ${conversation._id}`);
             }
           } else {
-            // Not connected or no transcript: leave an internal note
-            const outcomeText = callResult.call_successful ? 'Call completed successfully.' : 'Call did not complete successfully.';
-            await Message.create({
-              conversationId: conversation._id,
-              type: 'internal_note',
-              text: `Batch call to ${customerName} (${phoneNumber}). ${outcomeText}`,
-              sender: 'ai',
-              timestamp: new Date()
-            });
+            const note = call.call_successful ? 'Call completed successfully.' : 'Call did not complete successfully.';
+            await Message.create({ conversationId: conversation._id, type: 'internal_note', text: `Batch call to ${name} (${phone}). ${note}`, sender: 'ai', timestamp: new Date() });
           }
 
-          conversationsCreated++;
+          created++;
 
-          // ── Trigger Automation ───────────────────────────────────────────────
-          // Conditions: call ended (end_reason OR status=completed OR transcript present)
-          //             AND transcript is non-empty
-          // A phone is ONLY marked as processed after automation fires successfully.
-          // If not yet ended → conversation is created but phone stays out of processed_call_ids
-          // → next 30s poll will re-check, find the existing conversation, and trigger automation.
-          if (callEnded && hasTranscript) {
+          // ── Trigger automation (only for connected calls with transcript) ──
+          if (connected && ready) {
             try {
               const { automationService } = await import('./automation.service');
               await automationService.triggerByEvent('batch_call_completed', {
@@ -568,33 +477,24 @@ export class BatchCallingService {
                 contactId: customer._id.toString(),
                 organizationId,
                 source: 'batch_call',
-                freshContactData: { name: customerName, email: customerEmail, phone: phoneNumber }
+                freshContactData: { name, email, phone }
               }, { userId, organizationId });
-              console.log(`[Batch Calling Service] 🚀 Automation triggered for conversation ${conversation._id} (${phoneNumber})`);
-              // Mark as fully processed ONLY after automation fires
-              newlyProcessed.push(phoneNumber);
+              console.log(`[Batch Calling Service] 🚀 Automation triggered for ${phone}`);
             } catch (err: any) {
-              console.error(`[Batch Calling Service] ⚠️ Automation failed for conversation ${conversation._id}:`, err.message);
-              // Do NOT add to processed_call_ids – retry next poll
+              console.error(`[Batch Calling Service] ⚠️ Automation failed for ${phone}:`, err.message);
+              continue; // don't mark processed – retry next tick
             }
-          } else if (!wasConnected) {
-            // Not-connected call (busy, no-answer): conversation created, no automation needed → mark done
-            newlyProcessed.push(phoneNumber);
-          } else {
-            // Connected call but not yet ended (transcript/end_reason still pending):
-            // Conversation created but NOT added to processed_call_ids.
-            // Next poll will find the existing conversation and trigger automation once call ends.
-            console.log(`[Batch Calling Service] ⏳ ${phoneNumber} – conversation created, waiting for call to fully end before triggering automation`);
           }
 
-        } catch (resultError: any) {
-          console.error(`[Batch Calling Service] ❌ Failed to process call ${callResult.phone_number}:`, resultError.message);
-          // Continue with remaining calls; do NOT mark as processed
+          // Mark this phone as done
+          newlyProcessed.push(phone);
+
+        } catch (err: any) {
+          console.error(`[Batch Calling Service] ❌ Failed to process ${call.phone_number}:`, err.message);
         }
       }
 
-      // ── Atomically persist newly-processed phone numbers ─────────────────────
-      // $addToSet ensures no duplicates even under concurrent runs
+      // Persist processed phones atomically
       if (newlyProcessed.length > 0) {
         await BatchCall.updateOne(
           { batch_call_id: jobId },
@@ -602,44 +502,24 @@ export class BatchCallingService {
         );
       }
 
-      // ── Mark conversations_synced when batch is done and no transcripts pending ──
-      if (batchIsCompleted && callsMissingTranscript === 0) {
+      // Mark batch fully done when all calls are accounted for
+      if (batchDone && waiting === 0) {
         await BatchCall.updateOne(
           { batch_call_id: jobId },
           { $set: { conversations_synced: true }, $unset: { syncErrorCount: '' } }
         );
-        console.log(`[Batch Calling Service] ✅ Batch ${jobId} fully synced – conversations_synced=true`);
-      } else if (callsMissingTranscript > 0) {
-        console.log(`[Batch Calling Service] ⏳ Batch ${jobId}: ${callsMissingTranscript} call(s) still awaiting transcript – will retry next poll`);
+        console.log(`[Batch Calling Service] ✅ Batch ${jobId} fully synced`);
       }
 
-      console.log(
-        `[Batch Calling Service] 📊 Batch ${jobId} sync pass complete:`,
-        `${conversationsCreated} created,`,
-        `${conversationsSkipped} skipped,`,
-        `${newlyProcessed.length} newly processed,`,
-        `${callsMissingTranscript} pending transcripts`
-      );
+      console.log(`[Batch Calling Service] 📊 Batch ${jobId}: ${created} created, ${skipped} skipped, ${newlyProcessed.length} processed, ${waiting} waiting`);
 
-      // ── Notify frontend ──────────────────────────────────────────────────────
-      if (conversationsCreated > 0 || conversationsSkipped > 0) {
-        try {
-          emitToOrganization(organizationId, 'batch:conversations-synced', {
-            batch_call_id: jobId,
-            conversationsCreated,
-            conversationsSkipped,
-            newlyProcessed: newlyProcessed.length,
-            pendingTranscripts: callsMissingTranscript
-          });
-        } catch (_) { /* non-critical */ }
+      if (created > 0 || newlyProcessed.length > 0) {
+        try { emitToOrganization(organizationId, 'batch:conversations-synced', { batch_call_id: jobId, conversationsCreated: created, newlyProcessed: newlyProcessed.length, pendingTranscripts: waiting }); } catch (_) {}
       }
 
     } catch (error: any) {
-      console.error('[Batch Calling Service] ❌ Error in syncBatchCallConversations:', error.message);
-      await BatchCall.updateOne(
-        { batch_call_id: jobId },
-        { $inc: { syncErrorCount: 1 } }
-      );
+      console.error('[Batch Calling Service] ❌ Sync error:', error.message);
+      await BatchCall.updateOne({ batch_call_id: jobId }, { $inc: { syncErrorCount: 1 } });
       throw error;
     }
   }
