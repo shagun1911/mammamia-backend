@@ -336,20 +336,23 @@ export class BatchCallingService {
           const phone: string = call.phone_number;
           const duration = Number(call.duration_seconds || 0);
           const transcript = call.transcript;
-          const connected = duration > 0;
           const ready = hasTranscript(transcript);
+          // A call is "connected" if duration > 0 OR it has a real transcript.
+          // The Python API sometimes returns duration_seconds=0 for calls that
+          // actually happened — the transcript is the definitive proof.
+          const connected = duration > 0 || ready;
 
           // 1. Already done? skip.
           if (alreadyProcessed.has(phone)) { skipped++; continue; }
 
-          // 2. Duration > 0 but transcript not ready yet? wait for next tick.
-          if (connected && !ready) {
+          // 2. Connected (duration > 0) but transcript not ready yet? wait for next tick.
+          if (duration > 0 && !ready) {
             waiting++;
             console.log(`[Batch Calling Service] ⏳ ${phone} – ${duration}s call, transcript not ready yet`);
             continue;
           }
 
-          // 3. Duration = 0 and batch not done yet? call hasn't been placed, skip.
+          // 3. Not connected and batch not done yet? call hasn't been placed, skip.
           if (!connected && !batchDone) { continue; }
 
           // ── At this point we WILL process this call ──────────────────────────
