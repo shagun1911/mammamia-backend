@@ -488,16 +488,27 @@ export class BatchCallingService {
           // Collect all successful calls from results
           for (const call of results.results) {
             const phone: string = call.phone_number;
-            const duration = Number(call.duration_seconds || 0);
+            // Check both duration_seconds and call_duration_secs (Python API uses different fields)
+            const duration = Number(call.duration_seconds || call.call_duration_secs || call.metadata?.call_duration_secs || 0);
             const transcript = call.transcript;
             const ready = hasTranscript(transcript);
+            // A call is connected if it has duration OR transcript (transcript is definitive proof)
             const connected = duration > 0 || ready;
 
             // Determine if call was successful (robust fallback)
+            // A call is successful if:
+            // 1. Explicitly marked as successful (call_successful === true)
+            // 2. Status is "completed"
+            // 3. Has transcript + duration > 0 (actual call happened)
+            // 4. Has transcript + termination_reason (call completed with reason)
+            const hasTerminationReason = call.termination_reason || call.end_reason || call.metadata?.termination_reason;
             const callSuccessful = 
               call.call_successful === true || 
               call.status === 'completed' ||
-              (connected && ready && call.call_successful !== false);
+              (ready && duration > 0) || // Has transcript and actual duration
+              (ready && hasTerminationReason); // Has transcript and termination reason (call completed)
+
+            console.log(`[Batch Calling Service] 🔍 Checking call ${phone}: duration=${duration}, ready=${ready}, call_successful=${call.call_successful}, status=${call.status}, termination_reason=${hasTerminationReason ? 'yes' : 'no'}, successful=${callSuccessful}`);
 
             // Only include successful calls with transcript
             if (connected && ready && callSuccessful) {
@@ -510,18 +521,36 @@ export class BatchCallingService {
               }).lean() as any;
 
               if (conversation) {
-                const vars = call.dynamic_variables || {};
-                const name = vars.name || vars.customer_name || 'Unknown';
-                const email = vars.email || vars.customer_email;
+                // Double-check success using conversation metadata (more reliable)
+                const convDuration = conversation.metadata?.call_duration_secs || conversation.metadata?.duration_seconds || 0;
+                const convTerminationReason = conversation.metadata?.termination_reason || conversation.metadata?.end_reason;
+                const convHasTranscript = hasTranscript(conversation.transcript);
+                
+                // If conversation has transcript and (duration > 0 OR termination_reason), it's successful
+                const definitelySuccessful = convHasTranscript && (convDuration > 0 || convTerminationReason);
+                
+                if (definitelySuccessful) {
+                  const vars = call.dynamic_variables || {};
+                  const name = vars.name || vars.customer_name || 'Unknown';
+                  const email = vars.email || vars.customer_email;
 
-                successfulCalls.push({
-                  conversationId: conversation._id.toString(),
-                  contactId: conversation.customerId?.toString() || '',
-                  phone,
-                  name,
-                  email
-                });
+                  console.log(`[Batch Calling Service] ✅ Call ${phone} confirmed successful (conv duration: ${convDuration}s, termination: ${convTerminationReason ? 'yes' : 'no'})`);
+                  
+                  successfulCalls.push({
+                    conversationId: conversation._id.toString(),
+                    contactId: conversation.customerId?.toString() || '',
+                    phone,
+                    name,
+                    email
+                  });
+                } else {
+                  console.log(`[Batch Calling Service] ⏭️ Call ${phone} not confirmed successful (conv duration: ${convDuration}s, termination: ${convTerminationReason ? 'yes' : 'no'}, hasTranscript: ${convHasTranscript})`);
+                }
+              } else {
+                console.log(`[Batch Calling Service] ⚠️ Conversation not found for ${phone}`);
               }
+            } else {
+              console.log(`[Batch Calling Service] ⏭️ Call ${phone} not included (connected: ${connected}, ready: ${ready}, successful: ${callSuccessful})`);
             }
           }
 
