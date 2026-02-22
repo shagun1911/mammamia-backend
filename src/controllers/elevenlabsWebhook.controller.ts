@@ -438,20 +438,40 @@ export class ElevenLabsWebhookController {
     const Conversation = (await import('../models/Conversation')).default;
     const mongoose = (await import('mongoose')).default;
 
-    // Find the most recent active (not-yet-synced) batch
-    const activeBatch = await BatchCall.findOne({
-      conversations_synced: { $ne: true },
-      status: { $in: ['pending', 'in_progress', 'completed'] }
+    // CRITICAL: Find the batch by finding which batch has a conversation with this phone number
+    // This is more reliable than "most recent batch"
+    let activeBatch: any = null;
+    let organizationId: string | null = null;
+    
+    // First, try to find conversation by phone number to get the correct batch
+    const conversationByPhone = await Conversation.findOne({
+      channel: 'phone',
+      'metadata.phone_number': phoneNumber,
+      'metadata.batch_call_id': { $exists: true }
     }).sort({ createdAt: -1 }).lean() as any;
 
-    if (!activeBatch) {
-      console.log('[ElevenLabs Webhook] No active batch found for outbound call – skipping');
-      return;
+    if (conversationByPhone?.metadata?.batch_call_id) {
+      const batchId = conversationByPhone.metadata.batch_call_id;
+      activeBatch = await BatchCall.findOne({ batch_call_id: batchId }).lean() as any;
+      organizationId = conversationByPhone.organizationId?.toString() || null;
+      console.log(`[ElevenLabs Webhook] ✅ Found batch ${batchId} via conversation for ${phoneNumber}`);
     }
 
-    const organizationId = activeBatch.organizationId?.toString();
-    if (!organizationId) {
-      console.log('[ElevenLabs Webhook] Batch missing organizationId – skipping');
+    // Fallback: Find the most recent active batch if conversation not found yet
+    if (!activeBatch) {
+      activeBatch = await BatchCall.findOne({
+        conversations_synced: { $ne: true },
+        status: { $in: ['pending', 'in_progress', 'completed'] }
+      }).sort({ createdAt: -1 }).lean() as any;
+      
+      if (activeBatch) {
+        organizationId = activeBatch.organizationId?.toString() || null;
+        console.log(`[ElevenLabs Webhook] ⚠️ Using most recent active batch ${activeBatch.batch_call_id} as fallback`);
+      }
+    }
+
+    if (!activeBatch || !organizationId) {
+      console.log('[ElevenLabs Webhook] No active batch found for outbound call – skipping');
       return;
     }
 

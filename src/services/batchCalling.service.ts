@@ -304,7 +304,7 @@ export class BatchCallingService {
 
       // Use live status from Python API so we're never blocked by stale DB
       const liveStatus = (results.batch_status || results.status || batchCall.status || '').toLowerCase();
-      const batchDone = liveStatus === 'completed';
+      
       if (liveStatus && liveStatus !== batchCall.status) {
         await BatchCall.updateOne({ batch_call_id: jobId }, { $set: { status: liveStatus } });
         console.log(`[Batch Calling Service] 🔄 Status refreshed: ${batchCall.status} → ${liveStatus}`);
@@ -317,6 +317,24 @@ export class BatchCallingService {
       const { emitToOrganization } = await import('../config/socket');
 
       const orgObjectId = new mongoose.Types.ObjectId(organizationId);
+      
+      // Check if all conversations have transcripts - batch is truly done only when transcripts are received
+      const allConversations = await Conversation.find({
+        organizationId: orgObjectId,
+        channel: 'phone',
+        'metadata.batch_call_id': jobId
+      }).lean() as any[];
+      
+      const conversationsWithTranscripts = allConversations.filter(conv => hasTranscript(conv.transcript)).length;
+      const totalConversations = allConversations.length;
+      const allTranscriptsReceived = totalConversations > 0 && conversationsWithTranscripts === totalConversations;
+      
+      // Batch is done if: Python API says completed AND all transcripts received (or no conversations created yet)
+      const batchDone = liveStatus === 'completed' && (allTranscriptsReceived || totalConversations === 0);
+      
+      if (liveStatus === 'completed' && !allTranscriptsReceived && totalConversations > 0) {
+        console.log(`[Batch Calling Service] ⏳ Batch marked completed by API but waiting for transcripts (${conversationsWithTranscripts}/${totalConversations} received) - will keep polling`);
+      }
       const userId = batchCall.userId?.toString() || organizationId;
 
       const hasTranscript = (t: any): boolean =>
@@ -600,12 +618,20 @@ export class BatchCallingService {
           console.log(`[Batch Calling Service] ⏭️ No successful calls with transcripts found in this sync`);
         }
 
-        // Mark batch fully done when all calls are accounted for
-        await BatchCall.updateOne(
-          { batch_call_id: jobId },
-          { $set: { conversations_synced: true }, $unset: { syncErrorCount: '' } }
-        );
-        console.log(`[Batch Calling Service] ✅ Batch ${jobId} fully synced`);
+        // Mark batch fully done ONLY when all conversations have transcripts
+        // This ensures we keep polling until transcripts arrive
+        if (allTranscriptsReceived || totalConversations === 0) {
+          await BatchCall.updateOne(
+            { batch_call_id: jobId },
+            { $set: { conversations_synced: true }, $unset: { syncErrorCount: '' } }
+          );
+          console.log(`[Batch Calling Service] ✅ Batch ${jobId} fully synced (all ${totalConversations} conversation(s) have transcripts)`);
+        } else {
+          console.log(`[Batch Calling Service] ⏳ Batch ${jobId} not fully synced yet - waiting for ${totalConversations - conversationsWithTranscripts} more transcript(s)`);
+        }
+      } else if (liveStatus === 'completed' && !allTranscriptsReceived && totalConversations > 0) {
+        // Batch is completed by API but transcripts not all received - keep polling
+        console.log(`[Batch Calling Service] ⏳ Batch ${jobId} completed by API but transcripts pending (${conversationsWithTranscripts}/${totalConversations}) - will keep checking`);
       }
 
       console.log(`[Batch Calling Service] 📊 Batch ${jobId}: ${created} created, ${skipped} skipped, ${newlyProcessed.length} processed, ${waiting} waiting`);
