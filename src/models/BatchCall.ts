@@ -26,6 +26,7 @@ export interface IBatchCall extends Document {
   conversations_synced?: boolean; // All connected calls with transcripts have been fully processed
   processed_call_ids?: string[]; // Phone numbers already processed (conversation created + automation triggered)
   automations_triggered?: boolean; // Track if automations have been triggered for this batch
+  automation_triggered_conversation_ids?: string[]; // Conversation IDs that have had automations triggered (to avoid duplicates)
   automation_id?: mongoose.Types.ObjectId; // Link to automation that triggered this batch
   syncErrorCount?: number; // Number of times sync has failed
   createdAt: Date;
@@ -134,6 +135,10 @@ const BatchCallSchema = new Schema<IBatchCall>({
   automations_triggered: {
     type: Boolean,
     default: false
+  },
+  automation_triggered_conversation_ids: {
+    type: [String],
+    default: []
   },
   automation_id: {
     type: Schema.Types.ObjectId,

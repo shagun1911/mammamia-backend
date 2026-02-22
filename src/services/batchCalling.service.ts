@@ -468,133 +468,129 @@ export class BatchCallingService {
         );
       }
 
-      // ── Trigger automations for all successful calls when batch is completed ──
-      if (batchDone && waiting === 0) {
-        // Check if automations have already been triggered for this batch
+      // ── Trigger automations for successful calls when batch is completed ──
+      // Trigger for ANY call with transcript, don't wait for all calls
+      if (batchDone) {
+        console.log(`[Batch Calling Service] 🚀 Batch completed - checking conversations for successful calls with transcripts`);
+        
+        // Find ALL conversations for this batch (source of truth, not API results)
+        const allConversations = await Conversation.find({
+          organizationId: orgObjectId,
+          channel: 'phone',
+          'metadata.batch_call_id': jobId
+        }).lean() as any[];
+
+        console.log(`[Batch Calling Service] 📋 Found ${allConversations.length} conversation(s) for batch ${jobId}`);
+
+        // Get list of conversation IDs that have already had automations triggered
         const batchCallUpdated = await BatchCall.findOne({ batch_call_id: jobId }).lean() as any;
-        const automationsTriggered = batchCallUpdated?.automations_triggered === true;
+        const processedConversationIds = new Set<string>(
+          (batchCallUpdated?.automation_triggered_conversation_ids || []).map((id: any) => id.toString())
+        );
 
-        if (!automationsTriggered) {
-          console.log(`[Batch Calling Service] 🚀 Batch completed - triggering automations for all successful calls`);
+        const successfulCalls: Array<{
+          conversationId: string;
+          contactId: string;
+          phone: string;
+          name: string;
+          email?: string;
+        }> = [];
+
+        let triggeredCount = 0;
+        let skippedCount = 0;
+
+        // Check each conversation directly (more reliable than API results)
+        for (const conversation of allConversations) {
+          const conversationId = conversation._id.toString();
+          const phone = conversation.metadata?.phone_number;
           
-          const successfulCalls: Array<{
-            conversationId: string;
-            contactId: string;
-            phone: string;
-            name: string;
-            email?: string;
-          }> = [];
+          if (!phone) {
+            console.log(`[Batch Calling Service] ⚠️ Conversation ${conversationId} missing phone number`);
+            continue;
+          }
 
-          // Collect all successful calls from results
-          for (const call of results.results) {
-            const phone: string = call.phone_number;
-            // Check both duration_seconds and call_duration_secs (Python API uses different fields)
-            const duration = Number(call.duration_seconds || call.call_duration_secs || call.metadata?.call_duration_secs || 0);
-            const transcript = call.transcript;
-            const ready = hasTranscript(transcript);
-            // A call is connected if it has duration OR transcript (transcript is definitive proof)
-            const connected = duration > 0 || ready;
+          // Skip if automation already triggered for this conversation
+          if (processedConversationIds.has(conversationId)) {
+            skippedCount++;
+            console.log(`[Batch Calling Service] ⏭️ Automation already triggered for ${phone} (conversation ${conversationId})`);
+            continue;
+          }
 
-            // Determine if call was successful (robust fallback)
-            // A call is successful if:
-            // 1. Explicitly marked as successful (call_successful === true)
-            // 2. Status is "completed"
-            // 3. Has transcript + duration > 0 (actual call happened)
-            // 4. Has transcript + termination_reason (call completed with reason)
-            const hasTerminationReason = call.termination_reason || call.end_reason || call.metadata?.termination_reason;
-            const callSuccessful = 
-              call.call_successful === true || 
-              call.status === 'completed' ||
-              (ready && duration > 0) || // Has transcript and actual duration
-              (ready && hasTerminationReason); // Has transcript and termination reason (call completed)
+          const convDuration = conversation.metadata?.call_duration_secs || conversation.metadata?.duration_seconds || 0;
+          const convTerminationReason = conversation.metadata?.termination_reason || conversation.metadata?.end_reason;
+          const convHasTranscript = hasTranscript(conversation.transcript);
+          
+          console.log(`[Batch Calling Service] 🔍 Checking conversation ${phone}: duration=${convDuration}s, hasTranscript=${convHasTranscript}, termination=${convTerminationReason ? 'yes' : 'no'}`);
 
-            console.log(`[Batch Calling Service] 🔍 Checking call ${phone}: duration=${duration}, ready=${ready}, call_successful=${call.call_successful}, status=${call.status}, termination_reason=${hasTerminationReason ? 'yes' : 'no'}, successful=${callSuccessful}`);
+          // Only process conversations that have transcripts
+          if (!convHasTranscript) {
+            console.log(`[Batch Calling Service] ⏳ Conversation ${phone} waiting for transcript - will check on next sync`);
+            continue;
+          }
 
-            // Only include successful calls with transcript
-            if (connected && ready && callSuccessful) {
-              // Find the conversation for this call
-              const conversation = await Conversation.findOne({
-                organizationId: orgObjectId,
-                channel: 'phone',
-                'metadata.batch_call_id': jobId,
-                'metadata.phone_number': phone
-              }).lean() as any;
+          // A call is successful if it has transcript AND (duration > 0 OR termination_reason)
+          const definitelySuccessful = convHasTranscript && (convDuration > 0 || convTerminationReason);
+          
+          if (definitelySuccessful) {
+            // Get customer info
+            const customer = await Customer.findById(conversation.customerId).lean() as any;
+            const name = customer?.name || conversation.metadata?.name || 'Unknown';
+            const email = customer?.email || conversation.metadata?.email;
 
-              if (conversation) {
-                // Double-check success using conversation metadata (more reliable)
-                const convDuration = conversation.metadata?.call_duration_secs || conversation.metadata?.duration_seconds || 0;
-                const convTerminationReason = conversation.metadata?.termination_reason || conversation.metadata?.end_reason;
-                const convHasTranscript = hasTranscript(conversation.transcript);
-                
-                // If conversation has transcript and (duration > 0 OR termination_reason), it's successful
-                const definitelySuccessful = convHasTranscript && (convDuration > 0 || convTerminationReason);
-                
-                if (definitelySuccessful) {
-                  const vars = call.dynamic_variables || {};
-                  const name = vars.name || vars.customer_name || 'Unknown';
-                  const email = vars.email || vars.customer_email;
+            console.log(`[Batch Calling Service] ✅ Call ${phone} confirmed successful (duration: ${convDuration}s, termination: ${convTerminationReason ? 'yes' : 'no'})`);
+            
+            successfulCalls.push({
+              conversationId,
+              contactId: conversation.customerId?.toString() || '',
+              phone,
+              name,
+              email
+            });
+          } else {
+            console.log(`[Batch Calling Service] ⏭️ Call ${phone} not successful (duration: ${convDuration}s, termination: ${convTerminationReason ? 'yes' : 'no'})`);
+            // Mark as processed even if not successful to avoid re-checking
+            processedConversationIds.add(conversationId);
+          }
+        }
 
-                  console.log(`[Batch Calling Service] ✅ Call ${phone} confirmed successful (conv duration: ${convDuration}s, termination: ${convTerminationReason ? 'yes' : 'no'})`);
-                  
-                  successfulCalls.push({
-                    conversationId: conversation._id.toString(),
-                    contactId: conversation.customerId?.toString() || '',
-                    phone,
-                    name,
-                    email
-                  });
-                } else {
-                  console.log(`[Batch Calling Service] ⏭️ Call ${phone} not confirmed successful (conv duration: ${convDuration}s, termination: ${convTerminationReason ? 'yes' : 'no'}, hasTranscript: ${convHasTranscript})`);
-                }
-              } else {
-                console.log(`[Batch Calling Service] ⚠️ Conversation not found for ${phone}`);
-              }
-            } else {
-              console.log(`[Batch Calling Service] ⏭️ Call ${phone} not included (connected: ${connected}, ready: ${ready}, successful: ${callSuccessful})`);
+        // Trigger automations for all successful calls (even if only 1 has transcript)
+        if (successfulCalls.length > 0) {
+          console.log(`[Batch Calling Service] 📋 Found ${successfulCalls.length} successful call(s) with transcripts - triggering automations`);
+          
+          const { automationService } = await import('./automation.service');
+          const newlyTriggeredIds: string[] = [];
+          
+          // Trigger automation for each successful call
+          for (const callData of successfulCalls) {
+            try {
+              await automationService.triggerByEvent('batch_call_completed', {
+                event: 'batch_call_completed',
+                batch_id: jobId,
+                conversation_id: callData.conversationId,
+                contactId: callData.contactId,
+                organizationId,
+                source: 'batch_call',
+                freshContactData: { name: callData.name, email: callData.email, phone: callData.phone }
+              }, { userId, organizationId });
+              console.log(`[Batch Calling Service] 🚀 Automation triggered for ${callData.phone} (${callData.name})`);
+              newlyTriggeredIds.push(callData.conversationId);
+              triggeredCount++;
+            } catch (err: any) {
+              console.error(`[Batch Calling Service] ⚠️ Automation failed for ${callData.phone}:`, err.message);
+              // Continue with other calls even if one fails
             }
           }
 
-          // Trigger automations for all successful calls
-          if (successfulCalls.length > 0) {
-            console.log(`[Batch Calling Service] 📋 Found ${successfulCalls.length} successful call(s) to trigger automations for`);
-            
-            const { automationService } = await import('./automation.service');
-            
-            // Trigger automation for each successful call
-            for (const callData of successfulCalls) {
-              try {
-                await automationService.triggerByEvent('batch_call_completed', {
-                  event: 'batch_call_completed',
-                  batch_id: jobId,
-                  conversation_id: callData.conversationId,
-                  contactId: callData.contactId,
-                  organizationId,
-                  source: 'batch_call',
-                  freshContactData: { name: callData.name, email: callData.email, phone: callData.phone }
-                }, { userId, organizationId });
-                console.log(`[Batch Calling Service] 🚀 Automation triggered for ${callData.phone} (${callData.name})`);
-              } catch (err: any) {
-                console.error(`[Batch Calling Service] ⚠️ Automation failed for ${callData.phone}:`, err.message);
-                // Continue with other calls even if one fails
-              }
-            }
-
-            // Mark that automations have been triggered for this batch
+          // Mark which conversations have had automations triggered (to avoid duplicates)
+          if (newlyTriggeredIds.length > 0) {
             await BatchCall.updateOne(
               { batch_call_id: jobId },
-              { $set: { automations_triggered: true } }
+              { $addToSet: { automation_triggered_conversation_ids: { $each: newlyTriggeredIds } } }
             );
-            console.log(`[Batch Calling Service] ✅ Automations triggered for ${successfulCalls.length} successful call(s)`);
-          } else {
-            console.log(`[Batch Calling Service] ⏭️ No successful calls found - skipping automation triggers`);
-            // Still mark as triggered to avoid retrying
-            await BatchCall.updateOne(
-              { batch_call_id: jobId },
-              { $set: { automations_triggered: true } }
-            );
+            console.log(`[Batch Calling Service] ✅ Automations triggered for ${triggeredCount} call(s), ${skippedCount} already processed`);
           }
         } else {
-          console.log(`[Batch Calling Service] ⏭️ Automations already triggered for this batch`);
+          console.log(`[Batch Calling Service] ⏭️ No successful calls with transcripts found in this sync`);
         }
 
         // Mark batch fully done when all calls are accounted for
