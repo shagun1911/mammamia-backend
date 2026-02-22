@@ -4,7 +4,7 @@ export interface IPlan extends Document {
   name: string;
   slug: string;
   description: string;
-  price: number; // Monthly price in USD
+  price: number; // Monthly price in EUR
   currency: string;
   features: {
     callMinutes: number; // -1 for unlimited
@@ -44,7 +44,7 @@ const PlanSchema = new Schema<IPlan>({
   },
   currency: {
     type: String,
-    default: 'USD',
+    default: 'EUR',
     uppercase: true
   },
   features: {

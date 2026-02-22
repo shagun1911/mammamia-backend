@@ -29,7 +29,7 @@ const assignFreePlanToAll = async () => {
         slug: 'free',
         description: 'Perfect for getting started',
         price: 0,
-        currency: 'USD',
+        currency: 'EUR',
         features: {
           callMinutes: 20,
           chatConversations: 20,
