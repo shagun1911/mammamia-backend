@@ -71,6 +71,19 @@ export class ElevenLabsWebhookController {
         }
       }
 
+      // For outbound (batch) calls – trigger an immediate sync so the transcript is
+      // picked up without waiting for the next 30s poll tick.
+      if (body?.type === 'post_call_transcription') {
+        const direction = body?.data?.metadata?.phone_call?.direction;
+        if (direction === 'outbound') {
+          try {
+            await this.processBatchCallWebhook(body);
+          } catch (batchError: any) {
+            console.error('[ElevenLabs Webhook] ⚠️ Failed to process outbound batch call webhook:', batchError.message);
+          }
+        }
+      }
+
     } catch (error: any) {
       // Log error but still return 200 to prevent retries
       console.error('[ElevenLabs Webhook] ❌ ERROR PROCESSING WEBHOOK:', error);
@@ -389,6 +402,47 @@ export class ElevenLabsWebhookController {
       
       console.log('[ElevenLabs Webhook] ✅ Created conversation placeholder with audio:', conversation._id);
     }
+  }
+
+  /**
+   * When ElevenLabs sends a post_call_transcription webhook for an OUTBOUND (batch) call,
+   * immediately kick off a sync pass for the matching batch so we don't have to wait for
+   * the next 30-second poll tick to pick up the transcript and fire automation.
+   */
+  private async processBatchCallWebhook(webhookBody: any) {
+    const data = webhookBody?.data;
+    const phoneNumber: string | undefined = data?.metadata?.phone_call?.external_number || data?.user_id;
+    const agentId: string | undefined = data?.agent_id;
+
+    if (!phoneNumber || !agentId) {
+      console.log('[ElevenLabs Webhook] Outbound webhook missing phoneNumber or agentId – skipping batch sync');
+      return;
+    }
+
+    console.log(`[ElevenLabs Webhook] 📞 Outbound call transcript received for ${phoneNumber} – triggering immediate batch sync`);
+
+    const BatchCall = (await import('../models/BatchCall')).default;
+
+    // Find the most recent active (not-yet-synced) batch that contains this phone number
+    const activeBatch = await BatchCall.findOne({
+      conversations_synced: { $ne: true },
+      status: { $in: ['pending', 'in_progress', 'completed'] }
+    }).sort({ createdAt: -1 }).lean() as any;
+
+    if (!activeBatch) {
+      console.log('[ElevenLabs Webhook] No active batch found for outbound call – skipping');
+      return;
+    }
+
+    console.log(`[ElevenLabs Webhook] 🔄 Triggering immediate sync for batch: ${activeBatch.batch_call_id}`);
+
+    const { batchCallingService } = await import('../services/batchCalling.service');
+    await batchCallingService.syncBatchCallConversations(
+      activeBatch.batch_call_id,
+      activeBatch.organizationId?.toString() || activeBatch.userId?.toString()
+    );
+
+    console.log(`[ElevenLabs Webhook] ✅ Immediate batch sync complete for: ${activeBatch.batch_call_id}`);
   }
 }
 

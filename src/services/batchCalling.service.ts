@@ -342,6 +342,18 @@ export class BatchCallingService {
           const wasConnected = callWasConnected(callResult);
           const transcript = callResult.transcript;
           const hasTranscript = transcriptReady(transcript);
+          const hasEndReason = callResult.end_reason != null && String(callResult.end_reason).trim() !== '';
+
+          // ── SKIP: call not yet dispatched (batch still pending/in_progress) ──────
+          // When a batch is pending or in_progress, calls with duration_seconds=0 have
+          // NOT failed – they simply haven't been placed yet. NEVER create a conversation
+          // for these until the batch is 'completed' (then duration=0 truly means failed/no-answer).
+          // This prevents the "Call did not complete successfully" ghost conversations that
+          // get created before calls even start, locking phones out of processed_call_ids.
+          if (!wasConnected && !batchIsCompleted) {
+            console.log(`[Batch Calling Service] ⏳ ${phoneNumber} – call not yet dispatched (batch still ${batchCall.status}), skipping until batch completes`);
+            continue;
+          }
 
           // ── SKIP: connected call with no transcript yet ───────────────────────
           // A connected call (duration > 0) WILL have a transcript once the call ends.
@@ -349,12 +361,6 @@ export class BatchCallingService {
           if (wasConnected && !hasTranscript) {
             callsMissingTranscript++;
             console.log(`[Batch Calling Service] ⏳ ${phoneNumber} – connected (${callResult.duration_seconds}s) but transcript not ready yet`);
-            continue;
-          }
-
-          // ── SKIP: already FULLY processed (conversation created + automation triggered) ──
-          if (alreadyProcessed.has(phoneNumber)) {
-            conversationsSkipped++;
             continue;
           }
 
@@ -366,12 +372,18 @@ export class BatchCallingService {
 
           // A call is "ended" when:
           // - end_reason is set (most reliable), OR
-          // - status is completed, OR
-          // - transcript exists (a transcript CANNOT exist on an active call – if we have it, call is done)
-          const hasEndReason = callResult.end_reason != null && String(callResult.end_reason).trim() !== '';
-          const callEnded = hasEndReason || callResult.status === 'completed' || hasTranscript;
+          // - call status is completed, OR
+          // - transcript exists (a transcript CANNOT exist on an active call)
+          // NOTE: for not-connected calls (duration=0) that reach here, batch is already
+          // 'completed' so the call truly failed/no-answer – treat it as ended.
+          const callEnded = hasEndReason || callResult.status === 'completed' || hasTranscript || (!wasConnected && batchIsCompleted);
 
-          // ── Safety net: conversation may already exist (e.g. from a previous server version) ──
+          // ── Check for existing conversation BEFORE checking processed_call_ids ──────
+          // IMPORTANT: a conversation may have been created prematurely (e.g. before the call
+          // started, when duration_seconds was 0) and added to processed_call_ids as "not-connected".
+          // In that case, we MUST still update the transcript and trigger automation once it arrives.
+          // Only truly skip if already processed AND automation has already fired (i.e. phone is in
+          // processed_call_ids AND the conversation has a transcript, meaning we already did the work).
           const existing = await Conversation.findOne({
             organizationId: orgObjectId,
             channel: 'phone',
@@ -380,6 +392,13 @@ export class BatchCallingService {
           });
 
           if (existing) {
+            const existingHasTranscript = transcriptReady((existing as any).transcript);
+            // If phone is already processed AND existing conversation already has a transcript,
+            // automation was already triggered – truly skip.
+            if (alreadyProcessed.has(phoneNumber) && existingHasTranscript) {
+              conversationsSkipped++;
+              continue;
+            }
             conversationsSkipped++;
             // Always patch latest transcript onto the conversation
             if (hasTranscript) {
@@ -410,6 +429,13 @@ export class BatchCallingService {
               // Conversation exists but call not yet fully ended – retry next poll
               console.log(`[Batch Calling Service] ⏳ Existing conversation for ${phoneNumber} – waiting for call to end before triggering automation`);
             }
+            continue;
+          }
+
+          // ── SKIP: already FULLY processed, no existing conversation to update ──
+          // (should rarely happen – just a safety guard)
+          if (alreadyProcessed.has(phoneNumber)) {
+            conversationsSkipped++;
             continue;
           }
 
