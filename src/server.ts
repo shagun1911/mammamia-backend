@@ -597,9 +597,24 @@ const startServer = async () => {
 };
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', (err: Error) => {
-  logger.error('Unhandled Rejection:', err.message);
-  process.exit(1);
+process.on('unhandledRejection', (reason: any) => {
+  const msg = reason?.message || String(reason);
+  logger.error('Unhandled Rejection:', msg);
+
+  // Redis connection errors are transient – don't crash the server.
+  // The app has fallbacks (BatchCallMonitor, sync imports) for when Redis is down.
+  const isRedisError = msg.includes('max number of clients reached')
+    || msg.includes('ECONNREFUSED')
+    || msg.includes('ECONNRESET')
+    || msg.includes('Redis');
+  if (isRedisError) {
+    console.error('[Server] ⚠️ Redis error (non-fatal, continuing):', msg);
+    return;
+  }
+
+  // For truly unexpected errors in production, log but don't crash either —
+  // Render will restart the service if it becomes unhealthy via health checks.
+  console.error('[Server] ❌ Unhandled Rejection (non-Redis):', msg);
 });
 
 startServer();
