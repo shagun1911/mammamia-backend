@@ -12,7 +12,6 @@ const redisClient = createClient({
 let isRedisConnected = false;
 
 redisClient.on('error', (err) => {
-  // Silently handle Redis errors in development
   if (process.env.NODE_ENV === 'production') {
     console.error('Redis Client Error', err);
   }
@@ -31,7 +30,6 @@ export const connectRedis = async () => {
   } catch (error) {
     isRedisConnected = false;
     console.log('⚠ Redis not available - running without cache (some features disabled)');
-    // Ensure client is disconnected if connection failed
     try {
       if (redisClient.isOpen) {
         await redisClient.disconnect();
@@ -45,30 +43,32 @@ export const connectRedis = async () => {
 export const isRedisAvailable = () => isRedisConnected;
 
 // ── Shared ioredis connections for Bull queues ────────────────────────────────
-// Bull creates 3 Redis connections per queue (client, subscriber, bclient).
-// With 4 queues that's 12 connections – easy to hit free-tier limits.
-// By sharing one subscriber and one client across all queues we drop to ~6 total.
+// Goal: absolute minimum Redis connections.
+//   - 1 shared client (all queues)
+//   - 1 shared subscriber (all queues)
+//   - 1 bclient per queue (Bull requirement)
+// With 4 queues: 2 shared + 4 bclient = 6 ioredis + 1 node-redis = 7 total
+//
+// CRITICAL: retries are capped at 3 to prevent connection storms that exhaust
+// the Redis max-client limit on free-tier providers (Render/Upstash = 30 conn).
 let sharedSubscriber: IORedis | null = null;
 let sharedClient: IORedis | null = null;
 
 function makeIORedis(): IORedis {
-  return new IORedis(process.env.REDIS_URL!, {
-    maxRetriesPerRequest: null,   // required by Bull
+  const conn = new IORedis(process.env.REDIS_URL!, {
+    maxRetriesPerRequest: null,
     enableReadyCheck: false,
+    enableOfflineQueue: false,
     connectTimeout: 10000,
     retryStrategy(times) {
-      return Math.min(times * 500, 5000);
+      if (times > 3) return null;  // stop reconnecting after 3 attempts
+      return Math.min(times * 1000, 3000);
     }
   });
+  conn.on('error', () => {}); // prevent unhandled error crashes
+  return conn;
 }
 
-/**
- * Pass this as the `createClient` option when constructing Bull queues.
- * Bull calls it with type = 'client' | 'subscriber' | 'bclient'.
- * - subscriber: shared (one per process)
- * - client: shared (one per process)
- * - bclient: unique per queue (Bull requirement for blocking commands)
- */
 export function bullCreateClient(type: 'client' | 'subscriber' | 'bclient'): IORedis {
   if (type === 'subscriber') {
     if (!sharedSubscriber) sharedSubscriber = makeIORedis();
@@ -78,7 +78,6 @@ export function bullCreateClient(type: 'client' | 'subscriber' | 'bclient'): IOR
     if (!sharedClient) sharedClient = makeIORedis();
     return sharedClient;
   }
-  // bclient must be unique per queue (used for BRPOPLPUSH)
   return makeIORedis();
 }
 
