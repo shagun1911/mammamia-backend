@@ -1,4 +1,5 @@
 import { createClient } from 'redis';
+import IORedis from 'ioredis';
 
 const redisClient = createClient({
   url: process.env.REDIS_URL,
@@ -42,6 +43,44 @@ export const connectRedis = async () => {
 };
 
 export const isRedisAvailable = () => isRedisConnected;
+
+// ── Shared ioredis connections for Bull queues ────────────────────────────────
+// Bull creates 3 Redis connections per queue (client, subscriber, bclient).
+// With 4 queues that's 12 connections – easy to hit free-tier limits.
+// By sharing one subscriber and one client across all queues we drop to ~6 total.
+let sharedSubscriber: IORedis | null = null;
+let sharedClient: IORedis | null = null;
+
+function makeIORedis(): IORedis {
+  return new IORedis(process.env.REDIS_URL!, {
+    maxRetriesPerRequest: null,   // required by Bull
+    enableReadyCheck: false,
+    connectTimeout: 10000,
+    retryStrategy(times) {
+      return Math.min(times * 500, 5000);
+    }
+  });
+}
+
+/**
+ * Pass this as the `createClient` option when constructing Bull queues.
+ * Bull calls it with type = 'client' | 'subscriber' | 'bclient'.
+ * - subscriber: shared (one per process)
+ * - client: shared (one per process)
+ * - bclient: unique per queue (Bull requirement for blocking commands)
+ */
+export function bullCreateClient(type: 'client' | 'subscriber' | 'bclient'): IORedis {
+  if (type === 'subscriber') {
+    if (!sharedSubscriber) sharedSubscriber = makeIORedis();
+    return sharedSubscriber;
+  }
+  if (type === 'client') {
+    if (!sharedClient) sharedClient = makeIORedis();
+    return sharedClient;
+  }
+  // bclient must be unique per queue (used for BRPOPLPUSH)
+  return makeIORedis();
+}
 
 export default redisClient;
 

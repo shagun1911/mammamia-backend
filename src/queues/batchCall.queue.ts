@@ -1,6 +1,6 @@
 import Bull from 'bull';
 import { batchCallingService } from '../services/batchCalling.service';
-import { isRedisAvailable } from '../config/redis';
+import { isRedisAvailable, bullCreateClient } from '../config/redis';
 import mongoose from 'mongoose';
 
 /**
@@ -35,16 +35,17 @@ const createQueueIfAvailable = () => {
   }
 
   try {
-    batchCallQueue = new Bull('batch-call', process.env.REDIS_URL, {
+    batchCallQueue = new Bull('batch-call', {
+      createClient: bullCreateClient,
       settings: {
         maxStalledCount: 1,
         retryProcessDelay: 5000,
-        lockDuration: 300000, // 5 minutes for large batches
-        lockRenewTime: 60000  // Renew lock every 60s
+        lockDuration: 300000,
+        lockRenewTime: 60000
       },
       defaultJobOptions: {
-        removeOnComplete: 100, // Keep last 100 completed jobs for debugging
-        removeOnFail: 200      // Keep last 200 failed jobs for debugging
+        removeOnComplete: 100,
+        removeOnFail: 200
       }
     });
 

@@ -2,7 +2,7 @@ import Bull from 'bull';
 import ContactList from '../models/ContactList';
 import CSVImport from '../models/CSVImport';
 import { automationEngine } from '../services/automationEngine.service';
-import { isRedisAvailable } from '../config/redis';
+import { isRedisAvailable, bullCreateClient } from '../config/redis';
 import { csvImportService } from '../services/csvImport.service';
 
 // Create CSV import queue (will fail gracefully if Redis is unavailable)
@@ -24,7 +24,8 @@ const createQueueIfAvailable = () => {
   }
 
   try {
-    csvImportQueue = new Bull('csv-import', process.env.REDIS_URL, {
+    csvImportQueue = new Bull('csv-import', {
+      createClient: bullCreateClient,
       settings: {
         maxStalledCount: 1,
         retryProcessDelay: 5000,

@@ -4,12 +4,13 @@ import CampaignRecipient from '../models/CampaignRecipient';
 import ContactListMember from '../models/ContactListMember';
 import Customer from '../models/Customer';
 import { WhatsAppService } from '../services/whatsapp.service';
+import { bullCreateClient } from '../config/redis';
 
 // Create campaign queue (will fail gracefully if Redis is unavailable)
 let campaignQueue: Bull.Queue | null = null;
 
 try {
-  campaignQueue = new Bull('campaign', process.env.REDIS_URL!);
+  campaignQueue = new Bull('campaign', { createClient: bullCreateClient });
 } catch (error) {
   console.log('⚠ Campaign queue unavailable - Redis not connected');
 }
