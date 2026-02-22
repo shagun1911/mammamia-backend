@@ -4,16 +4,25 @@ import { isRedisAvailable } from '../config/redis';
 
 /**
  * Batch Call Sync Queue
- * 
+ *
  * Two job types:
- * 1. 'poll' - Lightweight job that polls Python API for batch status every 1-2s
- * 2. 'sync' - Heavy job that syncs conversations and triggers automations
- * 
- * Flow:
- * - On batch submit → enqueue 'poll' job with 5-10s delay
- * - Poll job runs → check status → if not completed, re-enqueue poll with 2s delay
- * - When completed → enqueue 'sync' job once and stop polling
- * - Sync job runs → creates conversations → triggers batch_call_completed automations
+ * 1. 'poll' - Runs every 30s; calls incremental sync on every tick regardless of batch status
+ * 2. 'sync' - One-shot final sync after batch is completed (belt-and-suspenders safety net)
+ *
+ * Incremental flow (production-ready for 500–1000 call batches):
+ *  1. Batch submitted → enqueueBatchPoll → first 'poll' runs after 30s
+ *  2. Each poll tick:
+ *       a. Fetch batch status from Python API, update DB
+ *       b. Call syncBatchCallConversations (incremental):
+ *            → for each call whose transcript just arrived → create conversation + trigger automation
+ *            → already-processed calls (in processed_call_ids) are skipped in O(1)
+ *            → calls still awaiting transcript are skipped and retried next tick
+ *       c. If batch still in_progress → re-enqueue poll with 30s delay
+ *       d. If batch completed + conversations_synced=true → stop polling (done)
+ *       e. If batch completed + conversations_synced=false → re-enqueue poll to catch
+ *          remaining calls whose transcripts haven't arrived yet
+ *  3. When batch completes, also enqueue one explicit 'sync' job as a safety net
+ *  4. If Redis unavailable → BatchCallMonitor fallback checks every 60s
  */
 
 // Create batch call sync queue (will fail gracefully if Redis is unavailable)
@@ -86,9 +95,9 @@ const setupQueueProcessors = () => {
 
     try {
       const BatchCall = (await import('../models/BatchCall')).default;
-      const status = await batchCallingService.getBatchJobStatus(batch_call_id);
 
-      // Update DB with latest status (silent - no log every 10s)
+      // 1. Fetch latest status from Python API and persist to DB
+      const status = await batchCallingService.getBatchJobStatus(batch_call_id);
       await BatchCall.updateOne(
         { batch_call_id },
         {
@@ -102,103 +111,106 @@ const setupQueueProcessors = () => {
         }
       );
 
-      if (status.status === 'completed') {
-        console.log(`[Batch Call Sync Queue] ✅ Batch completed: ${batch_call_id} (${status.total_calls_finished}/${status.total_calls_scheduled} calls)`);
+      // 2. Incremental sync – process any call whose transcript has just arrived.
+      //    This fires automations per-call as they complete, not after the whole batch.
+      //    syncBatchCallConversations is fully idempotent via processed_call_ids.
+      try {
+        await batchCallingService.syncBatchCallConversations(batch_call_id, organizationId);
+      } catch (syncErr: any) {
+        // Log but don't stop polling – next tick will retry unprocessed calls
+        console.error(`[Batch Call Sync Queue] ⚠️ Incremental sync error for ${batch_call_id}:`, syncErr.message);
+      }
 
-        // Check if transcripts are ready before triggering sync
-        try {
-          const results = await batchCallingService.getBatchJobResults(batch_call_id, true);
-          const hasTranscripts = results.results &&
-            Array.isArray(results.results) &&
-            results.results.length > 0 &&
-            results.results.some((r: any) => r.transcript && r.transcript.length > 0);
-
-          if (!hasTranscripts) {
-            const transcriptPollCount = (job.data.transcriptPollCount || 0) + 1;
-            if (transcriptPollCount < 30) {
-              if (batchCallSyncQueue) {
-                await batchCallSyncQueue.add('poll', {
-                  batch_call_id, organizationId,
-                  pollCount: pollCount + 1,
-                  transcriptPollCount
-                }, { delay: 10000, attempts: 3, backoff: { type: 'fixed', delay: 5000 } });
-              }
-              return { completed: true, waitingForTranscripts: true, transcriptPollCount };
-            }
-            console.warn(`[Batch Call Sync Queue] ⚠️ Max transcript checks reached for ${batch_call_id}, syncing anyway`);
-          }
-        } catch (transcriptCheckError: any) {
-          console.warn(`[Batch Call Sync Queue] ⚠️ Could not check transcripts for ${batch_call_id}:`, transcriptCheckError.message);
-        }
-
-        if (batchCallSyncQueue) {
-          await batchCallSyncQueue.add('sync', { batch_call_id, organizationId }, {
-            delay: 5000,
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 300000 },
-            timeout: 3600000
-          });
-          // Fallback sync in-process
-          setTimeout(async () => {
-            try {
-              await batchCallingService.syncBatchCallConversations(batch_call_id, organizationId);
-            } catch (fallbackErr: any) {
-              console.error(`[Batch Call Sync Queue] ⚠️ Fallback sync failed: ${batch_call_id}:`, fallbackErr.message);
-            }
-          }, 10000);
-        }
-
-        return { completed: true, batch_call_id, finalStatus: status.status };
-
-      } else if (status.status === 'cancelled' || status.status === 'failed') {
+      // 3. Decide whether to keep polling
+      if (status.status === 'cancelled' || status.status === 'failed') {
         console.log(`[Batch Call Sync Queue] 🛑 Batch terminal (${status.status}): ${batch_call_id}`);
-        return { completed: false, batch_call_id, finalStatus: status.status, reason: 'terminal_status' };
-      } else {
-        // Still running – re-enqueue silently
-        const maxPolls = 8640; // 24 hours at 10s intervals
-        if (pollCount >= maxPolls) {
-          console.warn(`[Batch Call Sync Queue] ⚠️ Max polls reached for ${batch_call_id}`);
-          return { completed: false, batch_call_id, reason: 'max_polls_reached' };
+        return { done: true, batch_call_id, finalStatus: status.status };
+      }
+
+      if (status.status === 'completed') {
+        // Re-check DB record to see if all calls have been processed
+        const fresh = await BatchCall.findOne({ batch_call_id }).lean() as any;
+
+        if (fresh?.conversations_synced) {
+          console.log(`[Batch Call Sync Queue] ✅ Batch ${batch_call_id} fully processed – stopping poll`);
+          return { done: true, batch_call_id, finalStatus: 'completed' };
         }
 
+        // Still have calls awaiting transcripts – keep polling at same cadence
+        const pendingPollCount = (job.data.pendingPollCount || 0) + 1;
+        const maxPendingPolls = 60; // 30 min of retries after completion
+        if (pendingPollCount >= maxPendingPolls) {
+          console.warn(`[Batch Call Sync Queue] ⚠️ Max post-completion polls (${maxPendingPolls}) reached for ${batch_call_id} – forcing conversations_synced=true`);
+          await BatchCall.updateOne({ batch_call_id }, { $set: { conversations_synced: true } });
+          return { done: true, batch_call_id, reason: 'max_pending_polls' };
+        }
+
+        console.log(`[Batch Call Sync Queue] ⏳ Batch ${batch_call_id} completed but transcripts still pending – re-poll #${pendingPollCount}/${maxPendingPolls}`);
         if (batchCallSyncQueue) {
           await batchCallSyncQueue.add('poll', {
-            batch_call_id, organizationId, pollCount: pollCount + 1
-          }, { delay: 10000, attempts: 3, backoff: { type: 'fixed', delay: 5000 } });
+            batch_call_id, organizationId, pollCount: pollCount + 1, pendingPollCount
+          }, { delay: 30000, attempts: 3, backoff: { type: 'fixed', delay: 10000 } });
         }
-
-        return { completed: false, batch_call_id, currentStatus: status.status, pollCount: pollCount + 1 };
+        return { done: false, batch_call_id, currentStatus: 'completed', pendingPollCount };
       }
+
+      // Batch still in_progress – re-enqueue next tick
+      const maxPolls = 2880; // 24 hours at 30s intervals
+      if (pollCount >= maxPolls) {
+        console.warn(`[Batch Call Sync Queue] ⚠️ Max polls reached for ${batch_call_id}`);
+        return { done: false, batch_call_id, reason: 'max_polls_reached' };
+      }
+
+      const finished = status.total_calls_finished ?? 0;
+      const scheduled = status.total_calls_scheduled ?? 1;
+      const pct = Math.round((finished / scheduled) * 100);
+      if (pollCount % 10 === 0) {
+        // Log progress every ~5 min to avoid log spam
+        console.log(`[Batch Call Sync Queue] 📊 Batch ${batch_call_id} progress: ${finished}/${scheduled} (${pct}%) – poll #${pollCount}`);
+      }
+
+      if (batchCallSyncQueue) {
+        await batchCallSyncQueue.add('poll', {
+          batch_call_id, organizationId, pollCount: pollCount + 1
+        }, { delay: 30000, attempts: 3, backoff: { type: 'fixed', delay: 10000 } });
+      }
+
+      return { done: false, batch_call_id, currentStatus: status.status, pollCount: pollCount + 1, progress: `${pct}%` };
 
     } catch (error: any) {
       console.error(`[Batch Call Sync Queue] ❌ Poll error for ${batch_call_id}:`, error.message);
       if (pollCount < 10 && batchCallSyncQueue) {
         await batchCallSyncQueue.add('poll', {
           batch_call_id, organizationId, pollCount: pollCount + 1
-        }, { delay: 5000, attempts: 3 });
+        }, { delay: 30000, attempts: 3 });
       }
       throw error;
     }
   });
 
   // ============================================================
-  // SYNC JOB PROCESSOR (Heavy, Low Concurrency)
+  // SYNC JOB PROCESSOR – safety-net final pass
   // ============================================================
-  // Syncs conversations and triggers batch_call_completed automations
-  // NOTE: Poll job already verified transcripts exist before enqueueing this
+  // The poll job handles all incremental processing.
+  // This job is enqueued only as a belt-and-suspenders final sync after batch completion,
+  // so any call that was missed by the poll cycle gets picked up.
+  // syncBatchCallConversations is idempotent – already-processed calls are no-ops.
   batchCallSyncQueue.process('sync', 2, async (job: Bull.Job) => {
     const { batch_call_id, organizationId } = job.data;
 
     try {
       const BatchCall = (await import('../models/BatchCall')).default;
-      const batchCall = await BatchCall.findOne({ batch_call_id }).lean();
+      const batchCall = await BatchCall.findOne({ batch_call_id }).lean() as any;
       if (batchCall?.status === 'cancelled') {
         return { skipped: true, reason: 'cancelled', batch_call_id };
       }
+      if (batchCall?.conversations_synced) {
+        return { skipped: true, reason: 'already_synced', batch_call_id };
+      }
 
-      console.log(`[Batch Call Sync Queue] Syncing conversations for batch: ${batch_call_id}`);
+      console.log(`[Batch Call Sync Queue] 🔄 Safety-net final sync for batch: ${batch_call_id}`);
       await batchCallingService.syncBatchCallConversations(batch_call_id, organizationId);
-      console.log(`[Batch Call Sync Queue] ✅ Sync complete: ${batch_call_id}`);
+      console.log(`[Batch Call Sync Queue] ✅ Final sync complete: ${batch_call_id}`);
 
       return { success: true, batch_call_id, organizationId };
 
@@ -229,7 +241,7 @@ export const enqueueBatchPoll = async (batch_call_id: string, organizationId: st
   try {
     await batchCallSyncQueue.add('poll', {
       batch_call_id, organizationId, pollCount: 0
-    }, { delay: 10000, attempts: 3, backoff: { type: 'fixed', delay: 5000 } });
+    }, { delay: 30000, attempts: 3, backoff: { type: 'fixed', delay: 10000 } });
 
     console.log(`[Batch Call Sync Queue] Polling started for batch: ${batch_call_id}`);
     return true;

@@ -80,17 +80,16 @@ export class ConversationController {
                 }
               );
 
-              // Sync conversations for completed batches OR in-progress batches that have
-              // at least some finished calls (partial sync - idempotent, safe to call multiple times)
-              const shouldSync =
-                status.status === 'completed' ||
-                (status.status === 'in_progress' && (status.total_calls_finished ?? 0) > 0);
-
-              if (shouldSync) {
+              // Only sync (and trigger automations) once the ENTIRE batch is completed.
+              // Partial syncs on in_progress batches caused automations to fire prematurely
+              // before all calls had finished.
+              if (status.status === 'completed') {
                 await batchCallingService.syncBatchCallConversations(
                   batch.batch_call_id,
                   organizationId.toString()
                 );
+              } else {
+                console.log(`[Conversation Controller] ⏳ Batch ${batch.batch_call_id} still in progress (status: ${status.status}, finished: ${status.total_calls_finished}/${status.total_calls_scheduled}) – skipping sync until completed`);
               }
             } catch (err: any) {
               console.error(

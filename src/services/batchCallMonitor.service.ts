@@ -45,43 +45,72 @@ export class BatchCallMonitor {
   }
 
   /**
-   * Check for completed batch calls and sync their conversations
+   * Check for active/completed batch calls and run an incremental sync pass.
+   * Handles both in_progress batches (partial transcripts arriving) and
+   * completed batches that still have pending transcripts.
    */
   private async checkAndSyncBatchCalls() {
     try {
-      // Import BatchCall model
       const BatchCall = (await import('../models/BatchCall')).default;
 
-      // Find completed but unsynced batch calls (from last 24 hours)
       const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      
-      const unsyncedBatches = await BatchCall.find({
-        status: 'completed',
+
+      // Pick up any batch that is either still running OR completed but not yet fully synced.
+      // The incremental sync is idempotent – already-processed calls (in processed_call_ids) are skipped.
+      const activeBatches = await BatchCall.find({
         conversations_synced: { $ne: true },
-        createdAt: { $gte: oneDayAgo }
+        status: { $nin: ['cancelled', 'canceled', 'failed'] },
+        createdAt: { $gte: oneDayAgo },
+        $or: [
+          { syncErrorCount: { $exists: false } },
+          { syncErrorCount: { $lt: 5 } }
+        ]
       })
-      .select('batch_call_id organizationId createdAt')
+      .select('batch_call_id organizationId status createdAt')
       .lean();
 
-      if (unsyncedBatches.length === 0) {
-        return; // Nothing to sync
-      }
+      if (activeBatches.length === 0) return;
 
-      console.log(`[Batch Call Monitor] Found ${unsyncedBatches.length} unsynced batch(es)`);
+      console.log(`[Batch Call Monitor] 🔄 Running incremental sync for ${activeBatches.length} active batch(es)`);
 
-      for (const batch of unsyncedBatches) {
+      for (const batch of activeBatches) {
         const batchId = batch.batch_call_id;
-        const orgId = batch.organizationId?.toString();
+        const orgId = (batch as any).organizationId?.toString();
         if (!orgId) continue;
 
         try {
+          // For in_progress batches: also refresh status from Python API first
+          if ((batch as any).status !== 'completed') {
+            try {
+              const status = await batchCallingService.getBatchJobStatus(batchId);
+              await BatchCall.updateOne(
+                { batch_call_id: batchId },
+                {
+                  $set: {
+                    status: status.status,
+                    total_calls_dispatched: status.total_calls_dispatched,
+                    total_calls_scheduled: status.total_calls_scheduled,
+                    total_calls_finished: status.total_calls_finished,
+                    last_updated_at_unix: status.last_updated_at_unix || Math.floor(Date.now() / 1000)
+                  }
+                }
+              );
+              if (status.status === 'cancelled' || status.status === 'failed') {
+                console.log(`[Batch Call Monitor] 🛑 Batch ${batchId} is ${status.status} – skipping sync`);
+                continue;
+              }
+            } catch (statusErr: any) {
+              console.warn(`[Batch Call Monitor] ⚠️ Could not refresh status for ${batchId}:`, statusErr.message);
+            }
+          }
+
           await batchCallingService.syncBatchCallConversations(batchId, orgId);
-          console.log(`[Batch Call Monitor] ✅ Synced: ${batchId}`);
+          console.log(`[Batch Call Monitor] ✅ Incremental sync done: ${batchId}`);
         } catch (error: any) {
           console.error(`[Batch Call Monitor] ❌ Failed to sync ${batchId}:`, error.message);
         }
       }
-      
+
     } catch (error: any) {
       console.error('[Batch Call Monitor] ❌ Error during sync check:', error.message);
     }
