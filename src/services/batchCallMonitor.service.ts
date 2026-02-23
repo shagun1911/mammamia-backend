@@ -8,7 +8,7 @@ import mongoose from 'mongoose';
 export class BatchCallMonitor {
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
-  private checkIntervalMs = 60000; // Check every 60 seconds (poll queue handles real-time detection)
+  private checkIntervalMs = 30000; // Check every 30 seconds
 
   /**
    * Start the batch call monitor
@@ -19,7 +19,7 @@ export class BatchCallMonitor {
       return;
     }
 
-    console.log(`[Batch Call Monitor] Started (fallback check every ${this.checkIntervalMs / 1000}s)`);
+    console.log(`[Batch Call Monitor] ✅ Started – checking every ${this.checkIntervalMs / 1000}s`);
 
     this.isRunning = true;
     
@@ -69,43 +69,26 @@ export class BatchCallMonitor {
       .select('batch_call_id organizationId status createdAt')
       .lean();
 
-      if (activeBatches.length === 0) return;
+      if (activeBatches.length === 0) {
+        // Uncomment below line if you want heartbeat logs even when idle:
+        // console.log(`[Batch Call Monitor] 💤 No active batches – next check in ${this.checkIntervalMs / 1000}s`);
+        return;
+      }
 
-      console.log(`[Batch Call Monitor] 🔄 Running incremental sync for ${activeBatches.length} active batch(es)`);
+      console.log(`[Batch Call Monitor] 🔄 Found ${activeBatches.length} active batch(es) – syncing now`);
 
       for (const batch of activeBatches) {
         const batchId = batch.batch_call_id;
         const orgId = (batch as any).organizationId?.toString();
-        if (!orgId) continue;
+        if (!orgId) {
+          console.warn(`[Batch Call Monitor] ⚠️ Batch ${batchId} has no organizationId – skipping`);
+          continue;
+        }
 
+        console.log(`[Batch Call Monitor] 🔍 Syncing batch ${batchId} (status: ${(batch as any).status})`);
         try {
-          // For in_progress batches: also refresh status from Python API first
-          if ((batch as any).status !== 'completed') {
-            try {
-              const status = await batchCallingService.getBatchJobStatus(batchId);
-              await BatchCall.updateOne(
-                { batch_call_id: batchId },
-                {
-                  $set: {
-                    status: status.status,
-                    total_calls_dispatched: status.total_calls_dispatched,
-                    total_calls_scheduled: status.total_calls_scheduled,
-                    total_calls_finished: status.total_calls_finished,
-                    last_updated_at_unix: status.last_updated_at_unix || Math.floor(Date.now() / 1000)
-                  }
-                }
-              );
-              if (status.status === 'cancelled' || status.status === 'failed') {
-                console.log(`[Batch Call Monitor] 🛑 Batch ${batchId} is ${status.status} – skipping sync`);
-                continue;
-              }
-            } catch (statusErr: any) {
-              console.warn(`[Batch Call Monitor] ⚠️ Could not refresh status for ${batchId}:`, statusErr.message);
-            }
-          }
-
           await batchCallingService.syncBatchCallConversations(batchId, orgId);
-          console.log(`[Batch Call Monitor] ✅ Incremental sync done: ${batchId}`);
+          console.log(`[Batch Call Monitor] ✅ Sync cycle done for ${batchId} – next check in ${this.checkIntervalMs / 1000}s`);
         } catch (error: any) {
           console.error(`[Batch Call Monitor] ❌ Failed to sync ${batchId}:`, error.message);
         }
