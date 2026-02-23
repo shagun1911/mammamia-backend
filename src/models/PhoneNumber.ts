@@ -14,7 +14,8 @@ export interface IPhoneNumber extends Document {
   supports_outbound?: boolean;
   inbound_trunk_config?: {
     address: string;
-    credentials: {
+    media_encryption?: string;
+    credentials?: {
       username: string;
       password: string;
     };
@@ -87,6 +88,7 @@ const PhoneNumberSchema = new Schema<IPhoneNumber>({
   inbound_trunk_config: {
     type: {
       address: String,
+      media_encryption: String,
       credentials: {
         username: String,
         password: String

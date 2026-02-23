@@ -576,7 +576,7 @@ export class SipTrunkService {
     supports_outbound: boolean;
     inbound_trunk_config?: {
       address: string;
-      // Note: credentials are not required for inbound-only configuration
+      media_encryption?: string;
     };
     outbound_trunk_config?: {
       address: string;
@@ -601,10 +601,12 @@ export class SipTrunkService {
       };
 
       if (data.inbound_trunk_config) {
-        // For inbound-only: only include address, no credentials
         payload.inbound_trunk_config = {
           address: data.inbound_trunk_config.address
         };
+        if (data.inbound_trunk_config.media_encryption) {
+          payload.inbound_trunk_config.media_encryption = data.inbound_trunk_config.media_encryption;
+        }
       }
 
       if (data.outbound_trunk_config) {
@@ -628,11 +630,20 @@ export class SipTrunkService {
 
       console.log('[SIP Trunk Service] ===== REGISTERING SIP PHONE NUMBER WITH ELEVENLABS =====');
       console.log('[SIP Trunk Service] phone_number:', data.phone_number, '| transport:', transport, suggestedTransport ? `| hint: try transport "${suggestedTransport}" if errors` : '');
-      console.log('[SIP Trunk Service] Request payload:', {
-        ...payload,
-        inbound_trunk_config: payload.inbound_trunk_config ? { ...payload.inbound_trunk_config, credentials: { ...payload.inbound_trunk_config.credentials, password: '***hidden***' } } : undefined,
-        outbound_trunk_config: payload.outbound_trunk_config ? { ...payload.outbound_trunk_config, credentials: { ...payload.outbound_trunk_config.credentials, password: '***hidden***' } } : undefined
-      });
+      const logPayload: any = { ...payload };
+      if (payload.inbound_trunk_config) {
+        logPayload.inbound_trunk_config = { ...payload.inbound_trunk_config };
+        if (payload.inbound_trunk_config.credentials) {
+          logPayload.inbound_trunk_config.credentials = { ...payload.inbound_trunk_config.credentials, password: '***hidden***' };
+        }
+      }
+      if (payload.outbound_trunk_config) {
+        logPayload.outbound_trunk_config = { ...payload.outbound_trunk_config };
+        if (payload.outbound_trunk_config.credentials) {
+          logPayload.outbound_trunk_config.credentials = { ...payload.outbound_trunk_config.credentials, password: '***hidden***' };
+        }
+      }
+      console.log('[SIP Trunk Service] Request payload:', logPayload);
 
       const response = await axios.post<{ phone_number_id: string }>(
         pythonUrl,
