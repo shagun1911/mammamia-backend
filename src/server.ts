@@ -81,58 +81,25 @@ app.use((req, res, next) => {
 });
 
 // Middleware
-// CORS configuration - supports multiple origins
-const corsOrigin = process.env.CORS_ORIGIN 
-  ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
-  : [
-      'http://localhost:3000',
-      'https://keplero-ai-frontend.vercel.app',
-      'https://keplero-ai-frontend-git-*.vercel.app',
-      'https://www.aistein.it',// Support preview deployments
-    ];
+// CORS configuration - allows all origins for embedded SaaS widget
+// This enables the chatbot widget to be embedded on any third-party domain
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (Postman, curl, server-to-server)
+    if (!origin) return callback(null, true);
 
-// CORS configuration - supports multiple origins and file uploads
-app.use(cors({ 
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) {
-      return callback(null, true);
-    }
-    
-    // Check if origin is in allowed list
-    const allowedOrigins = Array.isArray(corsOrigin) ? corsOrigin : [corsOrigin];
-    
-    // Check exact match
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    
-    // Check wildcard patterns (for Vercel preview deployments)
-    const isAllowed = allowedOrigins.some(allowed => {
-      if (allowed.includes('*')) {
-        const pattern = allowed.replace(/\*/g, '.*');
-        const regex = new RegExp(`^${pattern}$`);
-        return regex.test(origin);
-      }
-      return false;
-    });
-    
-    if (isAllowed) {
-      return callback(null, true);
-    }
-    
-    // In development, allow localhost variations
-    if (process.env.NODE_ENV === 'development' && origin.includes('localhost')) {
-      return callback(null, true);
-    }
-    
-    callback(new Error('Not allowed by CORS'));
+    // Allow all origins for embedded widget (SaaS requirement)
+    // This enables the widget to work on any domain where it's embedded
+    return callback(null, true);
   },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  exposedHeaders: ['Content-Range', 'X-Content-Range']
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  credentials: false // Set to false for cross-origin requests from any domain
 }));
+
+// Explicit preflight handling for all routes
+app.options('*', cors());
 
 // ============================================================================
 // CRITICAL: WooCommerce Webhook Route (MUST be before express.json())
@@ -413,7 +380,7 @@ const startServer = async () => {
     console.log('🔧 Server Configuration:');
     console.log('   - Environment:', process.env.NODE_ENV || 'development');
     console.log('   - Port:', PORT_NUMBER);
-    console.log('   - CORS Origin:', corsOrigin);
+    console.log('   - CORS: All origins allowed (embedded widget support)');
     console.log('   - MongoDB:', process.env.MONGODB_URI ? '✓ Configured' : '✗ Missing');
     console.log('   - Redis:', process.env.REDIS_URL ? '✓ Configured' : '✗ Missing');
     console.log('');

@@ -4,16 +4,13 @@ import { Server as SocketIOServer } from 'socket.io';
 let io: SocketIOServer | null = null;
 
 export const initializeSocket = (server: HttpServer) => {
-  // CORS configuration - supports multiple origins
-  const corsOrigin = process.env.SOCKET_IO_CORS_ORIGIN || process.env.CORS_ORIGIN 
-    ? (process.env.SOCKET_IO_CORS_ORIGIN || process.env.CORS_ORIGIN)!.split(',').map(origin => origin.trim())
-    : 'http://localhost:3000';
-
+  // CORS configuration - allows all origins for embedded SaaS widget
+  // This enables Socket.io connections from any domain where the widget is embedded
   io = new SocketIOServer(server, {
     cors: {
-      origin: corsOrigin,
+      origin: '*', // Allow all origins for embedded widget
       methods: ['GET', 'POST'],
-      credentials: true
+      credentials: false // Set to false for cross-origin requests from any domain
     }
   });
 
