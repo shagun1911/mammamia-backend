@@ -87,7 +87,8 @@ const corsOrigin = process.env.CORS_ORIGIN
   : [
       'http://localhost:3000',
       'https://keplero-ai-frontend.vercel.app',
-      'https://keplero-ai-frontend-git-*.vercel.app' // Support preview deployments
+      'https://keplero-ai-frontend-git-*.vercel.app',
+      'https://www.aistein.it',// Support preview deployments
     ];
 
 // CORS configuration - supports multiple origins and file uploads
