@@ -27,6 +27,7 @@ VOICE_ID_MAP = {
   'mario': 'irAl0cku0Hx4TEUJ8d1Q',
   'gianp': 'SpoXt7BywHwFLisCTpQ3',
   'vittorio': 'nH7uLS5UdEnvKEOAXtlQ',
+  'federica': 'YoTg4iSbsCW96GVME4O6',
   'ginevra': 'QITiGyM4owZBEf0QV8',
   'roberta': 'ZzFXkjuO1rPntDj6At5C',
   'giusy': '8KInRSd4DtD5L5gK7itu',

@@ -25,6 +25,7 @@ const VOICE_ID_MAP: Record<string, string> = {
   'gianp': 'SpoXt7BywHwFLisCTpQ3',
   'vittorio': 'nH7uLS5UdEnvKEOAXtlQ',
   'ginevra': 'QITiGyM4owEZrBEf0QV8',
+  'federica': 'YoTg4iSbsCW96GVME4O6',
   'roberta': 'ZzFXkjuO1rPntDj6At5C',
   'giusy': '8KInRSd4DtD5L5gK7itu',
   'sami': 'kAzI34nYjizE0zON6rXv',
