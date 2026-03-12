@@ -122,12 +122,12 @@ export class AutomationEngine {
       const timeParts = context.appointment.time.split(':');
       const hour = parseInt(timeParts[0], 10);
       const minute = parseInt(timeParts[1] || '0', 10);
-      
+
       // Calculate time + 30 minutes
       const totalMinutes = hour * 60 + minute + 30;
       const newHour = Math.floor(totalMinutes / 60) % 24;
       const newMinute = totalMinutes % 60;
-      
+
       data.appointment = {
         ...data.appointment,
         time_plus_30: `${String(newHour).padStart(2, '0')}:${String(newMinute).padStart(2, '0')}`
@@ -234,6 +234,13 @@ export class AutomationEngine {
       }
     });
 
+    // Inbound Call Completed Trigger
+    this.triggers.set('inbound_call_completed', {
+      validate: async (config, data) => {
+        return data.event === 'inbound_call_completed';
+      }
+    });
+
     // Conversation Created Trigger (Batch call finishes -> Conversations created)
     this.triggers.set('conversation_created', {
       validate: async (config, data) => {
@@ -264,10 +271,10 @@ export class AutomationEngine {
       validate: async (config, data) => {
         // Trigger fires when a message is received on Facebook Messenger
         if (data.event !== 'message_received') return false;
-        
+
         // If pageId is configured, match it
         if (config.pageId && data.pageId !== config.pageId) return false;
-        
+
         return true;
       }
     });
@@ -277,10 +284,10 @@ export class AutomationEngine {
       validate: async (config, data) => {
         // Trigger fires when a message is received on Instagram
         if (data.event !== 'message_received') return false;
-        
+
         // If instagramAccountId is configured, match it
         if (config.instagramAccountId && data.instagramAccountId !== config.instagramAccountId) return false;
-        
+
         return true;
       }
     });
@@ -458,7 +465,7 @@ export class AutomationEngine {
 
         if (useBatchService) {
           console.info(`[Automation Engine] 📦 Large batch detected (${contacts.length} recipients) - using batch calling service`);
-          
+
           try {
             // Prepare recipients for batch calling service
             const recipients = contacts
@@ -468,23 +475,23 @@ export class AutomationEngine {
                   phone_number: c.phone,
                   name: c.name || 'Customer'
                 };
-                
+
                 if (c.email) {
                   recipient.email = c.email;
                 }
-                
+
                 // Include dynamic variables from trigger data
                 const dynamicVars: any = {
                   name: c.name || 'Customer',
                   ...(triggerData || {})
                 };
-                
+
                 if (c.email) {
                   dynamicVars.email = c.email;
                 }
-                
+
                 recipient.dynamic_variables = dynamicVars;
-                
+
                 return recipient;
               });
 
@@ -499,7 +506,7 @@ export class AutomationEngine {
             if (queueAvailable) {
               // Enqueue job for background processing
               console.info(`[Automation Engine] 🚀 Enqueueing batch call job for ${recipients.length} recipients`);
-              
+
               const job = await enqueueBatchCall({
                 agent_id,
                 call_name: call_name || `Automation Batch - ${new Date().toISOString()}`,
@@ -524,7 +531,7 @@ export class AutomationEngine {
             // Fallback: use batch calling service synchronously
             console.info(`[Automation Engine] ⚠️  Queue not available, using synchronous batch calling service`);
             const { batchCallingService } = await import('../services/batchCalling.service');
-            
+
             const result = await batchCallingService.submitBatchCall({
               agent_id,
               call_name: call_name || `Automation Batch - ${new Date().toISOString()}`,
@@ -580,7 +587,7 @@ export class AutomationEngine {
 
         // Individual calls (for small batches or as fallback)
         console.info(`[Automation Engine] 📞 Processing ${contacts.length} recipients with individual calls`);
-        
+
         const batchResults = [];
         for (const contact of contacts) {
           if (!contact.phone) {
@@ -783,8 +790,8 @@ export class AutomationEngine {
         // Check Credits
         const organizationId = context?.organizationId || triggerData?.organizationId;
         if (organizationId) {
-             const hasCredit = await profileService.checkCredits(organizationId, 'chat', 1);
-             if (!hasCredit) throw new AppError(403, 'LIMIT_REACHED', 'Chat messages (WhatsApp) limit reached. Please upgrade your plan.');
+          const hasCredit = await profileService.checkCredits(organizationId, 'chat', 1);
+          if (!hasCredit) throw new AppError(403, 'LIMIT_REACHED', 'Chat messages (WhatsApp) limit reached. Please upgrade your plan.');
         }
 
         if (delay && delay > 0) {
@@ -870,7 +877,7 @@ export class AutomationEngine {
         // PROACTIVE VALIDATION: Fetch template metadata and validate param counts
         let templateMetadata: any = null;
         const WhatsAppTemplate = (await import('../models/WhatsAppTemplate')).default;
-        
+
         // Try to fetch from DB first
         templateMetadata = await WhatsAppTemplate.findOne({
           name: resolvedTemplateName,
@@ -892,7 +899,7 @@ export class AutomationEngine {
               if (integration?.credentials?.wabaId) {
                 const axios = (await import('axios')).default;
                 const metaUrl = `https://graph.facebook.com/v19.0/${integration.credentials.wabaId}/message_templates`;
-                
+
                 const metaResponse = await axios.get(metaUrl, {
                   headers: {
                     Authorization: `Bearer ${userAccessToken}`,
@@ -909,7 +916,7 @@ export class AutomationEngine {
                 if (matchingTemplate) {
                   const { extractTemplateParamCounts } = await import('../services/whatsapp.service');
                   const paramCounts = extractTemplateParamCounts(matchingTemplate);
-                  
+
                   // Store in DB
                   templateMetadata = await WhatsAppTemplate.findOneAndUpdate(
                     { name: resolvedTemplateName, language: resolvedLanguageCode },
@@ -936,7 +943,7 @@ export class AutomationEngine {
         // Normalize components: support multiple input formats
         let normalizedComponents: any[] = [];
         let providedParamCount = 0;
-        
+
         // Priority 1: Use existing components if provided (advanced/backward compatibility)
         // This allows users to override simple params with complex JSON if needed
         if (components) {
@@ -993,9 +1000,9 @@ export class AutomationEngine {
               type: 'text',
               text: String(param)
             }));
-          
+
           providedParamCount = bodyParams.length;
-          
+
           if (bodyParams.length > 0) {
             normalizedComponents = [{
               type: 'body',
@@ -1004,11 +1011,11 @@ export class AutomationEngine {
           }
           console.log(`[Automation Engine] Auto-generated components from ${bodyParams.length} template parameters`);
         }
-        
+
         // PROACTIVE VALIDATION: Check param count if template metadata is available
         if (templateMetadata && templateMetadata.totalParamCount !== undefined) {
           const expectedCount = templateMetadata.totalParamCount;
-          
+
           if (expectedCount > 0 && providedParamCount !== expectedCount) {
             throw new Error(
               `WHATSAPP_TEMPLATE_PARAMETER_MISMATCH: Template "${resolvedTemplateName}" requires ${expectedCount} parameter(s) ` +
@@ -1018,7 +1025,7 @@ export class AutomationEngine {
               `Button params: ${templateMetadata.buttonParamCount || 0}.`
             );
           }
-          
+
           // If template requires no params, don't attach components
           if (expectedCount === 0 && normalizedComponents.length > 0) {
             console.warn(`[Automation Engine] Template "${resolvedTemplateName}" requires no parameters, but components were provided. Ignoring components.`);
@@ -1137,9 +1144,9 @@ export class AutomationEngine {
         } catch (error: any) {
           // Preserve AppError messages (they contain helpful guidance)
           // Also catch our proactive validation errors
-          if (error.code === 'WHATSAPP_TEMPLATE_PARAMETER_MISMATCH' || 
-              error.message?.includes('WHATSAPP_TEMPLATE_PARAMETER_MISMATCH') ||
-              error.message?.includes('parameter')) {
+          if (error.code === 'WHATSAPP_TEMPLATE_PARAMETER_MISMATCH' ||
+            error.message?.includes('WHATSAPP_TEMPLATE_PARAMETER_MISMATCH') ||
+            error.message?.includes('parameter')) {
             // Log detailed error info for debugging
             console.error('[Automation Engine] WhatsApp template parameter error:', {
               templateName: resolvedTemplateName,
@@ -1521,13 +1528,13 @@ export class AutomationEngine {
           const userEmail = integration.getDecryptedApiKey();
           console.log(`[Automation Engine] 📧 Sending email to: ${resolvedTo}`);
           console.log(`[Automation Engine] Subject: ${resolvedSubject}`);
-          
+
           await gmailOAuthService.sendEmail(userEmail, {
             to: resolvedTo,
             subject: resolvedSubject,
             body: resolvedBody
           });
-          
+
           console.log(`[Automation Engine] ✅ Email sent successfully to ${resolvedTo}`);
           return { success: true, status: 'completed', recipient: resolvedTo };
         } catch (error: any) {
@@ -1637,7 +1644,7 @@ export class AutomationEngine {
     try {
       const sortedNodes = [...automation.nodes].sort((a, b) => a.position - b.position);
       console.log(`[Automation Engine] 📋 Total nodes to process: ${sortedNodes.length}`);
-      
+
       const triggerNode = sortedNodes.find(n => n.type === 'trigger');
       if (!triggerNode) throw new Error('No trigger node found');
 
@@ -1657,7 +1664,7 @@ export class AutomationEngine {
 
       const contactIds = Array.isArray(triggerData.contactIds) ? triggerData.contactIds : [triggerData.contactId].filter(Boolean);
       console.log(`[Automation Engine] 👥 Processing ${contactIds.length} contact(s)`);
-      
+
       for (const contactId of contactIds) {
         let contact = await Customer.findById(contactId).lean();
         if (!contact) {
@@ -1671,7 +1678,7 @@ export class AutomationEngine {
           console.log(`[Automation Engine] 🔄 Using fresh contact data from CSV instead of database`);
           console.log(`[Automation Engine] 📧 Database email: ${contact.email}`);
           console.log(`[Automation Engine] 📧 CSV email (fresh): ${triggerData.freshContactData.email}`);
-          
+
           // Merge fresh data with database contact, prioritizing fresh data
           contact = {
             ...contact,
@@ -1679,7 +1686,7 @@ export class AutomationEngine {
             email: triggerData.freshContactData.email || contact.email,
             phone: triggerData.freshContactData.phone || contact.phone
           };
-          
+
           console.log(`[Automation Engine] ✅ Using merged contact data with fresh email: ${contact.email}`);
         }
 
@@ -1713,7 +1720,7 @@ export class AutomationEngine {
           console.log(`\n[Automation Engine] [${nodeIndex}/${sortedNodes.length}] 🔄 Executing: ${node.type} - ${node.service}`);
 
           const nodeConfig = this.convertConfigToPlainObject(node.config);
-          
+
           if (node.type === 'delay') {
             console.log(`[Automation Engine] ⏱️  Delaying for ${nodeConfig.delay} ${nodeConfig.delayUnit}`);
             await this.delay(nodeConfig.delay, nodeConfig.delayUnit);
@@ -1722,7 +1729,7 @@ export class AutomationEngine {
             // Evaluate condition
             const conditionMet = await this.evaluateCondition(nodeConfig, context);
             console.log(`[Automation Engine] 🔍 Condition evaluation: ${conditionMet ? '✅ PASS' : '❌ FAIL'}`, nodeConfig);
-            
+
             if (!conditionMet) {
               console.log(`[Automation Engine] ⏭️  Condition not met, skipping remaining actions for this contact`);
               break; // Skip remaining nodes for this contact
@@ -1733,11 +1740,11 @@ export class AutomationEngine {
               console.log(`[Automation Engine] ⚠️  No runner found for ${node.service}, skipping`);
               continue;
             }
-            
+
             console.log(`[Automation Engine] 🎬 Executing action: ${node.service}`);
             try {
               const res = await runner.execute(nodeConfig, context.triggerData, context);
-              
+
               if (res) {
                 if (res.success === false) {
                   console.log(`[Automation Engine] ❌ Action failed (continuing): ${node.service}`, res.error || res.reason);
@@ -1758,28 +1765,28 @@ export class AutomationEngine {
           }
         }
       }
-      
+
       execution.status = 'success';
       await execution.save();
-      
+
       console.log(`\n${'='.repeat(80)}`);
       console.log(`[Automation Engine] ✅ AUTOMATION EXECUTION COMPLETED SUCCESSFULLY`);
       console.log(`[Automation Engine] Execution ID: ${execution._id}`);
       console.log(`[Automation Engine] Status: ${execution.status}`);
       console.log(`${'='.repeat(80)}\n`);
-      
+
     } catch (err: any) {
       execution.status = 'failed';
       execution.errorMessage = err.message;
       await execution.save();
-      
+
       console.log(`\n${'='.repeat(80)}`);
       console.log(`[Automation Engine] ❌ AUTOMATION EXECUTION FAILED`);
       console.log(`[Automation Engine] Execution ID: ${execution._id}`);
       console.log(`[Automation Engine] Error: ${err.message}`);
       console.log(`[Automation Engine] Stack:`, err.stack);
       console.log(`${'='.repeat(80)}\n`);
-      
+
       throw err;
     }
   }
@@ -1805,7 +1812,7 @@ export class AutomationEngine {
         console.log(`[Automation Engine] ⚠️  No trigger node in automation: ${automation.name}`);
         continue;
       }
-      
+
       const triggerHandler = this.triggers.get(triggerNode.service);
       if (!triggerHandler) {
         console.log(`[Automation Engine] ⚠️  No handler for trigger: ${triggerNode.service} in automation: ${automation.name}`);
@@ -1815,11 +1822,11 @@ export class AutomationEngine {
       try {
         const triggerConfig = this.convertConfigToPlainObject(triggerNode.config);
         const isValid = await triggerHandler.validate(triggerConfig, eventData);
-        
+
         if (isValid) {
           console.log(`[Automation Engine] ✅ Trigger matched for automation: ${automation.name}`);
           console.log(`[Automation Engine] 🚀 Starting async execution...`);
-          
+
           const automationId = (automation._id as any).toString();
           this.executeAutomation(automationId, eventData, context).catch(err => {
             console.error(`[Automation Engine] ❌ Async failure for ${automation.name}:`, err.message);
@@ -1910,10 +1917,10 @@ export class AutomationEngine {
       // Send to each webhook URL
       for (const automation of webhookAutomations) {
         const webhookUrl = (automation as any).webhookUrl;
-        
+
         try {
           console.log(`[Automation Engine] 📡 Sending webhook to: ${webhookUrl}`);
-          
+
           const response = await axios.post(webhookUrl, webhookPayload, {
             timeout: 10000,
             headers: {
@@ -1963,7 +1970,7 @@ export class AutomationEngine {
     // Get actual value from context using dot notation
     let actualValue: any;
     const fieldParts = field.split('.');
-    
+
     if (fieldParts.length === 2) {
       // Nested property like "appointment.booked" or "extracted.interested_in_loan"
       const [category, key] = fieldParts;
@@ -2080,18 +2087,18 @@ export class AutomationEngine {
 
     const Conversation = (await import('../models/Conversation')).default;
     const conversationId = response.data.conversation_id || response.data.id;
-    
+
     // CRITICAL: Create conversation with callerId for transcript polling
     await Conversation.create({
       customerId: contact._id || contact.id,
       channel: 'phone',
       status: 'open',
       organizationId,
-      metadata: { 
+      metadata: {
         external_call_id: conversationId,
         conversation_id: conversationId,
         callerId: conversationId, // CRITICAL: For transcript polling
-        phone_number: normalizedPhone, 
+        phone_number: normalizedPhone,
         agent_id,
         source: 'automation_outbound'
       }

@@ -39,7 +39,7 @@ export class ElevenLabsWebhookController {
       console.log('  Timestamp:', timestamp);
       console.log('  IP:', ip);
       console.log('  URL:', url);
-      
+
       // Only log post_call_transcription to structured logger
       if (body?.type === 'post_call_transcription') {
         logger.info('[ElevenLabs Webhook] post_call_transcription received', {
@@ -93,7 +93,7 @@ export class ElevenLabsWebhookController {
         body: req.body,
         headers: req.headers
       });
-      
+
       // Already sent response, so nothing to do here
     }
   };
@@ -112,7 +112,7 @@ export class ElevenLabsWebhookController {
     // Check if this is an inbound call
     const phoneCall = data.metadata?.phone_call;
     const direction = phoneCall?.direction;
-    
+
     if (direction !== 'inbound') {
       console.log('[ElevenLabs Webhook] Call direction is not inbound, skipping:', direction);
       return;
@@ -126,7 +126,7 @@ export class ElevenLabsWebhookController {
     // Find agent by agent_id
     const Agent = (await import('../models/Agent')).default;
     const agent = await Agent.findOne({ agent_id: data.agent_id });
-    
+
     if (!agent) {
       console.warn('[ElevenLabs Webhook] ⚠️ Agent not found:', data.agent_id);
       return;
@@ -137,7 +137,7 @@ export class ElevenLabsWebhookController {
     // Get user and organization
     const User = (await import('../models/User')).default;
     const Organization = (await import('../models/Organization')).default;
-    
+
     const user = await User.findById(agent.userId);
     if (!user) {
       console.warn('[ElevenLabs Webhook] ⚠️ User not found for agent:', agent.userId);
@@ -148,8 +148,8 @@ export class ElevenLabsWebhookController {
     let organizationId: mongoose.Types.ObjectId;
     if (user.organizationId) {
       const orgId = user.organizationId;
-      organizationId = orgId instanceof mongoose.Types.ObjectId 
-        ? orgId 
+      organizationId = orgId instanceof mongoose.Types.ObjectId
+        ? orgId
         : new mongoose.Types.ObjectId(String(orgId));
     } else {
       // Try to find organization by ownerId
@@ -173,7 +173,7 @@ export class ElevenLabsWebhookController {
 
     // Find or create customer
     const Customer = (await import('../models/Customer')).default;
-    let customer = await Customer.findOne({ 
+    let customer = await Customer.findOne({
       phone: externalNumber,
       organizationId: organizationId
     });
@@ -227,7 +227,7 @@ export class ElevenLabsWebhookController {
 
     if (conversation) {
       console.log('[ElevenLabs Webhook] ✅ Found existing conversation, updating with transcript');
-      
+
       // Update conversation with transcript
       conversation.transcript = transcript;
       conversation.status = status === 'done' ? 'closed' : 'open';
@@ -242,17 +242,17 @@ export class ElevenLabsWebhookController {
         agent_number: phoneCall.agent_number,
         external_number: phoneCall.external_number,
         direction: phoneCall.direction,
-        callInitiated: metadata.start_time_unix_secs 
-          ? new Date(metadata.start_time_unix_secs * 1000) 
+        callInitiated: metadata.start_time_unix_secs
+          ? new Date(metadata.start_time_unix_secs * 1000)
           : new Date(),
-        callCompletedAt: metadata.accepted_time_unix_secs 
+        callCompletedAt: metadata.accepted_time_unix_secs
           ? new Date((metadata.accepted_time_unix_secs + (metadata.call_duration_secs || 0)) * 1000)
           : new Date(),
         termination_reason: metadata.termination_reason,
         error: metadata.error,
         source: 'inbound_webhook'
       };
-      
+
       await conversation.save();
     } else {
       // Create new conversation
@@ -274,10 +274,10 @@ export class ElevenLabsWebhookController {
           agent_number: phoneCall.agent_number,
           external_number: phoneCall.external_number,
           direction: phoneCall.direction,
-          callInitiated: metadata.start_time_unix_secs 
-            ? new Date(metadata.start_time_unix_secs * 1000) 
+          callInitiated: metadata.start_time_unix_secs
+            ? new Date(metadata.start_time_unix_secs * 1000)
             : new Date(),
-          callCompletedAt: metadata.accepted_time_unix_secs 
+          callCompletedAt: metadata.accepted_time_unix_secs
             ? new Date((metadata.accepted_time_unix_secs + (metadata.call_duration_secs || 0)) * 1000)
             : new Date(),
           termination_reason: metadata.termination_reason,
@@ -285,7 +285,7 @@ export class ElevenLabsWebhookController {
           source: 'inbound_webhook'
         }
       });
-      
+
       console.log('[ElevenLabs Webhook] ✅ Created conversation:', conversation._id);
     }
 
@@ -317,8 +317,29 @@ export class ElevenLabsWebhookController {
           });
         }
       }
-      
+
       console.log('[ElevenLabs Webhook] ✅ Created', transcript.length, 'messages from transcript');
+
+      // 🚀 TRIGGER INBOUND CALL AUTOMATION
+      try {
+        const { automationService } = await import('../services/automation.service');
+        const phone = phoneCall.external_number || data.user_id;
+        const name = (conversation as any).customerName || `Caller ${phone}`;
+        const email = (conversation as any).customerEmail;
+
+        console.log(`[ElevenLabs Webhook] 🚀 Triggering automation for inbound call completed: ${phone}`);
+
+        await automationService.triggerByEvent('inbound_call_completed', {
+          event: 'inbound_call_completed',
+          conversation_id: conversation._id.toString(),
+          contactId: customerId.toString(),
+          organizationId: organizationId.toString(),
+          source: 'inbound_call',
+          freshContactData: { name, email, phone }
+        }, { organizationId: organizationId.toString() });
+      } catch (automationError: any) {
+        console.error('[ElevenLabs Webhook] ⚠️ Failed to trigger inbound call automation:', automationError.message);
+      }
     }
 
     // Add initial note if conversation was just created
@@ -330,7 +351,7 @@ export class ElevenLabsWebhookController {
         sender: 'ai',
         timestamp: new Date()
       });
-      
+
       conversation.metadata = {
         ...conversation.metadata,
         initial_note_added: true
@@ -390,7 +411,7 @@ export class ElevenLabsWebhookController {
           external_number: data.user_id // Store phone number from user_id
         }
       });
-      
+
       // Add initial note
       await Message.create({
         conversationId: conversation._id,
@@ -399,7 +420,7 @@ export class ElevenLabsWebhookController {
         sender: 'ai',
         timestamp: new Date()
       });
-      
+
       console.log('[ElevenLabs Webhook] ✅ Created conversation placeholder with audio:', conversation._id);
     }
   }
