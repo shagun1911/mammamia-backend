@@ -5,6 +5,50 @@ import { AutomationEngine } from './automationEngine.service';
 import { AppError } from '../middleware/error.middleware';
 import { profileService } from './profile.service';
 
+/** ElevenLabs often truncates `message` when interrupted=true; full text is in original_message. */
+function extractTurnBody(msg: any): string {
+  if (typeof msg === 'string') return msg.trim();
+  const primary = msg?.text ?? msg?.message ?? msg?.content;
+  const primaryStr = typeof primary === 'string' ? primary.trim() : '';
+  const orig = msg?.original_message;
+  const origStr = typeof orig === 'string' ? orig.trim() : '';
+  if (msg?.interrupted && origStr) return origStr;
+  if (origStr && primaryStr && origStr.length > primaryStr.length + 15) return origStr;
+  if (origStr && !primaryStr) return origStr;
+  return primaryStr;
+}
+
+function roleLabel(role: string | undefined): string {
+  const r = (role || '').toLowerCase();
+  if (r === 'agent' || r === 'assistant') return 'Agent';
+  if (r === 'user' || r === 'customer') return 'Customer';
+  return 'Speaker';
+}
+
+/** Turn ElevenLabs / nested transcript arrays into labeled lines for the extraction LLM. */
+function transcriptFromTurnArray(turns: any[]): string {
+  return turns
+    .map((msg) => {
+      if (typeof msg === 'string') return msg.trim();
+      const body = extractTurnBody(msg);
+      if (!body) return '';
+      return `${roleLabel(msg?.role)}: ${body}`;
+    })
+    .filter((line: string) => line.length > 0)
+    .join('\n');
+}
+
+function coerceAppointmentBooked(val: unknown): boolean | undefined {
+  if (val === true || val === 1) return true;
+  if (val === false || val === 0) return false;
+  if (typeof val === 'string') {
+    const s = val.trim().toLowerCase();
+    if (s === 'true' || s === 'yes' || s === '1') return true;
+    if (s === 'false' || s === 'no' || s === '0') return false;
+  }
+  return undefined;
+}
+
 export class AutomationService {
   private engine: AutomationEngine;
 
@@ -280,21 +324,9 @@ export class AutomationService {
         if (typeof transcript === 'string') {
           transcriptText = transcript;
         } else if (Array.isArray(transcript)) {
-          transcriptText = transcript.map((msg: any) => {
-            if (typeof msg === 'string') return msg;
-            if (msg.text) return msg.text;
-            if (msg.message) return msg.message;
-            if (msg.content) return msg.content;
-            return JSON.stringify(msg);
-          }).join('\n');
+          transcriptText = transcriptFromTurnArray(transcript);
         } else if (transcript.messages && Array.isArray(transcript.messages)) {
-          transcriptText = transcript.messages.map((msg: any) => {
-            if (typeof msg === 'string') return msg;
-            if (msg.text) return msg.text;
-            if (msg.message) return msg.message;
-            if (msg.content) return msg.content;
-            return JSON.stringify(msg);
-          }).join('\n');
+          transcriptText = transcriptFromTurnArray(transcript.messages);
         } else {
           transcriptText = JSON.stringify(transcript);
         }
@@ -338,6 +370,7 @@ export class AutomationService {
       const openai = new OpenAI({ apiKey });
 
       const useDynamicExtraction = options?.extraction_prompt && options?.json_example && typeof options.json_example === 'object';
+      const currentYear = new Date().getFullYear();
 
       let systemPrompt: string;
       let responseShape: string;
@@ -350,7 +383,7 @@ The user wants you to extract the following. Follow this instruction exactly:
 
 ${options.extraction_prompt}
 
-You must respond with a single JSON object that has exactly the same keys as this example. Use the types indicated (string, number, boolean). Use null for missing values. Current year for dates: 2026.
+You must respond with a single JSON object that has exactly the same keys as this example. Use the types indicated (string, number, boolean). Use null for missing values. Current year for dates: ${currentYear}.
 
 Example shape (match these keys and types):
 ${exampleJson}
@@ -358,27 +391,30 @@ ${exampleJson}
 Respond ONLY with valid JSON matching the above keys. No extra keys, no explanation.`;
       } else {
         systemPrompt = extractionType === 'appointment'
-          ? `You are an AI assistant that extracts appointment information from conversation transcripts.
+          ? `You are an AI assistant that extracts appointment information from phone/chat transcripts (roles may be labeled Agent/Assistant vs Customer/User).
 
-Analyze the conversation and determine if the customer REQUESTED or PROVIDED appointment details (even if the system failed to confirm it).
+Your job is to decide whether a meeting, callback, or appointment was effectively BOOKED or AGREED—not whether the customer alone stated every detail.
 
-Set appointment_booked to TRUE if:
-- Customer explicitly said they want to book an appointment
-- Customer provided a date and time for the appointment
-- Customer gave their name and contact details for the booking
+Set appointment_booked to TRUE if ANY of these are true:
+- The customer and agent reached a clear agreement on a specific time slot (date and/or time), including when the agent proposed slot(s) and the customer accepted (e.g. "yes", "okay", "that works", "perfect", "book it", "see you then", "confirmed").
+- The customer asked to book / schedule / set up a meeting or callback AND the conversation moves to concrete timing (even if only the agent states the final slot after the customer agrees).
+- The customer provided date and/or time, OR confirmed a time the agent suggested.
+- The agent summarizes a confirmed appointment and the customer does not object (assent or thanks counts as agreement).
 
 Set appointment_booked to FALSE only if:
-- Customer never mentioned wanting an appointment
-- Customer explicitly declined or cancelled
+- There is no scheduling agreement (small talk only, hang up, or only "we'll call you back" with no time), OR
+- The customer clearly declined, cancelled, or refused to schedule.
 
-IMPORTANT: Even if the agent said "unable to confirm" or "system error", if the customer PROVIDED appointment details (name, date, time), set appointment_booked to TRUE.
+IMPORTANT:
+- Do NOT require the customer to repeat the date/time in their own words. If the agent states the slot and the customer accepts, that is BOOKED.
+- If the agent said "unable to confirm" or "system error" but the customer still provided or agreed to a specific time, set appointment_booked to TRUE.
+- If you are unsure but there is likely a concrete meeting time, prefer TRUE and use a lower confidence (e.g. 0.5–0.7).
 
-Extract:
-1. Was an appointment REQUESTED by the customer? (yes/no)
-2. Date in YYYY-MM-DD format (convert "4 February" → "2026-02-04", "Feb 5" → "2026-02-05")
-3. Time in HH:MM 24-hour format (convert "6 PM" → "18:00", "3 PM" → "15:00", "4 p.m." → "16:00")
+Extract for the AGREED or PRIMARY slot (use agent-stated time if that is what was confirmed):
+1. Date in YYYY-MM-DD format (convert "4 February" → "${currentYear}-02-04", use year ${currentYear} when not stated)
+2. Time in HH:MM 24-hour format (convert "6 PM" → "18:00", "3 PM" → "15:00", "4 p.m." → "16:00")
 
-Current year: 2026
+Current calendar year for resolving relative dates: ${currentYear}
 
 Respond ONLY with valid JSON:
 {
@@ -410,6 +446,12 @@ Respond ONLY with valid JSON:
           error: 'Invalid JSON from LLM',
           appointment_booked: false
         };
+      }
+
+      // Legacy appointment: model sometimes returns string "true"/"false" (dynamic path already coerces)
+      if (!useDynamicExtraction && extractionType === 'appointment' && 'appointment_booked' in parsed) {
+        const coerced = coerceAppointmentBooked(parsed.appointment_booked);
+        if (coerced !== undefined) parsed.appointment_booked = coerced;
       }
 
       if (useDynamicExtraction && options.json_example) {
