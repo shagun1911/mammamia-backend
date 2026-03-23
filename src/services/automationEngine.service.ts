@@ -1276,11 +1276,22 @@ export class AutomationEngine {
         }
 
         const extraction_type = config.extraction_type || 'appointment';
+        const extractionTypeNorm = String(extraction_type).toLowerCase();
         const extraction_prompt = config.extraction_prompt;
         const json_example = config.json_example && typeof config.json_example === 'object' ? config.json_example : undefined;
-        const options = extraction_prompt && json_example ? { extraction_prompt, json_example } : undefined;
+        // Stale UI/config often leaves extraction_prompt + json_example (e.g. lead: interested/occupation) on
+        // "appointment" automations — that forced dynamic mode and returned wrong booleans. Use the dedicated
+        // appointment LLM unless user explicitly opts in (dynamic_extraction) or extraction is non-appointment.
+        const useDynamicSchema =
+          !!extraction_prompt &&
+          !!json_example &&
+          (config.dynamic_extraction === true || extractionTypeNorm !== 'appointment');
+        const options = useDynamicSchema ? { extraction_prompt, json_example } : undefined;
 
-        console.log(`[Automation Engine] 🧠 Extracting data from conversation: ${resolvedConvId}`, options ? '(dynamic)' : `(${extraction_type})`);
+        console.log(
+          `[Automation Engine] 🧠 Extracting data from conversation: ${resolvedConvId}`,
+          options ? '(dynamic)' : `(${extraction_type})`
+        );
 
         try {
           const { automationService } = await import('./automation.service');
@@ -1323,6 +1334,14 @@ export class AutomationEngine {
               : { booked: false };
           }
           if (!context.appointment) context.appointment = { booked: false };
+
+          // Legacy appointment path has no extracted_data; conditions often still use extracted.interested (UI copies).
+          if (!result.extracted_data) {
+            context.extracted = {
+              ...(context.extracted || {}),
+              interested: !!context.appointment?.booked
+            };
+          }
 
           return {
             success: true,
