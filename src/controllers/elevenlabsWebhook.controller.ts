@@ -164,6 +164,17 @@ export class ElevenLabsWebhookController {
 
     console.log('[ElevenLabs Webhook] ✅ Resolved organizationId:', organizationId.toString());
 
+    // Check if organization is locked due to plan limits
+    const { usageTrackerService } = await import('../services/usage/usageTracker.service');
+    const lockStatus = await usageTrackerService.isOrganizationLocked(organizationId.toString());
+    
+    if (lockStatus.locked) {
+      console.warn(`[ElevenLabs Webhook] ⚠️ Organization ${organizationId} is LOCKED due to plan limits. Inbound call not processed.`);
+      // Optionally, you might want to create a system notification here
+      // return early to prevent further processing and usage
+      return;
+    }
+
     // Extract phone number from webhook
     const externalNumber = phoneCall?.external_number || data.user_id;
     if (!externalNumber) {

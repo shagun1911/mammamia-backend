@@ -305,17 +305,17 @@ export class UsageTrackerService {
         callMinutes: {
           used: usage.callMinutes,
           limit: plan.features?.callMinutes || 0,
-          exceeded: plan.features?.callMinutes !== -1 && usage.callMinutes > plan.features?.callMinutes
+          exceeded: plan.features?.callMinutes !== -1 && usage.callMinutes >= plan.features?.callMinutes
         },
         chatMessages: {
           used: usage.chatMessages,
           limit: plan.features?.chatConversations || 0,
-          exceeded: plan.features?.chatConversations !== -1 && usage.chatMessages > plan.features?.chatConversations
+          exceeded: plan.features?.chatConversations !== -1 && usage.chatMessages >= plan.features?.chatConversations
         },
         automations: {
           used: usage.automations,
           limit: plan.features?.automations || 0,
-          exceeded: plan.features?.automations !== -1 && usage.automations > plan.features?.automations
+          exceeded: plan.features?.automations !== -1 && usage.automations >= plan.features?.automations
         }
       };
 
@@ -328,6 +328,41 @@ export class UsageTrackerService {
     } catch (error: any) {
       logger.error('[Usage Tracker] Error checking limits:', error.message);
       throw error;
+    }
+  }
+
+  /**
+   * Check if organization is "locked" due to limit exhaustion
+   * Especially strict for the free plan
+   */
+  async isOrganizationLocked(organizationId: string): Promise<{ locked: boolean; reason: string | null }> {
+    try {
+      const Organization = mongoose.model('Organization');
+      const org: any = await Organization.findById(organizationId).populate('planId').lean();
+
+      if (!org || !org.planId) {
+        return { locked: false, reason: null };
+      }
+
+      const plan = org.planId;
+      const { exceeded, limits } = await this.checkLimits(organizationId, plan);
+
+      if (exceeded) {
+        let reason = 'Plan limits exceeded';
+        if (limits.callMinutes.exceeded) reason = `You have reached your limit of ${limits.callMinutes.limit} call minutes.`;
+        else if (limits.chatMessages.exceeded) reason = `You have reached your limit of ${limits.chatMessages.limit} chat conversations.`;
+        else if (limits.automations.exceeded) reason = `You have reached your limit of ${limits.automations.limit} automations.`;
+
+        return { 
+          locked: true, 
+          reason: `${reason} Please upgrade your plan to continue using our services.` 
+        };
+      }
+
+      return { locked: false, reason: null };
+    } catch (error: any) {
+      logger.error('[Usage Tracker] Error checking lock status:', error.message);
+      return { locked: false, reason: null };
     }
   }
 }

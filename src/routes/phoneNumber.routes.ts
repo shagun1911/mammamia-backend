@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { phoneNumberController } from '../controllers/phoneNumber.controller';
 import { authenticate } from '../middleware/auth.middleware';
+import { checkPlanStatus, enforceCallMinutesLimit } from '../middleware/planEnforcement.middleware';
 
 const router = Router();
 
 // All routes require authentication
 router.use(authenticate);
+router.use(checkPlanStatus);
 
 // ============================================================================
 // STEP 2: ROUTE-LEVEL GUARANTEE
@@ -27,12 +29,12 @@ router.get('/', phoneNumberController.list);
 // POST /api/v1/phone-numbers - Create phone number ONLY
 // HARD STOP: This endpoint ONLY creates phone number, returns phone_number_id
 // NO SIP setup, NO agent config, NO phone settings update
-router.post('/', phoneNumberController.create);
+router.post('/', enforceCallMinutesLimit, phoneNumberController.create);
 
 // POST /api/v1/phone-numbers/sip-trunk - Create SIP trunk phone number
 // Returns phone_number_id only
 // IMPORTANT: This must come BEFORE /:phone_number_id routes
-router.post('/sip-trunk', phoneNumberController.createSipTrunk);
+router.post('/sip-trunk', enforceCallMinutesLimit, phoneNumberController.createSipTrunk);
 
 // GET /api/v1/phone-numbers/:phone_number_id - Get phone number by ID
 router.get('/:phone_number_id', phoneNumberController.getById);

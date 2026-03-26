@@ -33,6 +33,35 @@ export const authenticate = async (
     }
 
     req.user = user;
+
+    // --- GLOBAL PLAN LOCK ENFORCEMENT ---
+    // Intercept requests if organization limits are exceeded
+    // Skip for admins
+    if (user.role !== 'admin' && user.organizationId) {
+      // Exempt core routes needed for upgrading and viewing lock status
+      const path = req.originalUrl || req.path;
+      const isExemptPath = 
+        path.includes('/profile') || 
+        path.includes('/plan-warnings') || 
+        path.includes('/plans') || 
+        path.includes('/payment') ||
+        path.includes('/auth') ||
+        path.includes('/webhooks'); // Allow webhooks to process or self-terminate correctly
+
+      if (!isExemptPath) {
+        const { usageTrackerService } = await import('../services/usage/usageTracker.service');
+        const lockStatus = await usageTrackerService.isOrganizationLocked(user.organizationId.toString());
+        
+        if (lockStatus.locked) {
+          throw new AppError(
+            403,
+            'PLAN_LIMIT_EXCEEDED',
+            lockStatus.reason || 'Your organization is locked because you have exceeded your plan limits. Please upgrade to continue using our services.'
+          );
+        }
+      }
+    }
+
     next();
   } catch (error) {
     next(error);

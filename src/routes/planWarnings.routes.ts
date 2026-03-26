@@ -19,16 +19,16 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     if (!organizationId) {
       res.status(200).json({
         success: true,
-        data: []
+        data: { warnings: [], lockStatus: { locked: false, reason: null } }
       });
       return;
     }
 
-    const warnings = await planWarningsService.getWarnings(organizationId.toString());
+    const { warnings, lockStatus } = await planWarningsService.getWarningsAndLockStatus(organizationId.toString());
 
     res.status(200).json({
       success: true,
-      data: warnings
+      data: { warnings, lockStatus }
     });
   } catch (error: any) {
     logger.error('[Plan Warnings API] Error:', error.message);

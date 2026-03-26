@@ -197,6 +197,16 @@ export const checkPlanStatus = async (
       );
     }
 
+    // Check if organization is locked due to plan limits
+    const lockStatus = await usageTrackerService.isOrganizationLocked(organizationId.toString());
+    if (lockStatus.locked) {
+      throw new AppError(
+        403,
+        'PLAN_LIMIT_EXCEEDED',
+        lockStatus.reason || 'Your organization is locked because you have exceeded your plan limits. Please upgrade to continue using our services.'
+      );
+    }
+
     next();
   } catch (error) {
     next(error);

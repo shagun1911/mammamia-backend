@@ -13,19 +13,20 @@ export interface PlanWarning {
 
 class PlanWarningsService {
   /**
-   * Get warnings for an organization based on their plan usage
+   * Get warnings and lock status for an organization based on their plan usage
    */
-  async getWarnings(organizationId: string): Promise<PlanWarning[]> {
+  async getWarningsAndLockStatus(organizationId: string): Promise<{ warnings: PlanWarning[], lockStatus: { locked: boolean, reason: string | null } }> {
     try {
       const org = await Organization.findById(organizationId).populate('planId').lean();
       
       if (!org || !org.planId) {
-        return [];
+        return { warnings: [], lockStatus: { locked: false, reason: null } };
       }
 
       const plan = org.planId as any;
       const usage = await usageTrackerService.getOrganizationUsage(organizationId);
       const warnings: PlanWarning[] = [];
+      const { locked, reason } = await usageTrackerService.isOrganizationLocked(organizationId);
 
       // Check call minutes
       if (plan.features?.callMinutes !== -1) {
@@ -126,11 +127,19 @@ class PlanWarningsService {
         }
       }
 
-      return warnings;
+      return { warnings, lockStatus: { locked, reason } };
     } catch (error: any) {
-      logger.error('[Plan Warnings] Error getting warnings:', error.message);
-      return [];
+      logger.error('[Plan Warnings] Error getting warnings and lock status:', error.message);
+      return { warnings: [], lockStatus: { locked: false, reason: null } };
     }
+  }
+
+  /**
+   * Get warnings for an organization based on their plan usage (Legacy backward compatibility)
+   */
+  async getWarnings(organizationId: string): Promise<PlanWarning[]> {
+    const { warnings } = await this.getWarningsAndLockStatus(organizationId);
+    return warnings;
   }
 
   /**

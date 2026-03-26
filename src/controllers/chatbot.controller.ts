@@ -681,6 +681,21 @@ export class ChatbotController {
         }
       }
 
+      // ========== PHASE 3.5: PLAN ENFORCEMENT ==========
+      // Check if organization is locked due to plan limits
+      if (organizationId) {
+        const { usageTrackerService } = await import('../services/usage/usageTracker.service');
+        const lockStatus = await usageTrackerService.isOrganizationLocked(organizationId);
+        if (lockStatus.locked) {
+          console.error('[Widget Chat] ❌ CRITICAL: Organization is locked due to plan limits:', organizationId);
+          throw new AppError(
+            403,
+            'PLAN_LIMIT_EXCEEDED',
+            lockStatus.reason || 'This chatbot is currently unavailable. Please contact the site administrator.' // User-friendly message for widget users
+          );
+        }
+      }
+
       // ========== PHASE 4: KB RESOLUTION (STRICT - MUST BELONG TO USER) ==========
       const { aiContextService } = await import('../services/aiContext.service');
       
