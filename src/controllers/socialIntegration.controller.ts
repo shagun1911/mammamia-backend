@@ -392,9 +392,10 @@ export class SocialIntegrationController {
         );
       }
 
-      // For Messenger (Facebook platform), enable Business Login if config_id is present
+      // For Messenger (Facebook platform), use standard OAuth (NOT Facebook Login for Business)
+      // Only use Business Login (config_id) if explicitly needed for other use cases
       const metaConfigId = process.env.META_CONFIG_ID;
-      const useBusinessLogin = platform === 'facebook' && !!metaConfigId;
+      const useBusinessLogin = false; // Messenger uses standard OAuth, not Business Login
 
       // Log app configuration for debugging
       console.log('[Meta OAuth Initiate] App Configuration:', {
@@ -403,18 +404,18 @@ export class SocialIntegrationController {
         backendUrl,
         frontendUrl,
         platform,
-        useBusinessLogin
+        useBusinessLogin: platform === 'facebook' ? useBusinessLogin : 'N/A'
       });
 
       // Log OAuth type for Facebook platform
       if (platform === 'facebook') {
-        if (useBusinessLogin) {
-          const maskedConfigId = metaConfigId!.length > 8 
-            ? `${metaConfigId!.substring(0, 4)}...${metaConfigId!.substring(metaConfigId!.length - 4)}`
+        if (useBusinessLogin && metaConfigId) {
+          const maskedConfigId = metaConfigId.length > 8 
+            ? `${metaConfigId.substring(0, 4)}...${metaConfigId.substring(metaConfigId.length - 4)}`
             : '***';
           console.log('[Meta OAuth Initiate] Using Facebook Login for Business with config_id:', maskedConfigId);
         } else {
-          console.log('[Meta OAuth Initiate] Using standard Facebook OAuth for Messenger (no config_id or not facebook platform)');
+          console.log('[Meta OAuth Initiate] Using standard Facebook OAuth for Messenger (no config_id)');
         }
       }
 
