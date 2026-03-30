@@ -413,7 +413,6 @@ export class ConversationService {
           });
         }
       } else if (channel === 'social' && metadata.platform === 'instagram') {
-        // Instagram uses Meta Graph API (same as webhook AI reply): POST /me/messages with Page token
         const instagramId = customer.metadata?.instagramId;
         if (!instagramId) {
           throw new AppError(400, 'INVALID_CUSTOMER', 'Instagram ID not found for customer');
@@ -446,17 +445,20 @@ export class ConversationService {
           throw new AppError(400, 'INVALID_TOKEN', 'Page access token not found');
         }
 
-        // Instagram Messaging API: POST /me/messages with Page Access Token (same as webhook send)
+        // Instagram Messaging API: POST /{instagram_business_account_id}/messages
+        // Using v21.0 and access_token in query parameters as recommended
         const axios = (await import('axios')).default;
         await axios.post(
-          'https://graph.facebook.com/v18.0/me/messages',
+          `https://graph.facebook.com/v21.0/${instagramAccountId}/messages`,
           {
             recipient: { id: instagramId },
             message: { text: messageText }
           },
           {
+            params: {
+              access_token: pageAccessToken
+            },
             headers: {
-              'Authorization': `Bearer ${pageAccessToken}`,
               'Content-Type': 'application/json'
             }
           }

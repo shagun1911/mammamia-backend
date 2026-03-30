@@ -2335,10 +2335,9 @@ export class MetaWebhookController {
 
   /**
    * Send Instagram DM reply via Graph API
-   * POST https://graph.facebook.com/v18.0/me/messages
+   * POST https://graph.facebook.com/v21.0/{instagramAccountId}/messages
    * 
    * IMPORTANT: Instagram Messaging API uses Page Access Token (EAAG) from Facebook OAuth
-   * This is the same token used for Messenger, obtained via /me/accounts
    */
   private async sendInstagramReply(
     instagramAccountId: string,
@@ -2355,59 +2354,11 @@ export class MetaWebhookController {
 
       if (!pageAccessToken) {
         console.error(`[Instagram Webhook] ❌ No Page Access Token found for instagramAccountId: ${instagramAccountId}`);
-        console.error(`[Instagram Webhook] Integration credentials:`, {
-          hasInstagramAccountId: !!integration.credentials?.instagramAccountId,
-          hasPageAccessToken: !!integration.credentials?.pageAccessToken,
-          instagramAccountId: integration.credentials?.instagramAccountId
-        });
         throw new Error('Page Access Token not found. Please re-authenticate Instagram OAuth.');
       }
 
-      // No prefix check; token validity is determined by the Meta API call below.
-      console.log(`[Instagram Webhook] Sending reply for instagramAccountId: ${instagramAccountId}`);
+      console.log(`[Instagram Webhook] Sending reply for instagramAccountId: ${instagramAccountId} (In-place)`);
 
-      // Defensive logging: App mode and permissions check
-      const appMode = process.env.NODE_ENV || 'development';
-      console.log(`[Instagram Webhook] App mode: ${appMode}`);
-
-      // Check token permissions via debug_token (optional, for debugging)
-      try {
-        const metaAppId = process.env.META_APP_ID;
-        const metaAppSecret = process.env.META_APP_SECRET;
-        
-        if (metaAppId && metaAppSecret) {
-          const debugResponse = await axios.get('https://graph.facebook.com/v18.0/debug_token', {
-            params: {
-              input_token: pageAccessToken,
-              access_token: `${metaAppId}|${metaAppSecret}`
-            }
-          });
-          
-          if (debugResponse.data?.data) {
-            const tokenData = debugResponse.data.data;
-            console.log(`[Instagram Webhook] Token permissions:`, {
-              app_id: tokenData.app_id,
-              type: tokenData.type,
-              scopes: tokenData.scopes || [],
-              is_valid: tokenData.is_valid
-            });
-          }
-        } else {
-          console.warn(`[Instagram Webhook] META_APP_ID or META_APP_SECRET not set, skipping token permission check`);
-        }
-      } catch (debugError: any) {
-        // Don't fail if debug_token fails, just log
-        console.warn(`[Instagram Webhook] Could not check token permissions:`, debugError.message);
-      }
-
-      // Build endpoint URL
-      // Instagram Messaging API requires /me/messages (NOT /{instagramAccountId}/messages)
-      const endpointUrl = `https://graph.facebook.com/v18.0/me/messages`;
-      console.log(`[Instagram Webhook] Endpoint URL: ${endpointUrl}`);
-      console.log(`[Instagram Webhook] Recipient ID: ${senderId}`);
-      console.log(`[Instagram Webhook] Message length: ${messageText.length} characters`);
-
-      // Build payload (EXACT format required by Instagram Messaging API)
       const payload = {
         recipient: {
           id: senderId
@@ -2417,45 +2368,24 @@ export class MetaWebhookController {
         }
       };
 
-      console.log(`[Instagram Webhook] Payload:`, JSON.stringify(payload, null, 2));
-
-      // Send message via Instagram Graph API
-      // POST /v18.0/me/messages
-      // Authorization: Bearer <PAGE_ACCESS_TOKEN> (EAAG)
-      const response = await axios.post(
-        endpointUrl,
+      // Instagram Messaging API: POST /{instagram_business_account_id}/messages
+      // Using v21.0 and access_token in query parameters as recommended
+      await axios.post(
+        `https://graph.facebook.com/v21.0/${instagramAccountId}/messages`,
         payload,
         {
+          params: {
+            access_token: pageAccessToken
+          },
           headers: {
-            'Authorization': `Bearer ${pageAccessToken}`,
             'Content-Type': 'application/json'
           }
         }
       );
 
       console.log(`[Instagram Webhook] ✅ Instagram reply sent successfully`);
-      console.log(`[Instagram Webhook] Response:`, JSON.stringify(response.data, null, 2));
     } catch (error: any) {
-      const errorData = error.response?.data?.error || {};
-      const errorCode = errorData.code;
-      const errorMessage = errorData.message || error.message;
-
-      // Guard for error code 3 or 200: Application does not have the capability
-      if (errorCode === 3 || errorCode === 200) {
-        console.error(`[Instagram Webhook] ❌ ERROR CODE ${errorCode}: Application does not have the capability to make this API call`);
-        console.error(`[Instagram Webhook] Instagram Messaging requires Page Access Token (EAAG) from Facebook OAuth`);
-        console.error(`[Instagram Webhook] Check:`);
-        console.error(`[Instagram Webhook]   - App is PUBLISHED (not in Development mode)`);
-        console.error(`[Instagram Webhook]   - instagram_manage_messages permission is Advanced`);
-        console.error(`[Instagram Webhook]   - Instagram Messaging product is added to the app`);
-        console.error(`[Instagram Webhook]   - App Review is approved for instagram_manage_messages`);
-        console.error(`[Instagram Webhook]   - Token prefix is EAAG (Page Access Token)`);
-        console.error(`[Instagram Webhook] Full error:`, JSON.stringify(error.response?.data, null, 2));
-      } else {
-        console.error(`[Instagram Webhook] ❌ Error sending Instagram message (code: ${errorCode}):`, errorMessage);
-        console.error(`[Instagram Webhook] Full error:`, JSON.stringify(error.response?.data, null, 2));
-      }
-
+      console.error(`[Instagram Webhook] ❌ Error sending Instagram message:`, error.response?.data || error.message);
       throw error;
     }
   }
@@ -2889,7 +2819,7 @@ export class MetaWebhookController {
 
         console.log(`[Messenger AI] ✅ Reply sent successfully. Message ID: ${messageId}`);
       } else if (platform === 'instagram') {
-        // Use Graph API for Instagram
+        // Use Graph API for Instagram with correctly fixed endpoint and version
         const integration = await SocialIntegration.findOne({
           organizationId: organizationId,
           platform: 'instagram',
@@ -2900,14 +2830,16 @@ export class MetaWebhookController {
           const instagramAccountId = integration.credentials.instagramAccountId;
           
           await axios.post(
-            `https://graph.facebook.com/v18.0/${instagramAccountId}/messages`,
+            `https://graph.facebook.com/v21.0/${instagramAccountId}/messages`,
             {
               recipient: { id: customerId },
               message: { text: aiResponse }
             },
             {
+              params: {
+                access_token: pageAccessToken
+              },
               headers: {
-                'Authorization': `Bearer ${pageAccessToken}`,
                 'Content-Type': 'application/json'
               }
             }
