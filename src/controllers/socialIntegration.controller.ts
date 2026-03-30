@@ -802,15 +802,22 @@ export class SocialIntegrationController {
           pageAccessToken: pageAccessToken // Store PAGE token for sending DMs (EAAG)
         };
 
-        // Set metadata for Instagram integration
-        integrationData.metadata = {
-          ...integrationData.metadata,
-          chatbotEnabled: true,
-          connectedAt: new Date().toISOString(),
-          appUserId: appUserId, // Internal app userId for KB lookup
-          metaUserId: metaUserId, // Meta Facebook userId (for reference only)
-          userName: userName
-        };
+        // Step 5: Automatically subscribe Page to webhooks for Instagram messaging
+        // The Facebook Page linked to the Instagram account must be subscribed to receive events
+        let webhookSubscribed = false;
+        try {
+          console.log(`[Instagram Business Login] Subscribing Page ${selectedPage.id} to webhooks...`);
+          const subscribed = await metaOAuth.subscribePageToWebhooks(selectedPage.id, pageAccessToken);
+          if (subscribed) {
+            webhookSubscribed = true;
+            console.log('[Instagram Business Login] ✅ Page subscribed to webhooks successfully');
+          } else {
+            console.warn('[Instagram Business Login] ⚠️  Page webhook subscription may have failed (might already be subscribed)');
+          }
+        } catch (error: any) {
+          console.error('[Instagram Business Login] ⚠️  Failed to subscribe Page to webhooks:', error.message);
+          // Don't throw - continue even if webhook subscription fails as it might already be active
+        }
 
         console.log('[Instagram Business Login] ✅ Instagram OAuth completed successfully');
       } else if (platform === 'whatsapp') {

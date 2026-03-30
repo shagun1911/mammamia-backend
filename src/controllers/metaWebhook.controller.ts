@@ -663,33 +663,53 @@ export class MetaWebhookController {
       const webhookData = req.body;
       console.log('[Instagram Webhook] Received webhook:', JSON.stringify(webhookData, null, 2));
 
-      // Process incoming messages - EXACT MATCH with Messenger pattern
-      // Check for object = "instagram"
-      if (webhookData.object === 'instagram') {
+      // Process incoming messages - similar structure to Messenger/Instagram DMs.
+      // Meta may use `object: "instagram"` OR `object: "page"` depending on integration/version.
+      const objectType = webhookData.object;
+      console.log(`[Instagram Webhook] webhook.object: ${objectType}`);
+
+      if (objectType === 'instagram' || objectType === 'page') {
         // Process entries
         for (const entry of webhookData.entry || []) {
-          // Normalize to string so DB lookup matches (Meta may send id as number)
-          const instagramAccountId = entry.id != null ? String(entry.id) : '';
-          if (!instagramAccountId) continue;
-          
+          // In many Meta payloads, `entry.id` is the Page ID.
+          const pageId = entry.id != null ? String(entry.id) : '';
+
           // Process messaging events
           for (const event of entry.messaging || []) {
-            // Extract sender ID
             const senderId = event.sender?.id;
+            // `recipient.id` is the Instagram Business Account ID for DMs.
+            const recipientId = event.recipient?.id;
+
+            if (!senderId || !recipientId) {
+              console.warn('[Instagram Webhook] Missing senderId/recipientId, skipping', {
+                pageId,
+                senderId,
+                recipientId
+              });
+              continue;
+            }
             
             // Only process message events (ignore delivery, read receipts, reactions, echoes)
             if (event.message) {
-              const messageText = event.message.text || '';
-              
-              console.log(`[Instagram Webhook] Received message from ${senderId}: ${messageText}`);
-              console.log(`[Instagram Webhook] Instagram Account ID: ${instagramAccountId}`);
-              console.log(`[Instagram Webhook] Sender ID: ${senderId}`);
+              let messageText = event.message.text || '';
+              if (!messageText && Array.isArray(event.message.attachments) && event.message.attachments.length > 0) {
+                messageText = '[Attachment]';
+              }
+
+              console.log('[Instagram Webhook] Received message', {
+                senderId,
+                recipientId,
+                pageId,
+                text: messageText
+              });
               
               // Immediately process and reply (synchronous, like Messenger)
-              await this.processInstagramMessage(instagramAccountId, senderId, messageText, event);
+              await this.processInstagramMessage(recipientId, senderId, messageText, event);
             }
           }
         }
+      } else {
+        console.warn('[Instagram Webhook] Unexpected webhook.object, skipping processing', { objectType });
       }
     } catch (error) {
       console.error('[Instagram Webhook] Error processing webhook:', error);
