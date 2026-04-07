@@ -812,7 +812,8 @@ export class SocialIntegrationController {
           pageAccessToken
         };
 
-// Step 5: Automatically subscribe Page to webhooks for Instagram messaging
+<<<<<<< HEAD
+        // Step 5: Automatically subscribe Page to webhooks for Instagram messaging
         // The Facebook Page linked to the Instagram account must be subscribed to receive events
         let webhookSubscribed = false;
         try {
@@ -828,7 +829,7 @@ export class SocialIntegrationController {
           console.error('[Instagram Business Login] ⚠️  Failed to subscribe Page to webhooks:', error.message);
           // Don't throw - continue even if webhook subscription fails as it might already be active
         }
-
+=======
         integrationData.metadata = {
           ...integrationData.metadata,
           chatbotEnabled: true,
@@ -837,6 +838,7 @@ export class SocialIntegrationController {
           metaUserId,
           userName
         };
+>>>>>>> 6b8361a (Meta OAuth: API v21, Connect via Meta flow, page selection, redirect URIs)
 
         console.log('[Instagram Business Login] ✅ Instagram OAuth completed successfully');
       } else if (platform === 'whatsapp') {

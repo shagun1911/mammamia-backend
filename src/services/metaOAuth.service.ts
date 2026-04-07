@@ -52,32 +52,41 @@ export class MetaOAuthService {
     configId?: string,
     useBusinessLogin: boolean = false
   ): string {
-    // Get platform-specific scopes (explicit, no fallbacks)
-    const scopes = this.getScopesForPlatform(platform);
-    const scopeString = scopes.join(',');
-
-    // Log scopes for debugging (helps detect wrong scopes immediately)
     console.log('[Meta OAuth Initiate] Platform:', platform);
-    console.log('[Meta OAuth Initiate] Scopes:', scopeString);
 
-    if (platform === 'instagram') {
-      console.log('[Instagram Business Login] Using Facebook OAuth dialog');
+    const isBusinessLogin = useBusinessLogin && platform === 'facebook' && !!configId;
+
+    let params: URLSearchParams;
+
+    if (isBusinessLogin) {
+      // Facebook Business Login: NO scope — scopes are defined inside the config_id on Meta portal
+      // Must include override_default_response_type=true and auth_type=rerequest
+      console.log('[Meta OAuth Initiate] Using Facebook Business Login (config_id), scope omitted');
+      params = new URLSearchParams({
+        client_id: this.appId,
+        redirect_uri: this.redirectUri,
+        config_id: configId!,
+        response_type: 'code',
+        override_default_response_type: 'true',
+        auth_type: 'rerequest',
+        state
+      });
+    } else {
+      // Standard OAuth: include explicit scopes
+      const scopes = this.getScopesForPlatform(platform);
+      const scopeString = scopes.join(',');
+      console.log('[Meta OAuth Initiate] Using standard OAuth, scopes:', scopeString);
+      if (platform === 'instagram') {
+        console.log('[Instagram Business Login] Using Facebook OAuth dialog');
+      }
+      params = new URLSearchParams({
+        client_id: this.appId,
+        redirect_uri: this.redirectUri,
+        state,
+        scope: scopeString,
+        response_type: 'code'
+      });
     }
-
-    const params = new URLSearchParams({
-      client_id: this.appId,
-      redirect_uri: this.redirectUri,
-      state,
-      scope: scopeString,
-      response_type: 'code'
-    });
-
-    // Only add auth_type and config_id for Business Login (not for standard Messenger OAuth)
-    if (useBusinessLogin && platform === 'facebook' && configId) {
-      params.append('auth_type', 'rerequest');
-      params.append('config_id', configId);
-    }
-    // For standard Facebook OAuth (Messenger), don't include auth_type or config_id
 
     return `https://www.facebook.com/v21.0/dialog/oauth?${params.toString()}`;
   }
@@ -104,7 +113,7 @@ export class MetaOAuthService {
     ],
     instagram: [
       'instagram_basic', // Instagram basic access
-      'instagram_business_manage_messages', // Instagram business messaging (APPROVED)
+      'instagram_manage_messages', // Instagram messaging
       'instagram_manage_comments', // Instagram comments
       'pages_show_list', // List user's pages
       'pages_read_engagement', // Read page engagement
