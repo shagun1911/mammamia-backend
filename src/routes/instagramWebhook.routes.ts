@@ -10,13 +10,30 @@ const router = Router();
 router.use((req, _res, next) => {
   try {
     const bodyKeys = req.body && typeof req.body === 'object' ? Object.keys(req.body) : [];
+    console.log('='.repeat(80));
+    console.log('[Instagram Webhook Route] ========== WEBHOOK HIT ==========');
     console.log('[Instagram Webhook Route] hit', {
       method: req.method,
       path: req.path,
       query: req.query,
       contentType: req.headers['content-type'],
-      bodyKeys
+      bodyKeys,
+      userAgent: req.headers['user-agent']
     });
+    
+    // Log sender IDs if present
+    if (req.body?.entry) {
+      req.body.entry.forEach((entry: any, i: number) => {
+        if (entry.messaging) {
+          entry.messaging.forEach((msg: any, j: number) => {
+            if (msg.sender?.id) {
+              console.log(`[Instagram Webhook Route] Message ${i}-${j}: Sender ID = ${msg.sender.id}`);
+            }
+          });
+        }
+      });
+    }
+    console.log('='.repeat(80));
   } catch {
     // Never block webhook handling because logging failed.
   }

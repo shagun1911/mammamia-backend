@@ -23,7 +23,26 @@ router.post('/whatsapp/webhook', metaWebhookController.handleWhatsApp.bind(metaW
 router.get('/messenger/webhook', (req, res) => metaWebhookController.verify(req, res, 'messenger'));
 router.post('/messenger/webhook', metaWebhookController.handleMessenger.bind(metaWebhookController));
 
-// Note: Instagram webhook is now at /api/v1/webhooks/instagram (see instagramWebhook.routes.ts)
+// Instagram webhook (backward compatibility - also available at /api/v1/webhooks/instagram)
+router.get('/instagram/webhook', (req, res) => {
+  console.log('[Instagram Webhook OLD PATH] GET hit - webhook verification');
+  return metaWebhookController.verify(req, res, 'instagram');
+});
+router.post('/instagram/webhook', (req, res) => {
+  console.log('[Instagram Webhook OLD PATH] POST hit - webhook event');
+  if (req.body?.entry) {
+    req.body.entry.forEach((entry: any, i: number) => {
+      if (entry.messaging) {
+        entry.messaging.forEach((msg: any, j: number) => {
+          if (msg.sender?.id) {
+            console.log(`[Instagram Webhook OLD PATH] Message ${i}-${j}: Sender ID = ${msg.sender.id}`);
+          }
+        });
+      }
+    });
+  }
+  return metaWebhookController.handleInstagram(req, res);
+});
 
 // OAuth callback routes - MUST BE PUBLIC (Meta redirects here without JWT tokens)
 // These routes handle OAuth redirects from Meta and must remain public forever
