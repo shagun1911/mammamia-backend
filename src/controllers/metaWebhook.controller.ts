@@ -661,7 +661,10 @@ export class MetaWebhookController {
       res.sendStatus(200);
 
       const webhookData = req.body;
+      console.log('='.repeat(80));
+      console.log('[Instagram Webhook] ========== NEW WEBHOOK EVENT ==========');
       console.log('[Instagram Webhook] Received webhook:', JSON.stringify(webhookData, null, 2));
+      console.log('='.repeat(80));
 
       // Process incoming messages - similar structure to Messenger/Instagram DMs.
       // Meta may use `object: "instagram"` OR `object: "page"` depending on integration/version.
@@ -675,10 +678,21 @@ export class MetaWebhookController {
           const pageId = entry.id != null ? String(entry.id) : '';
 
           // Process messaging events
+          console.log(`[Instagram Webhook] Processing ${entry.messaging?.length || 0} messaging events for entry ${entry.id}`);
           for (const event of entry.messaging || []) {
             const senderId = event.sender?.id;
             // `recipient.id` is the Instagram Business Account ID for DMs.
             const recipientId = event.recipient?.id;
+
+            console.log(`[Instagram Webhook] Event details:`, {
+              senderId,
+              recipientId,
+              pageId,
+              hasMessage: !!event.message,
+              hasDelivery: !!event.delivery,
+              hasRead: !!event.read,
+              hasReaction: !!event.reaction
+            });
 
             if (!senderId || !recipientId) {
               console.warn('[Instagram Webhook] Missing senderId/recipientId, skipping', {
@@ -696,15 +710,22 @@ export class MetaWebhookController {
                 messageText = '[Attachment]';
               }
 
+              console.log('[Instagram Webhook] ========== PROCESSING MESSAGE ==========');
               console.log('[Instagram Webhook] Received message', {
                 senderId,
                 recipientId,
                 pageId,
-                text: messageText
+                text: messageText,
+                isEcho: event.message.is_echo,
+                messageId: event.message.mid
               });
               
               // Immediately process and reply (synchronous, like Messenger)
+              console.log(`[Instagram Webhook] Calling processInstagramMessage for senderId: ${senderId}, recipientId: ${recipientId}`);
               await this.processInstagramMessage(recipientId, senderId, messageText, event);
+              console.log(`[Instagram Webhook] processInstagramMessage completed for senderId: ${senderId}`);
+            } else {
+              console.log(`[Instagram Webhook] Skipping non-message event:`, Object.keys(event));
             }
           }
         }
@@ -2000,8 +2021,11 @@ export class MetaWebhookController {
     event: any
   ) {
     try {
+      console.log('='.repeat(80));
+      console.log('[Instagram Webhook] ========== processInstagramMessage START ==========');
       console.log('[Instagram Webhook] Event received');
       console.log('[Instagram Webhook] Processing message - Account:', instagramAccountId, 'Sender:', senderId, 'Text:', messageText);
+      console.log('='.repeat(80));
 
       // Skip echo messages (messages sent by the Instagram account itself)
       if (event.message?.is_echo) {
@@ -2218,10 +2242,14 @@ export class MetaWebhookController {
       // Generate chatbot reply using Settings + AIBehavior ONLY
       // userId is already set above (from integration.userId)
       
+      console.log(`[Instagram Webhook] Checking AI management for conversation ${conversation._id}: isAiManaging = ${conversation.isAiManaging}`);
+      
       if (!conversation.isAiManaging) {
-        console.log('[Instagram Webhook] AI management is disabled for this conversation');
+        console.log('[Instagram Webhook] ❌ AI management is DISABLED for this conversation - NO REPLY WILL BE SENT');
         return;
       }
+      
+      console.log('[Instagram Webhook] ✅ AI management is ENABLED - Proceeding with AI reply generation');
 
       // 1. KNOWLEDGE BASE: Fetch from Settings using userId ONLY
       let collectionNames: string[] = [];
@@ -2374,7 +2402,8 @@ export class MetaWebhookController {
 
       if (!pageAccessToken) {
         console.error(`[Instagram Webhook] ❌ No Page Access Token found for instagramAccountId: ${instagramAccountId}`);
-        throw new Error('Page Access Token not found. Please re-authenticate Instagram OAuth.');
+        console.error(`[Instagram Webhook] ❌ Cannot send reply - please re-authenticate Instagram OAuth`);
+        return; // Return instead of throwing to avoid breaking webhook flow
       }
 
       console.log(`[Instagram Webhook] Sending reply for instagramAccountId: ${instagramAccountId} to senderId: ${senderId}`);
