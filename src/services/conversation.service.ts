@@ -449,11 +449,7 @@ export class ConversationService {
         // Using v21.0 and access_token in query parameters as recommended
         const axios = (await import('axios')).default;
         await axios.post(
-<<<<<<< HEAD
-          `https://graph.facebook.com/v21.0/${instagramAccountId}/messages`,
-=======
-          'https://graph.facebook.com/v21.0/me/messages',
->>>>>>> 6b8361a (Meta OAuth: API v21, Connect via Meta flow, page selection, redirect URIs)
+`https://graph.facebook.com/v21.0/${instagramAccountId}/messages`,
           {
             recipient: { id: instagramId },
             message: { text: messageText }

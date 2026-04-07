@@ -898,13 +898,7 @@ export class AutomationEngine {
 
               if (integration?.credentials?.wabaId) {
                 const axios = (await import('axios')).default;
-<<<<<<< HEAD
-                const metaUrl = `https://graph.facebook.com/v19.0/${integration.credentials.wabaId}/message_templates`;
-
-=======
-                const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.wabaId}/message_templates`;
-                
->>>>>>> 6b8361a (Meta OAuth: API v21, Connect via Meta flow, page selection, redirect URIs)
+const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.wabaId}/message_templates`;
                 const metaResponse = await axios.get(metaUrl, {
                   headers: {
                     Authorization: `Bearer ${userAccessToken}`,
