@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { randomUUID } from 'crypto';
 import { AuthRequest } from '../middleware/auth.middleware';
 import socialIntegrationService from '../services/socialIntegration.service';
 import { AppError } from '../middleware/error.middleware';
@@ -7,6 +8,9 @@ import { successResponse } from '../utils/response.util';
 import mongoose from 'mongoose';
 import GoogleIntegration from '../models/GoogleIntegration';
 import SocialIntegration from '../models/SocialIntegration';
+import redisClient, { isRedisAvailable } from '../config/redis';
+
+const PENDING_PAGES_TTL = 300; // 5 minutes
 
 export class SocialIntegrationController {
   /**
@@ -730,7 +734,7 @@ export class SocialIntegrationController {
       if (platform === 'instagram') {
         // Instagram OAuth: Use Facebook OAuth, then fetch pages and Instagram Business Account
         console.log('[Instagram Business Login] Starting Instagram OAuth flow via Facebook...');
-        
+
         // Step 1: Get all pages using USER access token
         const pages = await metaOAuth.getUserPages(accessToken);
 
@@ -740,69 +744,75 @@ export class SocialIntegrationController {
 
         console.log(`[Instagram Business Login] Found ${pages.length} Facebook Page(s)`);
 
-        // Step 2: For each page, check if it has an Instagram Business Account
-        let instagramAccountId: string | null = null;
-        let selectedPage: MetaPage | null = null;
-        let pageAccessToken: string | null = null;
+        // Step 2: For each page, collect those that have an Instagram Business Account
+        type PageWithInsta = { page: MetaPage; instagramAccountId: string; instagramUsername: string; pageAccessToken: string };
+        const pagesWithInstagram: PageWithInsta[] = [];
 
         for (const page of pages) {
-          console.log(`[Instagram Business Login] Checking page ${page.id} for Instagram account...`);
-          console.log(`[Instagram Business Login] Page access token prefix: ${page.access_token.substring(0, 10)}...`);
-          
-          // Validate that this is a PAGE token (EAAG), not a USER token
-          if (!page.access_token.startsWith('EAAG') && !page.access_token.startsWith('EAA')) {
-            console.warn(`[Instagram Business Login] Page ${page.id} access token does not start with EAAG/EAA, skipping`);
-            continue;
-          }
-
-          // Step 3: Get Instagram Business Account for this page
+          if (!page.access_token.startsWith('EAAG') && !page.access_token.startsWith('EAA')) continue;
           const instagramAccounts = await metaOAuth.getInstagramAccounts(page.id, page.access_token);
-          
           if (instagramAccounts.length > 0) {
-            instagramAccountId = instagramAccounts[0].id;
-            selectedPage = page;
-            pageAccessToken = page.access_token;
-            console.log(`[Instagram Business Login] ✅ Found Instagram account ${instagramAccountId} on page ${page.id}`);
-            console.log(`[Instagram Business Login] ✅ Page access token (EAAG): ${pageAccessToken.substring(0, 10)}...`);
-            break;
+            pagesWithInstagram.push({
+              page,
+              instagramAccountId: instagramAccounts[0].id,
+              instagramUsername: instagramAccounts[0].username || instagramAccounts[0].name || '',
+              pageAccessToken: page.access_token
+            });
           }
         }
 
-        if (!instagramAccountId || !selectedPage || !pageAccessToken) {
-          throw new AppError(
-            400,
-            'NO_INSTAGRAM_ACCOUNT',
-            'No Instagram Business Account found. Please connect an Instagram account to your Facebook Page.'
-          );
+        if (pagesWithInstagram.length === 0) {
+          throw new AppError(400, 'NO_INSTAGRAM_ACCOUNT', 'No Instagram Business Account found. Please connect an Instagram account to your Facebook Page.');
         }
 
-        // Step 4: Validate page access token is EAAG
+        // Step 3: If multiple pages with Instagram accounts, ask user to pick one
+        if (pagesWithInstagram.length > 1 && isRedisAvailable()) {
+          const sessionKey = randomUUID();
+          await redisClient.setEx(`oauth_pending_pages:${sessionKey}`, PENDING_PAGES_TTL, JSON.stringify({
+            userId,
+            organizationId,
+            platform: 'instagram',
+            accessToken,
+            appUserId,
+            metaUserId,
+            userName,
+            pages: pagesWithInstagram.map(p => ({
+              id: p.page.id,
+              name: p.page.name,
+              category: p.page.category || '',
+              pageAccessToken: p.pageAccessToken,
+              instagramAccountId: p.instagramAccountId,
+              instagramUsername: p.instagramUsername
+            }))
+          }));
+          const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+          return res.redirect(`${frontendUrl}/settings/socials?select_page=true&platform=instagram&session=${sessionKey}`);
+        }
+
+        // Single match (or Redis unavailable) — auto-select first
+        const match = pagesWithInstagram[0];
+        const selectedPage = match.page;
+        const instagramAccountId = match.instagramAccountId;
+        const pageAccessToken = match.pageAccessToken;
+
         if (!pageAccessToken.startsWith('EAAG') && !pageAccessToken.startsWith('EAA')) {
-          throw new AppError(
-            400,
-            'INVALID_PAGE_TOKEN',
-            'Instagram Page Access Token not resolved — cannot send DMs'
-          );
+          throw new AppError(400, 'INVALID_PAGE_TOKEN', 'Instagram Page Access Token not resolved — cannot send DMs');
         }
 
-        console.log('[Instagram Business Login] Step 4: Storing credentials with PAGE access token');
-        console.log('[Instagram Business Login] - instagramAccountId:', instagramAccountId);
-        console.log('[Instagram Business Login] - facebookPageId:', selectedPage.id);
-        console.log('[Instagram Business Login] - pageAccessToken prefix:', pageAccessToken.substring(0, 10) + '...');
-        console.log('[Instagram Business Login] - apiKey (user token):', accessToken.substring(0, 10) + '...');
+        console.log('[Instagram Business Login] ✅ Auto-selected page:', selectedPage.id, 'Instagram:', instagramAccountId);
 
         // Store Instagram-specific credentials with Page Access Token
         integrationData.instagramAccountId = instagramAccountId;
         integrationData.facebookPageId = selectedPage.id;
         integrationData.credentials = {
-          apiKey: accessToken, // Store user token for reference
+          apiKey: accessToken,
           clientId: metaAppId,
           instagramAccountId,
           facebookPageId: selectedPage.id,
-          pageAccessToken: pageAccessToken // Store PAGE token for sending DMs (EAAG)
+          pageAccessToken
         };
 
-        // Step 5: Automatically subscribe Page to webhooks for Instagram messaging
+// Step 5: Automatically subscribe Page to webhooks for Instagram messaging
         // The Facebook Page linked to the Instagram account must be subscribed to receive events
         let webhookSubscribed = false;
         try {
@@ -818,6 +828,15 @@ export class SocialIntegrationController {
           console.error('[Instagram Business Login] ⚠️  Failed to subscribe Page to webhooks:', error.message);
           // Don't throw - continue even if webhook subscription fails as it might already be active
         }
+
+        integrationData.metadata = {
+          ...integrationData.metadata,
+          chatbotEnabled: true,
+          connectedAt: new Date().toISOString(),
+          appUserId,
+          metaUserId,
+          userName
+        };
 
         console.log('[Instagram Business Login] ✅ Instagram OAuth completed successfully');
       } else if (platform === 'whatsapp') {
@@ -903,9 +922,31 @@ export class SocialIntegrationController {
         if (pages.length === 0) {
           throw new AppError(400, 'NO_PAGES', 'No Facebook Pages found. Please create a Facebook Page first.');
         }
-        // For Facebook/Messenger, store primary page access token
-        // Webhook will use credentials.pageAccessToken and credentials.facebookPageId
-        const selectedPage = pages[0]; // Use first page as primary
+
+        // If multiple pages, ask user to pick one
+        if (pages.length > 1 && isRedisAvailable()) {
+          const sessionKey = randomUUID();
+          await redisClient.setEx(`oauth_pending_pages:${sessionKey}`, PENDING_PAGES_TTL, JSON.stringify({
+            userId,
+            organizationId,
+            platform: 'facebook',
+            accessToken,
+            appUserId,
+            metaUserId,
+            userName,
+            pages: pages.map(p => ({
+              id: p.id,
+              name: p.name,
+              category: p.category || '',
+              pageAccessToken: p.access_token
+            }))
+          }));
+          const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+          return res.redirect(`${frontendUrl}/settings/socials?select_page=true&platform=facebook&session=${sessionKey}`);
+        }
+
+        // Single page (or Redis unavailable) — auto-select first
+        const selectedPage = pages[0];
         integrationData.facebookPageId = selectedPage.id;
         
         // Store only primary page access token (matching schema structure)
@@ -1060,7 +1101,7 @@ export class SocialIntegrationController {
       // Verify credentials by testing API call to Meta
       try {
         const axios = (await import('axios')).default;
-        const testUrl = `https://graph.facebook.com/v19.0/${wabaId}/phone_numbers`;
+        const testUrl = `https://graph.facebook.com/v21.0/${wabaId}/phone_numbers`;
         
         await axios.get(testUrl, {
           headers: {
@@ -1113,7 +1154,7 @@ export class SocialIntegrationController {
         
         // Subscribe WABA to receive messages via webhook
         const subscribeResponse = await axios.post(
-          `https://graph.facebook.com/v19.0/${wabaId}/subscribed_apps`,
+          `https://graph.facebook.com/v21.0/${wabaId}/subscribed_apps`,
           {
             subscribed_fields: ['messages', 'message_status']
           },
@@ -1234,7 +1275,7 @@ export class SocialIntegrationController {
       const axios = (await import('axios')).default;
       let verificationSkippedDueToPermission = false;
       try {
-        const testUrl = `https://graph.facebook.com/v19.0/${instagramAccountId}`;
+        const testUrl = `https://graph.facebook.com/v21.0/${instagramAccountId}`;
         await axios.get(testUrl, {
           params: {
             fields: 'id,username,name',
@@ -1303,7 +1344,7 @@ export class SocialIntegrationController {
         
         // Subscribe Instagram account to webhooks via the connected Facebook Page
         // Instagram webhooks are subscribed via the Page, not directly
-        const subscribeUrl = `https://graph.facebook.com/v19.0/${facebookPageId}/subscribed_apps`;
+        const subscribeUrl = `https://graph.facebook.com/v21.0/${facebookPageId}/subscribed_apps`;
         await axios.post(
           subscribeUrl,
           {
@@ -1417,7 +1458,7 @@ export class SocialIntegrationController {
       const axios = (await import('axios')).default;
       let verificationSkippedDueToPermission = false;
       try {
-        const testUrl = `https://graph.facebook.com/v19.0/${facebookPageId}`;
+        const testUrl = `https://graph.facebook.com/v21.0/${facebookPageId}`;
         await axios.get(testUrl, {
           params: {
             fields: 'id,name',
@@ -1478,7 +1519,7 @@ export class SocialIntegrationController {
         const axios = (await import('axios')).default;
         
         // Subscribe Page to webhooks
-        const subscribeUrl = `https://graph.facebook.com/v19.0/${facebookPageId}/subscribed_apps`;
+        const subscribeUrl = `https://graph.facebook.com/v21.0/${facebookPageId}/subscribed_apps`;
         await axios.post(
           subscribeUrl,
           {
@@ -1528,6 +1569,131 @@ export class SocialIntegrationController {
           ...(verificationSkippedDueToPermission && { warning: 'Verification skipped: app may need pages_read_engagement or Page Public Metadata Access for full features.' })
         },
         messageWithWarning
+      ));
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/v1/social-integrations/:platform/pending-pages
+   * Returns the list of pages cached after OAuth when user has multiple pages.
+   */
+  async getPendingPages(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { session } = req.query as { session?: string };
+      const { platform } = req.params;
+
+      if (!session) throw new AppError(400, 'MISSING_SESSION', 'session query param is required');
+      if (!isRedisAvailable()) throw new AppError(503, 'REDIS_UNAVAILABLE', 'Page selection service temporarily unavailable');
+
+      const raw = await redisClient.get(`oauth_pending_pages:${session}`);
+      if (!raw) throw new AppError(404, 'SESSION_EXPIRED', 'Session expired or not found — please click "Connect via Meta" again.');
+
+      const sessionData = JSON.parse(raw);
+
+      const pages = (sessionData.pages as any[]).map(p => ({
+        id: p.id,
+        name: p.name,
+        category: p.category || '',
+        instagramUsername: p.instagramUsername || null,
+        instagramAccountId: p.instagramAccountId || null
+      }));
+
+      res.json(successResponse({ pages, platform: sessionData.platform }, 'Pages fetched successfully'));
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/v1/social-integrations/:platform/select-page
+   * Completes the OAuth connection using a user-selected page from the pending session.
+   * Body: { sessionKey: string, pageId: string }
+   */
+  async selectPage(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { platform } = req.params;
+      const { sessionKey, pageId } = req.body as { sessionKey?: string; pageId?: string };
+
+      if (!sessionKey || !pageId) throw new AppError(400, 'MISSING_FIELDS', 'sessionKey and pageId are required');
+      if (!isRedisAvailable()) throw new AppError(503, 'REDIS_UNAVAILABLE', 'Page selection service temporarily unavailable');
+
+      const raw = await redisClient.get(`oauth_pending_pages:${sessionKey}`);
+      if (!raw) throw new AppError(404, 'SESSION_EXPIRED', 'Session expired — please click "Connect via Meta" again.');
+
+      const sessionData = JSON.parse(raw);
+      const page = (sessionData.pages as any[]).find((p: any) => p.id === pageId);
+      if (!page) throw new AppError(400, 'INVALID_PAGE', 'Selected page not found in session');
+
+      const metaAppId = process.env.META_APP_ID;
+      const metaAppSecret = process.env.META_APP_SECRET;
+      if (!metaAppId || !metaAppSecret) throw new AppError(500, 'CONFIGURATION_ERROR', 'Meta app credentials not configured');
+
+      let integrationData: any = {
+        userId: sessionData.userId,
+        organizationId: sessionData.organizationId,
+        platform: sessionData.platform,
+        clientId: metaAppId,
+        skipVerification: true
+      };
+
+      if (sessionData.platform === 'facebook') {
+        const pageAccessToken = page.pageAccessToken as string;
+
+        integrationData.facebookPageId = page.id;
+        integrationData.credentials = {
+          apiKey: sessionData.accessToken,
+          clientId: metaAppId,
+          facebookPageId: page.id,
+          pageAccessToken
+        };
+        integrationData.metadata = {
+          chatbotEnabled: true,
+          connectedAt: new Date().toISOString(),
+          appUserId: sessionData.appUserId,
+          metaUserId: sessionData.metaUserId,
+          userName: sessionData.userName
+        };
+
+        // Subscribe to Messenger webhooks
+        try {
+          const metaOAuth = new MetaOAuthService({ appId: metaAppId, appSecret: metaAppSecret, redirectUri: '' });
+          const subscribed = await metaOAuth.subscribePageToWebhooks(page.id, pageAccessToken);
+          integrationData.webhookVerified = subscribed;
+        } catch {
+          integrationData.webhookVerified = false;
+        }
+
+      } else if (sessionData.platform === 'instagram') {
+        const pageAccessToken = page.pageAccessToken as string;
+
+        integrationData.instagramAccountId = page.instagramAccountId;
+        integrationData.facebookPageId = page.id;
+        integrationData.credentials = {
+          apiKey: sessionData.accessToken,
+          clientId: metaAppId,
+          instagramAccountId: page.instagramAccountId,
+          facebookPageId: page.id,
+          pageAccessToken
+        };
+        integrationData.metadata = {
+          chatbotEnabled: true,
+          connectedAt: new Date().toISOString(),
+          appUserId: sessionData.appUserId,
+          metaUserId: sessionData.metaUserId,
+          userName: sessionData.userName
+        };
+      }
+
+      const saved = await socialIntegrationService.upsertIntegration(integrationData);
+
+      // Invalidate the pending session
+      await redisClient.del(`oauth_pending_pages:${sessionKey}`);
+
+      res.json(successResponse(
+        { platform: sessionData.platform, integrationId: saved._id },
+        `${sessionData.platform.charAt(0).toUpperCase() + sessionData.platform.slice(1)} connected successfully!`
       ));
     } catch (error) {
       next(error);

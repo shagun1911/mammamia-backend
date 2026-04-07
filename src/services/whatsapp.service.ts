@@ -148,7 +148,7 @@ export class WhatsAppService {
   private apiUrl: string;
   private accessToken: string;
   private phoneNumberId: string;
-  private graphApiBaseUrl = 'https://graph.facebook.com/v18.0';
+  private graphApiBaseUrl = 'https://graph.facebook.com/v21.0';
 
   constructor() {
     this.apiUrl = process.env.WHATSAPP_API_URL!;

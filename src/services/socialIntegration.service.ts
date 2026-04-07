@@ -242,7 +242,7 @@ export class SocialIntegrationService {
         
         try {
           await axios.delete(
-            `https://graph.facebook.com/v18.0/${pageId}/subscribed_apps`,
+            `https://graph.facebook.com/v21.0/${pageId}/subscribed_apps`,
             {
               params: {
                 access_token: pageAccessToken
@@ -295,7 +295,7 @@ export class SocialIntegrationService {
         
         try {
           await axios.delete(
-            `https://graph.facebook.com/v18.0/${pageId}/subscribed_apps`,
+            `https://graph.facebook.com/v21.0/${pageId}/subscribed_apps`,
             {
               params: {
                 access_token: pageAccessToken

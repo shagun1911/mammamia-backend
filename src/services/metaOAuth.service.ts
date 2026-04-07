@@ -31,7 +31,7 @@ export class MetaOAuthService {
   private appId: string;
   private appSecret: string;
   private redirectUri: string;
-  private baseUrl = 'https://graph.facebook.com/v18.0';
+  private baseUrl = 'https://graph.facebook.com/v21.0';
 
   constructor(config: MetaOAuthConfig) {
     this.appId = config.appId;
@@ -79,7 +79,7 @@ export class MetaOAuthService {
     }
     // For standard Facebook OAuth (Messenger), don't include auth_type or config_id
 
-    return `https://www.facebook.com/v18.0/dialog/oauth?${params.toString()}`;
+    return `https://www.facebook.com/v21.0/dialog/oauth?${params.toString()}`;
   }
 
   /**
@@ -104,7 +104,7 @@ export class MetaOAuthService {
     ],
     instagram: [
       'instagram_basic', // Instagram basic access
-      'instagram_manage_messages', // Instagram messaging
+      'instagram_business_manage_messages', // Instagram business messaging (APPROVED)
       'instagram_manage_comments', // Instagram comments
       'pages_show_list', // List user's pages
       'pages_read_engagement', // Read page engagement

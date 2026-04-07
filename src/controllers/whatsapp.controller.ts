@@ -171,7 +171,7 @@ export class WhatsAppController {
         );
       }
 
-      const metaUrl = `https://graph.facebook.com/v19.0/${wabaId}/message_templates`;
+      const metaUrl = `https://graph.facebook.com/v21.0/${wabaId}/message_templates`;
 
       const response = await axios.get(metaUrl, {
         headers: {
@@ -258,7 +258,7 @@ export class WhatsAppController {
         );
       }
 
-      const metaUrl = `https://graph.facebook.com/v19.0/${wabaId}/message_templates`;
+      const metaUrl = `https://graph.facebook.com/v21.0/${wabaId}/message_templates`;
 
       const response = await axios.get(metaUrl, {
         headers: {

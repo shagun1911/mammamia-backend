@@ -898,8 +898,7 @@ export class AutomationEngine {
 
               if (integration?.credentials?.wabaId) {
                 const axios = (await import('axios')).default;
-                const metaUrl = `https://graph.facebook.com/v19.0/${integration.credentials.wabaId}/message_templates`;
-
+const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.wabaId}/message_templates`;
                 const metaResponse = await axios.get(metaUrl, {
                   headers: {
                     Authorization: `Bearer ${userAccessToken}`,
@@ -1037,7 +1036,7 @@ export class AutomationEngine {
         }
 
         // Construct Graph API URL exactly as specified
-        const graphApiUrl = `https://graph.facebook.com/v18.0/${resolvedPhoneNumberId}/messages`;
+        const graphApiUrl = `https://graph.facebook.com/v21.0/${resolvedPhoneNumberId}/messages`;
 
         // Build payload exactly as specified
         const payload: any = {

@@ -90,6 +90,10 @@ router.get('/:platform', socialIntegrationController.getByPlatform.bind(socialIn
 // OAuth flow - initiate OAuth (POST endpoint as frontend expects)
 router.post('/:platform/oauth/initiate', socialIntegrationController.initiateOAuth.bind(socialIntegrationController));
 
+// Page selection — used when user has multiple pages after OAuth
+router.get('/:platform/pending-pages', socialIntegrationController.getPendingPages.bind(socialIntegrationController));
+router.post('/:platform/select-page', socialIntegrationController.selectPage.bind(socialIntegrationController));
+
 // Connect/update integration (manual method - kept for backward compatibility)
 router.post('/:platform/connect', socialIntegrationController.connect.bind(socialIntegrationController));
 

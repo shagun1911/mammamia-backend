@@ -137,7 +137,7 @@ export class InstagramWebhookController {
           const pageAccessToken = integration.credentials?.pageAccessToken;
           if (pageAccessToken) {
             const response = await axios.get(
-              `https://graph.facebook.com/v18.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
+              `https://graph.facebook.com/v21.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
             );
             if (response.data?.name) {
               senderName = response.data.name;
@@ -162,7 +162,7 @@ export class InstagramWebhookController {
           const pageAccessToken = integration.credentials?.pageAccessToken;
           if (pageAccessToken) {
             const response = await axios.get(
-              `https://graph.facebook.com/v18.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
+              `https://graph.facebook.com/v21.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
             );
             if (response.data?.name) {
               customer.name = response.data.name;
@@ -546,7 +546,7 @@ export class InstagramWebhookController {
 
       // Use Graph API to send message to Instagram
       // Instagram messaging uses the same endpoint as Messenger but with Instagram account ID
-      const graphApiUrl = `https://graph.facebook.com/v18.0/${instagramAccountId}/messages`;
+      const graphApiUrl = `https://graph.facebook.com/v21.0/${instagramAccountId}/messages`;
 
       const response = await axios.post(
         graphApiUrl,

@@ -1123,7 +1123,7 @@ export class MetaWebhookController {
             
             try {
               const response = await axios.post(
-                `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
+                `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
                 {
                   messaging_product: 'whatsapp',
                   recipient_type: 'individual',
@@ -1379,7 +1379,7 @@ export class MetaWebhookController {
         let senderName = senderPsid;
         try {
           if (pageAccessToken) {
-            const apiUrl = `https://graph.facebook.com/v18.0/${senderPsid}`;
+            const apiUrl = `https://graph.facebook.com/v21.0/${senderPsid}`;
             const params = { fields: 'first_name,last_name,name', access_token: pageAccessToken };
             const response = await axios.get(apiUrl, { params });
             
@@ -1402,7 +1402,7 @@ export class MetaWebhookController {
         // Update customer name if it's still an ID
         try {
           if (pageAccessToken) {
-            const apiUrl = `https://graph.facebook.com/v18.0/${senderPsid}`;
+            const apiUrl = `https://graph.facebook.com/v21.0/${senderPsid}`;
             const params = { fields: 'first_name,last_name,name', access_token: pageAccessToken };
             const response = await axios.get(apiUrl, { params });
             
@@ -1894,7 +1894,7 @@ export class MetaWebhookController {
       let leadDetails: any = {};
       try {
         const response = await axios.get(
-          `https://graph.facebook.com/v18.0/${leadgenId}?access_token=${pageAccessToken}`
+          `https://graph.facebook.com/v21.0/${leadgenId}?access_token=${pageAccessToken}`
         );
         leadDetails = response.data;
         console.log('[Facebook Lead Ads] Lead details fetched:', JSON.stringify(leadDetails, null, 2));
@@ -2131,7 +2131,7 @@ export class MetaWebhookController {
             const pageAccessToken = integration.credentials?.pageAccessToken;
             if (pageAccessToken) {
               const response = await axios.get(
-                `https://graph.facebook.com/v18.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
+                `https://graph.facebook.com/v21.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
               );
               if (response.data?.name) {
                 senderName = response.data.name;
@@ -2156,7 +2156,7 @@ export class MetaWebhookController {
             const pageAccessToken = integration.credentials?.pageAccessToken;
             if (pageAccessToken) {
               const response = await axios.get(
-                `https://graph.facebook.com/v18.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
+                `https://graph.facebook.com/v21.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
               );
               if (response.data?.name) {
                 customer.name = response.data.name;
@@ -2410,6 +2410,50 @@ export class MetaWebhookController {
       console.log(`[Instagram Webhook] Message: ${messageText.substring(0, 100)}...`);
       console.log(`[Instagram Webhook] Token starts with: ${pageAccessToken.substring(0, 20)}...`);
 
+<<<<<<< HEAD
+=======
+      // Defensive logging: App mode and permissions check
+      const appMode = process.env.NODE_ENV || 'development';
+      console.log(`[Instagram Webhook] App mode: ${appMode}`);
+
+      // Check token permissions via debug_token (optional, for debugging)
+      try {
+        const metaAppId = process.env.META_APP_ID;
+        const metaAppSecret = process.env.META_APP_SECRET;
+        
+        if (metaAppId && metaAppSecret) {
+          const debugResponse = await axios.get('https://graph.facebook.com/v21.0/debug_token', {
+            params: {
+              input_token: pageAccessToken,
+              access_token: `${metaAppId}|${metaAppSecret}`
+            }
+          });
+          
+          if (debugResponse.data?.data) {
+            const tokenData = debugResponse.data.data;
+            console.log(`[Instagram Webhook] Token permissions:`, {
+              app_id: tokenData.app_id,
+              type: tokenData.type,
+              scopes: tokenData.scopes || [],
+              is_valid: tokenData.is_valid
+            });
+          }
+        } else {
+          console.warn(`[Instagram Webhook] META_APP_ID or META_APP_SECRET not set, skipping token permission check`);
+        }
+      } catch (debugError: any) {
+        // Don't fail if debug_token fails, just log
+        console.warn(`[Instagram Webhook] Could not check token permissions:`, debugError.message);
+      }
+
+      // Build endpoint URL
+      // Use Instagram Business API endpoint with instagram_business_manage_messages permission
+      const endpointUrl = `https://graph.facebook.com/v18.0/${instagramAccountId}/messages`;
+      console.log(`[Instagram Webhook] Endpoint URL: ${endpointUrl}`);
+      console.log(`[Instagram Webhook] Recipient ID: ${senderId}`);
+      console.log(`[Instagram Webhook] Message length: ${messageText.length} characters`);
+
+      // Build payload (EXACT format required by Instagram Messaging API)
       const payload = {
         recipient: {
           id: senderId
@@ -2418,14 +2462,9 @@ export class MetaWebhookController {
           text: messageText
         }
       };
-
-      // Instagram Messaging API: POST /{instagram_business_account_id}/messages
-      // Try v18.0 (more stable) instead of v21.0
-      const apiUrl = `https://graph.facebook.com/v18.0/${instagramAccountId}/messages`;
-      console.log(`[Instagram Webhook] API URL: ${apiUrl}`);
       
       const response = await axios.post(
-        apiUrl,
+        endpointUrl,
         payload,
         {
           params: {
@@ -2475,7 +2514,7 @@ export class MetaWebhookController {
           const pageAccessToken = integration.credentials?.pageAccessToken;
           if (pageAccessToken) {
             const response = await axios.get(
-              `https://graph.facebook.com/v18.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
+              `https://graph.facebook.com/v21.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
             );
             if (response.data?.name) {
               senderName = response.data.name;
@@ -2500,7 +2539,7 @@ export class MetaWebhookController {
           const pageAccessToken = integration.credentials?.pageAccessToken;
           if (pageAccessToken) {
             const response = await axios.get(
-              `https://graph.facebook.com/v18.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
+              `https://graph.facebook.com/v21.0/${senderId}?fields=username,name&access_token=${pageAccessToken}`
             );
             if (response.data?.name) {
               customer.name = response.data.name;

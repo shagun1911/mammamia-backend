@@ -306,7 +306,7 @@ export class ConversationService {
             }
           };
 
-          const apiUrl = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+          const apiUrl = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
           
           // Log request details
           console.log('[WhatsApp Send - Take Control] 📤 Sending message via Meta Graph API:', {
@@ -449,7 +449,7 @@ export class ConversationService {
         // Using v21.0 and access_token in query parameters as recommended
         const axios = (await import('axios')).default;
         await axios.post(
-          `https://graph.facebook.com/v21.0/${instagramAccountId}/messages`,
+`https://graph.facebook.com/v21.0/${instagramAccountId}/messages`,
           {
             recipient: { id: instagramId },
             message: { text: messageText }
