@@ -2377,7 +2377,9 @@ export class MetaWebhookController {
         throw new Error('Page Access Token not found. Please re-authenticate Instagram OAuth.');
       }
 
-      console.log(`[Instagram Webhook] Sending reply for instagramAccountId: ${instagramAccountId} (In-place)`);
+      console.log(`[Instagram Webhook] Sending reply for instagramAccountId: ${instagramAccountId} to senderId: ${senderId}`);
+      console.log(`[Instagram Webhook] Message: ${messageText.substring(0, 100)}...`);
+      console.log(`[Instagram Webhook] Token starts with: ${pageAccessToken.substring(0, 20)}...`);
 
       const payload = {
         recipient: {
@@ -2389,9 +2391,12 @@ export class MetaWebhookController {
       };
 
       // Instagram Messaging API: POST /{instagram_business_account_id}/messages
-      // Using v21.0 and access_token in query parameters as recommended
-      await axios.post(
-        `https://graph.facebook.com/v21.0/${instagramAccountId}/messages`,
+      // Try v18.0 (more stable) instead of v21.0
+      const apiUrl = `https://graph.facebook.com/v18.0/${instagramAccountId}/messages`;
+      console.log(`[Instagram Webhook] API URL: ${apiUrl}`);
+      
+      const response = await axios.post(
+        apiUrl,
         payload,
         {
           params: {
@@ -2402,11 +2407,14 @@ export class MetaWebhookController {
           }
         }
       );
+      
+      console.log(`[Instagram Webhook] API Response:`, response.data);
 
       console.log(`[Instagram Webhook] ✅ Instagram reply sent successfully`);
     } catch (error: any) {
       console.error(`[Instagram Webhook] ❌ Error sending Instagram message:`, error.response?.data || error.message);
-      throw error;
+      // Don't throw - we don't want to break the webhook flow
+      // The message is still saved to database even if API fails
     }
   }
 
