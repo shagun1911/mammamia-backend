@@ -108,19 +108,15 @@ export class MetaOAuthService {
     ],
     whatsapp: [
       'whatsapp_business_management', // WhatsApp Business API management
-      'whatsapp_business_messaging', // WhatsApp messaging
-      'business_management' // Required for Business Manager access
+      'whatsapp_business_messaging' // WhatsApp messaging
     ],
-    // Instagram uses only verified permissions in Meta app
-    // instagram_business_basic: verified permission for basic Instagram access
-    // instagram_business_manage_messages: verified permission for Instagram messaging
-    // pages_show_list: required to list Pages (for Instagram messaging API)
-    // pages_messaging: required to send/receive messages via linked Page token
+    // Instagram messaging works through Facebook Page permissions
+    // instagram_business_* permissions are deprecated and cause OAuth errors
+    // Use only Page permissions which are valid and renewed
     instagram: [
-      'instagram_business_basic',
-      'instagram_business_manage_messages',
       'pages_show_list',
-      'pages_messaging'
+      'pages_messaging',
+      'pages_manage_metadata'
     ]
   } as const;
 
