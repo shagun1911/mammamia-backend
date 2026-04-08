@@ -2451,9 +2451,9 @@ export class MetaWebhookController {
         console.error(`[Instagram Webhook] Instagram Messaging requires Page Access Token (EAAG) from Facebook OAuth`);
         console.error(`[Instagram Webhook] Check:`);
         console.error(`[Instagram Webhook]   - App is PUBLISHED (not in Development mode)`);
-        console.error(`[Instagram Webhook]   - instagram_manage_messages permission is Advanced`);
+        console.error(`[Instagram Webhook]   - instagram_business_manage_messages is Advanced (not legacy instagram_manage_messages)`);
         console.error(`[Instagram Webhook]   - Instagram Messaging product is added to the app`);
-        console.error(`[Instagram Webhook]   - App Review is approved for instagram_manage_messages`);
+        console.error(`[Instagram Webhook]   - App Review is approved for instagram_business_manage_messages`);
         console.error(`[Instagram Webhook]   - Token prefix is EAAG (Page Access Token)`);
         console.error(`[Instagram Webhook] Full error:`, JSON.stringify(error.response?.data, null, 2));
       } else {
