@@ -111,12 +111,14 @@ export class MetaOAuthService {
       'whatsapp_business_messaging', // WhatsApp messaging
       'business_management' // Required for Business Manager access
     ],
-    // Use Instagram Business permission names (legacy instagram_manage_messages is deprecated / do not use).
-    // pages_show_list + pages_messaging: required to list Pages and send via linked Page token for IG messaging API.
+    // Instagram uses only verified permissions in Meta app
+    // instagram_business_basic: verified permission for basic Instagram access
+    // instagram_business_manage_messages: verified permission for Instagram messaging
+    // pages_show_list: required to list Pages (for Instagram messaging API)
+    // pages_messaging: required to send/receive messages via linked Page token
     instagram: [
       'instagram_business_basic',
       'instagram_business_manage_messages',
-      'instagram_business_manage_comments',
       'pages_show_list',
       'pages_messaging'
     ]
