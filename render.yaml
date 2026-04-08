@@ -1,13 +1,19 @@
 services:
   - type: web
-    name: kepleroai-backend
+    name: AisteinAI-backend-2026
     runtime: node
-    buildCommand: npm install && npm install typescript @types/node --save-dev && npm run build
+    buildCommand: npm install && npm run build
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
         sync: false
     healthCheckPath: /api/v1/health
 
