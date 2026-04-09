@@ -914,6 +914,7 @@ export class SocialIntegrationController {
         console.log(`[Instagram Business Login]    - Token type: ${pageAccessToken.startsWith('EAAG') ? '✅ EAAG Page Access Token' : '❌ NOT EAAG'}`);
 
         console.log('[Instagram Business Login] ✅ Instagram OAuth completed successfully');
+        } // Close Facebook OAuth else block
       } else if (platform === 'whatsapp') {
         // WhatsApp OAuth: Use ONLY WhatsApp Business endpoints (NO Page endpoints)
         // Flow: User → Businesses → WABAs → Phone Numbers
