@@ -2427,13 +2427,13 @@ export class MetaWebhookController {
         console.warn(`[Instagram Webhook] Could not check token permissions:`, debugError.message);
       }
 
-      // Build endpoint URL with access_token as query param (working implementation method)
-      // Instagram API uses graph.instagram.com (not graph.facebook.com)
-      // The recipient.id in payload determines who receives the message
+      // Build endpoint URL with access_token as query param (matches working test script)
+      // Instagram API uses graph.instagram.com
+      // Token is passed as query parameter (NOT Authorization header)
       const graphHost = process.env.INSTAGRAM_GRAPH_HOST || 'https://graph.instagram.com';
       const endpointUrl = new URL(`${graphHost}/v21.0/me/messages`);
       endpointUrl.searchParams.set('access_token', pageAccessToken);
-      console.log(`[Instagram Webhook] Endpoint URL: ${endpointUrl.toString().split('?')[0]}?access_token=***`);
+      console.log(`[Instagram Webhook] Endpoint: ${graphHost}/v21.0/me/messages?access_token=***`);
       console.log(`[Instagram Webhook] Recipient ID: ${senderId}`);
       console.log(`[Instagram Webhook] Message length: ${messageText.length} characters`);
 
