@@ -99,15 +99,25 @@ export class MetaOAuthService {
    * This matches the working test script implementation
    */
   getInstagramLoginAuthUrl(state: string): string {
+    // Instagram Business Login scopes (NOT instagram_basic)
+    // These require proper configuration in Meta App Dashboard
+    // Use Cases → Instagram → Business Login
+    const scopes = [
+      'instagram_business_basic',
+      'instagram_business_manage_messages',
+      'instagram_business_manage_comments'
+    ].join(',');
+
     const params = new URLSearchParams({
       client_id: this.appId,
       redirect_uri: this.redirectUri,
       response_type: 'code',
-      scope: 'instagram_basic',  // Instagram Login scope
+      scope: scopes,
       state
     });
 
-    console.log('[Instagram OAuth] Using instagram.com/oauth/authorize (NOT facebook.com)');
+    console.log('[Instagram OAuth] Using instagram.com/oauth/authorize');
+    console.log('[Instagram OAuth] Scopes:', scopes);
     return `https://www.instagram.com/oauth/authorize?${params.toString()}`;
   }
 
