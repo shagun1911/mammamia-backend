@@ -2035,11 +2035,17 @@ export class MetaWebhookController {
       }
 
       // Log which integration is being used
-      const tokenPrefix = integration.credentials?.pageAccessToken ? integration.credentials.pageAccessToken.substring(0, 4) : 'NONE';
+      const tokenPrefix = integration.credentials?.pageAccessToken ? integration.credentials.pageAccessToken.substring(0, 10) : 'NONE';
+      const tokenType = integration.credentials?.pageAccessToken 
+        ? (integration.credentials.pageAccessToken.startsWith('EAAG') ? '✅ EAAG Page Token' : 
+           integration.credentials.pageAccessToken.startsWith('EAAM') ? '❌ EAAM User Token' : '❓ Unknown')
+        : '❌ Missing';
+      
       console.log(`[Instagram Webhook] Found integration:`, {
         integrationId: integration._id.toString(),
         updatedAt: integration.updatedAt,
         tokenPrefix: tokenPrefix,
+        tokenType: tokenType,
         hasPageAccessToken: !!integration.credentials?.pageAccessToken,
         instagramAccountId: integration.credentials?.instagramAccountId
       });
@@ -2374,13 +2380,22 @@ export class MetaWebhookController {
       }
 
       // Verify token is Page Access Token (EAAG), not User Access Token (EAAM)
+      const tokenPrefix = pageAccessToken.substring(0, 10);
+      console.log(`[Instagram Webhook] 🔍 TOKEN PREFIX: ${tokenPrefix}...`);
+      console.log(`[Instagram Webhook] 🔍 TOKEN SOURCE: integration.credentials.pageAccessToken`);
+      console.log(`[Instagram Webhook] 🔍 TOKEN LENGTH: ${pageAccessToken.length}`);
+      
       if (!pageAccessToken.startsWith('EAAG')) {
         console.error(`[Instagram Webhook] ❌ Invalid token type for Instagram Messaging`);
         console.error(`[Instagram Webhook] ❌ Expected: EAAG (Page Access Token)`);
-        console.error(`[Instagram Webhook] ❌ Got: ${pageAccessToken.substring(0, 4)}...`);
+        console.error(`[Instagram Webhook] ❌ Got: ${tokenPrefix}...`);
+        console.error(`[Instagram Webhook] ❌ This is a ${pageAccessToken.startsWith('EAAM') ? 'User Access Token (EAAM)' : 'Unknown Token Type'}`);
         console.error(`[Instagram Webhook] ❌ Instagram Messaging requires Page Access Token from Facebook OAuth`);
+        console.error(`[Instagram Webhook] ❌ SOLUTION: Disconnect and reconnect Instagram to get EAAG token`);
         throw new Error('Invalid token type. Instagram requires Page Access Token (EAAG). Please re-authenticate Instagram OAuth.');
       }
+      
+      console.log(`[Instagram Webhook] ✅ EAAG Token validated: ${tokenPrefix}...`);
 
       // No prefix check; token validity is determined by the Meta API call below.
       console.log(`[Instagram Webhook] Sending reply for instagramAccountId: ${instagramAccountId}`);

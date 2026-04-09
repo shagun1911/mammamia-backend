@@ -799,11 +799,18 @@ export class SocialIntegrationController {
         const instagramAccountId = match.instagramAccountId;
         const pageAccessToken = match.pageAccessToken;
 
-        if (!pageAccessToken.startsWith('EAAG') && !pageAccessToken.startsWith('EAA')) {
-          throw new AppError(400, 'INVALID_PAGE_TOKEN', 'Instagram Page Access Token not resolved — cannot send DMs');
+        // STRICT VALIDATION: Must be EAAG Page Access Token
+        console.log(`[Instagram Business Login] 🔍 Token validation: prefix=${pageAccessToken.substring(0, 10)}`);
+        
+        if (!pageAccessToken.startsWith('EAAG')) {
+          console.error(`[Instagram Business Login] ❌ CRITICAL: Token is NOT EAAG Page Access Token`);
+          console.error(`[Instagram Business Login] ❌ Got: ${pageAccessToken.substring(0, 10)}...`);
+          console.error(`[Instagram Business Login] ❌ This is a ${pageAccessToken.startsWith('EAAM') ? 'User Access Token (EAAM)' : 'Unknown Token Type'}`);
+          throw new AppError(400, 'INVALID_PAGE_TOKEN', 'Meta returned wrong token type. Expected EAAG Page Access Token for Instagram messaging. Your Page may lack proper permissions or you may need to be an Admin of the Page.');
         }
 
         console.log('[Instagram Business Login] ✅ Auto-selected page:', selectedPage.id, 'Instagram:', instagramAccountId);
+        console.log(`[Instagram Business Login] ✅ EAAG Token confirmed: ${pageAccessToken.substring(0, 10)}...`);
 
         // Store Instagram-specific credentials with Page Access Token
         integrationData.instagramAccountId = instagramAccountId;
@@ -841,6 +848,13 @@ export class SocialIntegrationController {
           metaUserId,
           userName
         };
+
+        // Log what we're about to save
+        console.log('[Instagram Business Login] 💾 Saving to database:');
+        console.log(`[Instagram Business Login]    - instagramAccountId: ${instagramAccountId}`);
+        console.log(`[Instagram Business Login]    - facebookPageId: ${selectedPage.id}`);
+        console.log(`[Instagram Business Login]    - pageAccessToken prefix: ${pageAccessToken.substring(0, 10)}...`);
+        console.log(`[Instagram Business Login]    - Token type: ${pageAccessToken.startsWith('EAAG') ? '✅ EAAG Page Access Token' : '❌ NOT EAAG'}`);
 
         console.log('[Instagram Business Login] ✅ Instagram OAuth completed successfully');
       } else if (platform === 'whatsapp') {
