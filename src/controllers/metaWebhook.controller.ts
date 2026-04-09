@@ -2353,10 +2353,10 @@ export class MetaWebhookController {
    * Send reply to Instagram user via Instagram Business Messaging API
    * 
    * Uses Instagram Business Account messaging via Graph API
-   * Endpoint: POST https://graph.facebook.com/v21.0/{instagramAccountId}/messages
+   * Endpoint: POST https://graph.facebook.com/v21.0/me/messages
    * 
-   * IMPORTANT: Instagram Business API uses Page Access Token (EAAG) from Facebook OAuth
-   * Requires instagram_business_manage_messages permission (NOT instagram_manage_messages)
+   * IMPORTANT: Instagram Business API uses Page Access Token from Facebook OAuth
+   * Requires instagram_manage_messages permission (available in your token scopes)
    * This is the same token used for Messenger, obtained via /me/accounts
    */
   private async sendInstagramReply(
@@ -2428,9 +2428,9 @@ export class MetaWebhookController {
       }
 
       // Build endpoint URL
-      // Instagram Business API uses /{instagramAccountId}/messages (NOT /me/messages)
-      // This matches instagram_business_manage_messages permission
-      const endpointUrl = `https://graph.facebook.com/v21.0/${instagramAccountId}/messages`;
+      // Instagram Business API uses /me/messages (NOT /{instagramAccountId}/messages)
+      // The recipient.id in payload determines who receives the message
+      const endpointUrl = `https://graph.facebook.com/v21.0/me/messages`;
       console.log(`[Instagram Webhook] Endpoint URL: ${endpointUrl}`);
       console.log(`[Instagram Webhook] Recipient ID: ${senderId}`);
       console.log(`[Instagram Webhook] Message length: ${messageText.length} characters`);
@@ -2448,9 +2448,9 @@ export class MetaWebhookController {
       console.log(`[Instagram Webhook] Payload:`, JSON.stringify(payload, null, 2));
 
       // Send message via Instagram Business Graph API
-      // POST /v21.0/{instagramAccountId}/messages
-      // Authorization: Bearer <PAGE_ACCESS_TOKEN> (EAAG)
-      // Uses instagram_business_manage_messages permission
+      // POST /v21.0/me/messages
+      // Authorization: Bearer <PAGE_ACCESS_TOKEN>
+      // Uses instagram_manage_messages permission (not instagram_business_manage_messages)
       const response = await axios.post(
         endpointUrl,
         payload,
@@ -2475,10 +2475,9 @@ export class MetaWebhookController {
         console.error(`[Instagram Webhook] Instagram Messaging requires Page Access Token (EAAG) from Facebook OAuth`);
         console.error(`[Instagram Webhook] Check:`);
         console.error(`[Instagram Webhook]   - App is PUBLISHED (not in Development mode)`);
-        console.error(`[Instagram Webhook]   - instagram_business_manage_messages is Advanced (not legacy instagram_manage_messages)`);
+        console.error(`[Instagram Webhook]   - instagram_manage_messages permission is in your token scopes`);
         console.error(`[Instagram Webhook]   - Instagram Messaging product is added to the app`);
-        console.error(`[Instagram Webhook]   - App Review is approved for instagram_business_manage_messages`);
-        console.error(`[Instagram Webhook]   - Token prefix is EAAG (Page Access Token)`);
+        console.error(`[Instagram Webhook]   - Using correct endpoint: /me/messages (not /{ig-id}/messages)`);
         console.error(`[Instagram Webhook] Full error:`, JSON.stringify(error.response?.data, null, 2));
       } else {
         console.error(`[Instagram Webhook] ❌ Error sending Instagram message (code: ${errorCode}):`, errorMessage);
@@ -2929,7 +2928,7 @@ export class MetaWebhookController {
           const instagramAccountId = integration.credentials.instagramAccountId;
           
           await axios.post(
-            `https://graph.facebook.com/v21.0/${instagramAccountId}/messages`,
+            `https://graph.facebook.com/v21.0/me/messages`,
             {
               recipient: { id: customerId },
               message: { text: aiResponse }
