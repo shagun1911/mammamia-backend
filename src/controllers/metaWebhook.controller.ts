@@ -2379,23 +2379,16 @@ export class MetaWebhookController {
         throw new Error('Page Access Token not found. Please re-authenticate Instagram OAuth.');
       }
 
-      // Verify token is Page Access Token (EAAG), not User Access Token (EAAM)
+      // Log token info for debugging (Meta may return EAAM or EAAG for page tokens from /me/accounts)
       const tokenPrefix = pageAccessToken.substring(0, 10);
       console.log(`[Instagram Webhook] 🔍 TOKEN PREFIX: ${tokenPrefix}...`);
       console.log(`[Instagram Webhook] 🔍 TOKEN SOURCE: integration.credentials.pageAccessToken`);
       console.log(`[Instagram Webhook] 🔍 TOKEN LENGTH: ${pageAccessToken.length}`);
+      console.log(`[Instagram Webhook] 🔍 TOKEN TYPE: ${pageAccessToken.startsWith('EAAG') ? 'EAAG' : pageAccessToken.startsWith('EAAM') ? 'EAAM' : 'Other'}`);
       
-      if (!pageAccessToken.startsWith('EAAG')) {
-        console.error(`[Instagram Webhook] ❌ Invalid token type for Instagram Messaging`);
-        console.error(`[Instagram Webhook] ❌ Expected: EAAG (Page Access Token)`);
-        console.error(`[Instagram Webhook] ❌ Got: ${tokenPrefix}...`);
-        console.error(`[Instagram Webhook] ❌ This is a ${pageAccessToken.startsWith('EAAM') ? 'User Access Token (EAAM)' : 'Unknown Token Type'}`);
-        console.error(`[Instagram Webhook] ❌ Instagram Messaging requires Page Access Token from Facebook OAuth`);
-        console.error(`[Instagram Webhook] ❌ SOLUTION: Disconnect and reconnect Instagram to get EAAG token`);
-        throw new Error('Invalid token type. Instagram requires Page Access Token (EAAG). Please re-authenticate Instagram OAuth.');
-      }
-      
-      console.log(`[Instagram Webhook] ✅ EAAG Token validated: ${tokenPrefix}...`);
+      // Note: Meta's /me/accounts may return EAAM or EAAG - both can be valid page tokens
+      // The important thing is the token came from /me/accounts, not the prefix
+      console.log(`[Instagram Webhook] ✅ Using Page Access Token from /me/accounts: ${tokenPrefix}...`);
 
       // No prefix check; token validity is determined by the Meta API call below.
       console.log(`[Instagram Webhook] Sending reply for instagramAccountId: ${instagramAccountId}`);
