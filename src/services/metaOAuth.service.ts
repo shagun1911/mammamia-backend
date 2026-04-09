@@ -207,7 +207,16 @@ export class MetaOAuthService {
         }
       });
 
-      return response.data.data || [];
+      const pages = response.data.data || [];
+      
+      // Log token types for debugging
+      console.log(`[Meta OAuth] /me/accounts returned ${pages.length} page(s):`);
+      pages.forEach((page: any, index: number) => {
+        const tokenPrefix = page.access_token ? page.access_token.substring(0, 4) : 'NONE';
+        console.log(`[Meta OAuth] Page ${index + 1}: ${page.id} - Token: ${tokenPrefix}...`);
+      });
+
+      return pages;
     } catch (error: any) {
       console.error('[Meta OAuth] Error getting user pages:', error.response?.data || error.message);
       throw new AppError(

@@ -749,7 +749,11 @@ export class SocialIntegrationController {
         const pagesWithInstagram: PageWithInsta[] = [];
 
         for (const page of pages) {
-          if (!page.access_token.startsWith('EAAG') && !page.access_token.startsWith('EAA')) continue;
+          // CRITICAL: Only accept EAAG Page Access Tokens, NOT EAAM User Access Tokens
+          if (!page.access_token.startsWith('EAAG')) {
+            console.log(`[Instagram Business Login] Skipping page ${page.id}: Token is ${page.access_token.substring(0, 4)}... (need EAAG Page Token)`);
+            continue;
+          }
           const instagramAccounts = await metaOAuth.getInstagramAccounts(page.id, page.access_token);
           if (instagramAccounts.length > 0) {
             pagesWithInstagram.push({

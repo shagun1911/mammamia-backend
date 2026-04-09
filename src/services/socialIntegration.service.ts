@@ -108,6 +108,18 @@ export class SocialIntegrationService {
       updateData.userId = new mongoose.Types.ObjectId(data.userId);
       updateData.organizationId = new mongoose.Types.ObjectId(data.organizationId);
 
+      // CRITICAL: Delete any old integrations for this Instagram account to prevent EAAM token conflicts
+      if (data.platform === 'instagram' && data.credentials?.instagramAccountId) {
+        const deleteResult = await SocialIntegration.deleteMany({
+          'credentials.instagramAccountId': data.credentials.instagramAccountId,
+          platform: 'instagram',
+          organizationId: new mongoose.Types.ObjectId(data.organizationId)
+        });
+        if (deleteResult.deletedCount > 0) {
+          console.log(`[Social Integration Service] Deleted ${deleteResult.deletedCount} old Instagram integration(s) for account ${data.credentials.instagramAccountId}`);
+        }
+      }
+
       // Update or create integration
       const integration = await SocialIntegration.findOneAndUpdate(
         {

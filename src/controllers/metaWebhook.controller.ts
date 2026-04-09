@@ -2030,9 +2030,19 @@ export class MetaWebhookController {
       }
 
       if (!integration) {
-        console.warn(`[Instagram Webhook] No integration found for instagramAccountId: ${instagramAccountId} (tried string and number)`);
+        console.error(`[Instagram Webhook] ❌ No integration found for instagramAccountId: ${instagramAccountId}`);
         return;
       }
+
+      // Log which integration is being used
+      const tokenPrefix = integration.credentials?.pageAccessToken ? integration.credentials.pageAccessToken.substring(0, 4) : 'NONE';
+      console.log(`[Instagram Webhook] Found integration:`, {
+        integrationId: integration._id.toString(),
+        updatedAt: integration.updatedAt,
+        tokenPrefix: tokenPrefix,
+        hasPageAccessToken: !!integration.credentials?.pageAccessToken,
+        instagramAccountId: integration.credentials?.instagramAccountId
+      });
 
       // RUNTIME ASSERTION: If integration.userId missing → THROW
       if (!integration.userId) {
