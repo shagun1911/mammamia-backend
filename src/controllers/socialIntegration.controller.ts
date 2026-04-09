@@ -456,24 +456,37 @@ export class SocialIntegrationController {
       const state = Buffer.from(JSON.stringify(stateData)).toString('base64');
 
       // Generate OAuth authorization URL
-      // Instagram uses Config ID based OAuth (Facebook Login for Business)
-      // This matches the working test implementation
+      // Instagram uses Instagram Login (instagram.com), NOT Facebook Login
+      // Uses INSTA_APP_ID (Instagram App), NOT META_APP_ID (Facebook App)
       let authUrl: string;
       if (platform === 'instagram') {
-        const configId = process.env.FACEBOOK_CONFIG_ID;
-        if (!configId) {
-          throw new AppError(500, 'CONFIG_ERROR', 'FACEBOOK_CONFIG_ID required for Instagram OAuth');
+        // Instagram Login requires Instagram App credentials
+        const instaAppId = process.env.INSTA_APP_ID;
+        const instaAppSecret = process.env.INSTA_APP_SECRET;
+        
+        if (!instaAppId || !instaAppSecret) {
+          throw new AppError(500, 'CONFIG_ERROR', 'INSTA_APP_ID and INSTA_APP_SECRET required for Instagram OAuth');
         }
         
-        // Use Facebook OAuth with Config ID (NOT instagram.com)
-        authUrl = metaOAuth.getAuthorizationUrl(
-          platform,
-          state,
-          configId,  // Config ID is the key!
-          false
-        );
-        console.log('[Instagram OAuth] Using Config ID:', configId.substring(0, 4) + '...');
+        // Build Instagram Login URL (NOT facebook.com/dialog/oauth)
+        const scopes = [
+          'instagram_business_basic',
+          'instagram_business_manage_messages'
+        ].join(',');
+        
+        const params = new URLSearchParams({
+          client_id: instaAppId,
+          redirect_uri: redirectUri,
+          response_type: 'code',
+          scope: scopes,
+          state
+        });
+        
+        authUrl = `https://www.instagram.com/oauth/authorize?${params.toString()}`;
+        console.log('[Instagram OAuth] Using instagram.com/oauth/authorize');
+        console.log('[Instagram OAuth] App ID:', instaAppId.substring(0, 4) + '...');
       } else {
+        // Facebook/WhatsApp use Facebook OAuth
         authUrl = metaOAuth.getAuthorizationUrl(
           platform as 'whatsapp' | 'instagram' | 'facebook', 
           state,
@@ -729,28 +742,51 @@ export class SocialIntegrationController {
         clientId: metaAppId
       };
 
-      // All platforms use Facebook OAuth (matches working test script)
-      console.log('[Meta OAuth Callback] Using Facebook OAuth token exchange');
-      const tokenResponse = await metaOAuth.exchangeCodeForToken(code as string);
-      const shortLivedToken = tokenResponse.access_token;
+      // Instagram uses Instagram Login, others use Facebook OAuth
+      let accessToken: string;
+      let metaUserId: string;
+      let userName: string;
+      let userEmail: string;
       
-      // Exchange for long-lived token (60 days)
-      const longLivedTokenResponse = await metaOAuth.getLongLivedToken(shortLivedToken);
-      const accessToken = longLivedTokenResponse.access_token;
-      
-      // Get user information
-      const userInfo = await metaOAuth.getUserInfo(accessToken);
-      const metaUserId = userInfo.id;
-      const userName = userInfo.name || 'Unknown';
-      const userEmail = userInfo.email || '';
-      
-      console.log(`[Meta OAuth Callback] Token received: ${accessToken.substring(0, 10)}...`);
-      
-      // For Instagram: Get Pages via /me/accounts (matches working test)
       if (platform === 'instagram') {
-        console.log('[Meta OAuth Callback] Fetching Pages via /me/accounts...');
-        const pages = await metaOAuth.getUserPages(accessToken);
-        console.log(`[Meta OAuth Callback] Found ${pages.length} Page(s)`);
+        // Instagram Login: Exchange code via api.instagram.com
+        console.log('[Meta OAuth Callback] Using Instagram Login token exchange');
+        const instaAppId = process.env.INSTA_APP_ID;
+        const instaAppSecret = process.env.INSTA_APP_SECRET;
+        
+        if (!instaAppId || !instaAppSecret) {
+          throw new AppError(500, 'CONFIG_ERROR', 'INSTA_APP_ID and INSTA_APP_SECRET required');
+        }
+        
+        const instaOAuth = new MetaOAuthService({
+          appId: instaAppId,
+          appSecret: instaAppSecret,
+          redirectUri
+        });
+        
+        // Exchange code for Instagram User Access Token (IGA*)
+        const tokenResponse = await instaOAuth.exchangeInstagramCodeForToken(code as string);
+        accessToken = tokenResponse.access_token;
+        metaUserId = tokenResponse.user_id?.toString() || '';
+        userName = 'Instagram User';
+        userEmail = '';
+        
+        console.log(`[Meta OAuth Callback] Instagram token received: ${accessToken.substring(0, 10)}...`);
+      } else {
+        // Facebook/WhatsApp: Use Facebook OAuth
+        console.log('[Meta OAuth Callback] Using Facebook OAuth token exchange');
+        const tokenResponse = await metaOAuth.exchangeCodeForToken(code as string);
+        const shortLivedToken = tokenResponse.access_token;
+        
+        // Exchange for long-lived token (60 days)
+        const longLivedTokenResponse = await metaOAuth.getLongLivedToken(shortLivedToken);
+        accessToken = longLivedTokenResponse.access_token;
+        
+        // Get user information
+        const userInfo = await metaOAuth.getUserInfo(accessToken);
+        metaUserId = userInfo.id;
+        userName = userInfo.name || 'Unknown';
+        userEmail = userInfo.email || '';
       }
 
       console.log('[Meta OAuth Callback] User info retrieved:', {
