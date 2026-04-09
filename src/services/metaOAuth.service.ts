@@ -94,6 +94,24 @@ export class MetaOAuthService {
   }
 
   /**
+   * Get Instagram Login OAuth URL (NOT Facebook Login)
+   * Uses instagram.com/oauth/authorize (not facebook.com)
+   * This matches the working test script implementation
+   */
+  getInstagramLoginAuthUrl(state: string): string {
+    const params = new URLSearchParams({
+      client_id: this.appId,
+      redirect_uri: this.redirectUri,
+      response_type: 'code',
+      scope: 'instagram_basic',  // Instagram Login scope
+      state
+    });
+
+    console.log('[Instagram OAuth] Using instagram.com/oauth/authorize (NOT facebook.com)');
+    return `https://www.instagram.com/oauth/authorize?${params.toString()}`;
+  }
+
+  /**
    * Platform-specific OAuth scopes
    * Single source of truth for all Meta OAuth scopes
    * 

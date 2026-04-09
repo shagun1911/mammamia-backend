@@ -455,15 +455,21 @@ export class SocialIntegrationController {
 
       const state = Buffer.from(JSON.stringify(stateData)).toString('base64');
 
-      // Generate Meta OAuth authorization URL
-      // For Instagram with Config ID: Use Instagram Login (preferred, matches working test)
-      // For others: Use standard OAuth
-      const authUrl = metaOAuth.getAuthorizationUrl(
-        platform as 'whatsapp' | 'instagram' | 'facebook', 
-        state,
-        useConfigLogin ? facebookConfigId : undefined, // Pass config_id for Instagram Login
-        false // useBusinessLogin flag (not used anymore)
-      );
+      // Generate OAuth authorization URL
+      // For Instagram: Use Instagram Login (instagram.com/oauth/authorize)
+      // For others: Use Facebook OAuth
+      let authUrl: string;
+      if (platform === 'instagram') {
+        // Instagram Login uses instagram.com (NOT facebook.com)
+        authUrl = metaOAuth.getInstagramLoginAuthUrl(state);
+      } else {
+        authUrl = metaOAuth.getAuthorizationUrl(
+          platform as 'whatsapp' | 'instagram' | 'facebook', 
+          state,
+          undefined,
+          false
+        );
+      }
 
       console.log('[Meta OAuth Initiate] Generated auth URL successfully for platform:', platform);
       console.log('[Meta OAuth Initiate] Auth URL:', authUrl.substring(0, 100) + '...');
