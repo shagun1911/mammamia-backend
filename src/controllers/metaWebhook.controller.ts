@@ -2366,29 +2366,28 @@ export class MetaWebhookController {
     integration: any
   ): Promise<void> {
     try {
-      // Get Page Access Token from credentials ONLY (must be EAAG prefix)
-      const pageAccessToken = integration.credentials?.pageAccessToken;
+      // Get Instagram Access Token (IGA* from apiKey for Instagram Login flow)
+      // Can be from credentials.apiKey (hardcoded) or credentials.pageAccessToken (OAuth)
+      const accessToken = integration.apiKey || integration.credentials?.apiKey || integration.credentials?.pageAccessToken;
 
-      if (!pageAccessToken) {
-        console.error(`[Instagram Webhook] ❌ No Page Access Token found for instagramAccountId: ${instagramAccountId}`);
+      if (!accessToken) {
+        console.error(`[Instagram Webhook] ❌ No Access Token found for instagramAccountId: ${instagramAccountId}`);
         console.error(`[Instagram Webhook] Integration credentials:`, {
-          hasInstagramAccountId: !!integration.credentials?.instagramAccountId,
-          hasPageAccessToken: !!integration.credentials?.pageAccessToken,
-          instagramAccountId: integration.credentials?.instagramAccountId
+          hasApiKey: !!integration.apiKey,
+          hasCredentialsApiKey: !!integration.credentials?.apiKey,
+          hasPageAccessToken: !!integration.credentials?.pageAccessToken
         });
-        throw new Error('Page Access Token not found. Please re-authenticate Instagram OAuth.');
+        throw new Error('Access Token not found. Please connect Instagram.');
       }
 
-      // Log token info for debugging (Meta may return EAAM or EAAG for page tokens from /me/accounts)
-      const tokenPrefix = pageAccessToken.substring(0, 10);
+      // Log token info for debugging
+      const tokenPrefix = accessToken.substring(0, 10);
       console.log(`[Instagram Webhook] 🔍 TOKEN PREFIX: ${tokenPrefix}...`);
-      console.log(`[Instagram Webhook] 🔍 TOKEN SOURCE: integration.credentials.pageAccessToken`);
-      console.log(`[Instagram Webhook] 🔍 TOKEN LENGTH: ${pageAccessToken.length}`);
-      console.log(`[Instagram Webhook] 🔍 TOKEN TYPE: ${pageAccessToken.startsWith('EAAG') ? 'EAAG' : pageAccessToken.startsWith('EAAM') ? 'EAAM' : 'Other'}`);
+      console.log(`[Instagram Webhook] 🔍 TOKEN SOURCE: ${integration.apiKey ? 'integration.apiKey' : integration.credentials?.apiKey ? 'credentials.apiKey' : 'credentials.pageAccessToken'}`);
+      console.log(`[Instagram Webhook] 🔍 TOKEN LENGTH: ${accessToken.length}`);
+      console.log(`[Instagram Webhook] 🔍 TOKEN TYPE: ${accessToken.startsWith('IGA') ? 'IGA (Instagram User)' : accessToken.startsWith('EAAG') ? 'EAAG (Page)' : accessToken.startsWith('EAAM') ? 'EAAM (User)' : 'Unknown'}`);
       
-      // Note: Meta's /me/accounts may return EAAM or EAAG - both can be valid page tokens
-      // The important thing is the token came from /me/accounts, not the prefix
-      console.log(`[Instagram Webhook] ✅ Using Page Access Token from /me/accounts: ${tokenPrefix}...`);
+      console.log(`[Instagram Webhook] ✅ Using token: ${tokenPrefix}...`);
 
       // No prefix check; token validity is determined by the Meta API call below.
       console.log(`[Instagram Webhook] Sending reply for instagramAccountId: ${instagramAccountId}`);
@@ -2405,7 +2404,7 @@ export class MetaWebhookController {
         if (metaAppId && metaAppSecret) {
           const debugResponse = await axios.get('https://graph.facebook.com/v21.0/debug_token', {
             params: {
-              input_token: pageAccessToken,
+              input_token: accessToken,
               access_token: `${metaAppId}|${metaAppSecret}`
             }
           });
@@ -2432,7 +2431,7 @@ export class MetaWebhookController {
       // Token is passed as query parameter (NOT Authorization header)
       const graphHost = process.env.INSTAGRAM_GRAPH_HOST || 'https://graph.instagram.com';
       const endpointUrl = new URL(`${graphHost}/v21.0/me/messages`);
-      endpointUrl.searchParams.set('access_token', pageAccessToken);
+      endpointUrl.searchParams.set('access_token', accessToken);
       console.log(`[Instagram Webhook] Endpoint: ${graphHost}/v21.0/me/messages?access_token=***`);
       console.log(`[Instagram Webhook] Recipient ID: ${senderId}`);
       console.log(`[Instagram Webhook] Message length: ${messageText.length} characters`);
