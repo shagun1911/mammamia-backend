@@ -2352,8 +2352,11 @@ export class MetaWebhookController {
     try {
       // Get Page Access Token: credentials.pageAccessToken or decrypted apiKey (manual connect stores both)
       let pageAccessToken = integration.credentials?.pageAccessToken;
+      let tokenSource = 'credentials.pageAccessToken';
+      
       if (!pageAccessToken && integration.getDecryptedApiKey) {
         pageAccessToken = integration.getDecryptedApiKey();
+        tokenSource = 'getDecryptedApiKey (fallback)';
       }
 
       if (!pageAccessToken) {
@@ -2364,6 +2367,17 @@ export class MetaWebhookController {
           instagramAccountId: integration.credentials?.instagramAccountId
         });
         throw new Error('Page Access Token not found. Please re-authenticate Instagram OAuth.');
+      }
+
+      // Log token prefix for debugging
+      const tokenPrefix = pageAccessToken.substring(0, 4);
+      console.log(`[Instagram Webhook] Token source: ${tokenSource}`);
+      console.log(`[Instagram Webhook] Token prefix: ${tokenPrefix} (expected: EAAG for Page Access Token)`);
+      
+      if (tokenPrefix !== 'EAAG') {
+        console.error(`[Instagram Webhook] ❌ WARNING: Token is NOT a Page Access Token (EAAG)`);
+        console.error(`[Instagram Webhook] ❌ Current token: ${tokenPrefix}... (User Access Token)`);
+        console.error(`[Instagram Webhook] ❌ Instagram Messaging requires EAAG token from /me/accounts`);
       }
 
       // No prefix check; token validity is determined by the Meta API call below.
