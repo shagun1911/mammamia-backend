@@ -110,11 +110,14 @@ export class MetaOAuthService {
       'whatsapp_business_management', // WhatsApp Business API management
       'whatsapp_business_messaging' // WhatsApp messaging
     ],
-    // Instagram messaging requires approved permissions
-    // instagram_business_manage_messages: REQUIRED for Instagram Messaging API
-    // pages_show_list, pages_messaging: required for Page access
+    // Instagram messaging uses standard Facebook Page permissions
+    // NOTE: instagram_business_manage_messages is NOT an OAuth scope
+    // It's an API permission that works with Page Access Token (EAAG)
+    // The Instagram Messaging capability comes from:
+    // 1. Having Instagram Messaging product in Meta app
+    // 2. App review approval for instagram_business_manage_messages
+    // 3. Using Page Access Token (EAAG) from /me/accounts
     instagram: [
-      'instagram_business_manage_messages',
       'pages_show_list',
       'pages_messaging'
     ]
