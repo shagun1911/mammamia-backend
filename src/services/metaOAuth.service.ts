@@ -54,14 +54,15 @@ export class MetaOAuthService {
   ): string {
     console.log('[Meta OAuth Initiate] Platform:', platform);
 
-    const isBusinessLogin = useBusinessLogin && platform === 'facebook' && !!configId;
+    // Config ID based OAuth (Facebook/Instagram Login for Business) - preferred method
+    const isConfigLogin = !!configId && (platform === 'facebook' || platform === 'instagram');
 
     let params: URLSearchParams;
 
-    if (isBusinessLogin) {
-      // Facebook Business Login: NO scope — scopes are defined inside the config_id on Meta portal
+    if (isConfigLogin) {
+      // Config ID Login: NO scope — scopes are defined inside the config_id on Meta portal
       // Must include override_default_response_type=true and auth_type=rerequest
-      console.log('[Meta OAuth Initiate] Using Facebook Business Login (config_id), scope omitted');
+      console.log(`[Meta OAuth Initiate] Using Config ID OAuth (${platform}), scope omitted`);
       params = new URLSearchParams({
         client_id: this.appId,
         redirect_uri: this.redirectUri,
@@ -165,6 +166,41 @@ export class MetaOAuthService {
         400,
         'OAUTH_ERROR',
         error.response?.data?.error?.message || 'Failed to exchange authorization code for access token'
+      );
+    }
+  }
+
+  /**
+   * Exchange authorization code for Instagram User Access Token
+   * Instagram Login uses api.instagram.com (not graph.facebook.com)
+   * Returns IGA* token for Instagram messaging
+   */
+  async exchangeInstagramCodeForToken(code: string): Promise<MetaAccessTokenResponse> {
+    try {
+      const response = await axios.post('https://api.instagram.com/oauth/access_token', {
+        client_id: this.appId,
+        client_secret: this.appSecret,
+        grant_type: 'authorization_code',
+        redirect_uri: this.redirectUri,
+        code
+      }, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      });
+
+      console.log('[Meta OAuth] Instagram token exchange successful:', {
+        user_id: response.data.user_id,
+        token_type: 'Instagram User Access Token'
+      });
+
+      return response.data;
+    } catch (error: any) {
+      console.error('[Meta OAuth] Error exchanging Instagram code for token:', error.response?.data || error.message);
+      throw new AppError(
+        400,
+        'OAUTH_ERROR',
+        error.response?.data?.error?.message || 'Failed to exchange Instagram authorization code'
       );
     }
   }

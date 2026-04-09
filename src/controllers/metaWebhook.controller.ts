@@ -2427,11 +2427,13 @@ export class MetaWebhookController {
         console.warn(`[Instagram Webhook] Could not check token permissions:`, debugError.message);
       }
 
-      // Build endpoint URL
-      // Instagram Business API uses /me/messages (NOT /{instagramAccountId}/messages)
+      // Build endpoint URL with access_token as query param (working implementation method)
+      // Instagram API uses graph.instagram.com (not graph.facebook.com)
       // The recipient.id in payload determines who receives the message
-      const endpointUrl = `https://graph.facebook.com/v21.0/me/messages`;
-      console.log(`[Instagram Webhook] Endpoint URL: ${endpointUrl}`);
+      const graphHost = process.env.INSTAGRAM_GRAPH_HOST || 'https://graph.instagram.com';
+      const endpointUrl = new URL(`${graphHost}/v21.0/me/messages`);
+      endpointUrl.searchParams.set('access_token', pageAccessToken);
+      console.log(`[Instagram Webhook] Endpoint URL: ${endpointUrl.toString().split('?')[0]}?access_token=***`);
       console.log(`[Instagram Webhook] Recipient ID: ${senderId}`);
       console.log(`[Instagram Webhook] Message length: ${messageText.length} characters`);
 
@@ -2448,15 +2450,13 @@ export class MetaWebhookController {
       console.log(`[Instagram Webhook] Payload:`, JSON.stringify(payload, null, 2));
 
       // Send message via Instagram Business Graph API
-      // POST /v21.0/me/messages
-      // Authorization: Bearer <PAGE_ACCESS_TOKEN>
+      // POST /v21.0/me/messages?access_token=TOKEN
       // Uses instagram_manage_messages permission (not instagram_business_manage_messages)
       const response = await axios.post(
-        endpointUrl,
+        endpointUrl.toString(),
         payload,
         {
           headers: {
-            'Authorization': `Bearer ${pageAccessToken}`,
             'Content-Type': 'application/json'
           }
         }
@@ -2924,18 +2924,21 @@ export class MetaWebhookController {
           status: 'connected'
         });
         if (integration) {
-          const pageAccessToken = (integration as any).getDecryptedApiKey();
+          const instagramAccessToken = (integration as any).getDecryptedApiKey();
           const instagramAccountId = integration.credentials.instagramAccountId;
           
+          const graphHost = process.env.INSTAGRAM_GRAPH_HOST || 'https://graph.instagram.com';
+          const msgUrl = new URL(`${graphHost}/v21.0/me/messages`);
+          msgUrl.searchParams.set('access_token', instagramAccessToken);
+          
           await axios.post(
-            `https://graph.facebook.com/v21.0/me/messages`,
+            msgUrl.toString(),
             {
               recipient: { id: customerId },
               message: { text: aiResponse }
             },
             {
               headers: {
-                'Authorization': `Bearer ${pageAccessToken}`,
                 'Content-Type': 'application/json'
               }
             }

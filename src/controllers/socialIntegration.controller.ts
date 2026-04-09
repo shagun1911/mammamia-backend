@@ -397,29 +397,32 @@ export class SocialIntegrationController {
       }
 
       // For Messenger (Facebook platform), use standard OAuth (NOT Facebook Login for Business)
-      // Only use Business Login (config_id) if explicitly needed for other use cases
-      const metaConfigId = process.env.META_CONFIG_ID;
-      const useBusinessLogin = false; // Messenger uses standard OAuth, not Business Login
+      // Check for Config ID (Facebook/Instagram Login for Business)
+      // This is the PREFERRED method as shown in the working test implementation
+      const facebookConfigId = process.env.FACEBOOK_CONFIG_ID;
+      const useConfigLogin = platform === 'instagram' && !!facebookConfigId;
 
       // Log app configuration for debugging
       console.log('[Meta OAuth Initiate] App Configuration:', {
         appId: metaAppId ? `${metaAppId.substring(0, 4)}...${metaAppId.substring(metaAppId.length - 4)}` : 'MISSING',
         hasAppSecret: !!metaAppSecret,
+        hasConfigId: !!facebookConfigId,
         backendUrl,
         frontendUrl,
         platform,
-        useBusinessLogin: platform === 'facebook' ? useBusinessLogin : 'N/A'
+        useConfigLogin
       });
 
-      // Log OAuth type for Facebook platform
-      if (platform === 'facebook') {
-        if (useBusinessLogin && metaConfigId) {
-          const maskedConfigId = metaConfigId.length > 8 
-            ? `${metaConfigId.substring(0, 4)}...${metaConfigId.substring(metaConfigId.length - 4)}`
+      // Log OAuth type
+      if (platform === 'instagram') {
+        if (useConfigLogin && facebookConfigId) {
+          const maskedConfigId = facebookConfigId.length > 8 
+            ? `${facebookConfigId.substring(0, 4)}...${facebookConfigId.substring(facebookConfigId.length - 4)}`
             : '***';
-          console.log('[Meta OAuth Initiate] Using Facebook Login for Business with config_id:', maskedConfigId);
+          console.log('[Instagram OAuth Initiate] Using Instagram Login with Config ID:', maskedConfigId);
         } else {
-          console.log('[Meta OAuth Initiate] Using standard Facebook OAuth for Messenger (no config_id)');
+          console.log('[Instagram OAuth Initiate] Using standard Facebook OAuth (no Config ID set)');
+          console.log('[Instagram OAuth Initiate] Tip: Set FACEBOOK_CONFIG_ID in env for Instagram Login flow');
         }
       }
 
@@ -453,13 +456,13 @@ export class SocialIntegrationController {
       const state = Buffer.from(JSON.stringify(stateData)).toString('base64');
 
       // Generate Meta OAuth authorization URL
-      // For Messenger (Facebook), use standard OAuth without config_id
-      // For other platforms or Business Login use cases, pass config_id if needed
+      // For Instagram with Config ID: Use Instagram Login (preferred, matches working test)
+      // For others: Use standard OAuth
       const authUrl = metaOAuth.getAuthorizationUrl(
         platform as 'whatsapp' | 'instagram' | 'facebook', 
         state,
-        useBusinessLogin ? metaConfigId : undefined, // Only pass config_id if using Business Login
-        useBusinessLogin // Flag to indicate Business Login vs standard OAuth
+        useConfigLogin ? facebookConfigId : undefined, // Pass config_id for Instagram Login
+        false // useBusinessLogin flag (not used anymore)
       );
 
       console.log('[Meta OAuth Initiate] Generated auth URL successfully for platform:', platform);
@@ -709,19 +712,40 @@ export class SocialIntegrationController {
         clientId: metaAppId
       };
 
-      // Exchange code for short-lived token (standard Facebook OAuth for all platforms)
-      const tokenResponse = await metaOAuth.exchangeCodeForToken(code as string);
-      const shortLivedToken = tokenResponse.access_token;
-
-      // Exchange for long-lived token (60 days)
-      const longLivedTokenResponse = await metaOAuth.getLongLivedToken(shortLivedToken);
-      const accessToken = longLivedTokenResponse.access_token;
-
-      // Get user information (matching Python reference implementation)
-      const userInfo = await metaOAuth.getUserInfo(accessToken);
-      const metaUserId = userInfo.id; // Meta Facebook user ID (for reference only)
-      const userName = userInfo.name || 'Unknown';
-      const userEmail = userInfo.email || '';
+      // Determine if this is Instagram Login (Config ID) flow
+      const isInstagramLoginFlow = platform === 'instagram' && !!process.env.FACEBOOK_CONFIG_ID;
+      
+      let accessToken: string;
+      let metaUserId: string;
+      let userName: string;
+      let userEmail: string;
+      
+      if (isInstagramLoginFlow) {
+        // Instagram Login: Exchange code for Instagram User Access Token
+        console.log('[Meta OAuth Callback] Using Instagram Login token exchange');
+        const igTokenResponse = await metaOAuth.exchangeInstagramCodeForToken(code as string);
+        accessToken = igTokenResponse.access_token;
+        metaUserId = igTokenResponse.user_id?.toString() || '';
+        userName = 'Instagram User'; // Instagram Login doesn't return user name in token response
+        userEmail = '';
+        
+        console.log(`[Meta OAuth Callback] Instagram token received: ${accessToken.substring(0, 10)}...`);
+      } else {
+        // Facebook OAuth: Exchange code for token, then get long-lived token
+        console.log('[Meta OAuth Callback] Using Facebook OAuth token exchange');
+        const tokenResponse = await metaOAuth.exchangeCodeForToken(code as string);
+        const shortLivedToken = tokenResponse.access_token;
+        
+        // Exchange for long-lived token (60 days)
+        const longLivedTokenResponse = await metaOAuth.getLongLivedToken(shortLivedToken);
+        accessToken = longLivedTokenResponse.access_token;
+        
+        // Get user information
+        const userInfo = await metaOAuth.getUserInfo(accessToken);
+        metaUserId = userInfo.id;
+        userName = userInfo.name || 'Unknown';
+        userEmail = userInfo.email || '';
+      }
 
       console.log('[Meta OAuth Callback] User info retrieved:', {
         metaUserId,
@@ -732,8 +756,47 @@ export class SocialIntegrationController {
       integrationData.apiKey = accessToken; // Store access token as apiKey for compatibility
 
       if (platform === 'instagram') {
-        // Instagram OAuth: Use Facebook OAuth, then fetch pages and Instagram Business Account
-        console.log('[Instagram Business Login] Starting Instagram OAuth flow via Facebook...');
+        // Check if this is Instagram Login (Config ID) flow or Facebook OAuth flow
+        const isInstagramLoginFlow = accessToken.startsWith('IGA');
+        
+        if (isInstagramLoginFlow) {
+          // Instagram Login flow (Config ID): Token is already Instagram User Access Token
+          console.log('[Instagram OAuth] Using Instagram Login flow (IGA* token)');
+          console.log(`[Instagram OAuth] Token prefix: ${accessToken.substring(0, 10)}...`);
+          
+          // Get Instagram account info using the token
+          const graphHost = process.env.INSTAGRAM_GRAPH_HOST || 'https://graph.instagram.com';
+          try {
+            const axios = (await import('axios')).default;
+            const igMeResponse = await axios.get(`${graphHost}/v21.0/me`, {
+              params: {
+                access_token: accessToken,
+                fields: 'user_id,account_type,username'
+              }
+            });
+            
+            const instagramAccountId = igMeResponse.data.user_id;
+            const instagramUsername = igMeResponse.data.username;
+            
+            console.log(`[Instagram OAuth] Instagram account: ${instagramUsername} (${instagramAccountId})`);
+            
+            // Store Instagram-specific credentials with Instagram User Access Token
+            integrationData.instagramAccountId = instagramAccountId;
+            integrationData.credentials = {
+              apiKey: accessToken,
+              clientId: metaAppId,
+              instagramAccountId,
+              instagramUsername,
+              tokenType: 'instagram_user_token' // Mark as IGA* token
+            };
+          } catch (igError: any) {
+            console.error('[Instagram OAuth] Error fetching Instagram account info:', igError.message);
+            throw new AppError(400, 'INSTAGRAM_API_ERROR', 'Failed to fetch Instagram account info');
+          }
+        } else {
+          // Facebook OAuth flow: Get Pages then Instagram accounts
+          console.log('[Instagram OAuth] Using Facebook OAuth flow (fetching Pages)');
+          console.log(`[Instagram OAuth] Token prefix: ${accessToken.substring(0, 4)}...`);
 
         // Step 1: Get all pages using USER access token
         const pages = await metaOAuth.getUserPages(accessToken);
