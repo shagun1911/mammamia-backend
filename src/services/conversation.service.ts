@@ -1100,7 +1100,13 @@ export class ConversationService {
         console.log(`[Conversation Service] ✅ Fetched audio from Python API (${response.data.byteLength} bytes)`);
 
         // Determine content type from response headers or default to audio/mpeg
-        const contentType = response.headers['content-type'] || 'audio/mpeg';
+        const rawContentType = response.headers['content-type'];
+        const contentType =
+          typeof rawContentType === 'string'
+            ? rawContentType
+            : Array.isArray(rawContentType)
+              ? rawContentType[0] || 'audio/mpeg'
+              : 'audio/mpeg';
 
         return {
           audioBuffer: Buffer.from(response.data),
