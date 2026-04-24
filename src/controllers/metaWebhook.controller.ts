@@ -831,6 +831,22 @@ export class MetaWebhookController {
         throw new Error(`Integration ${integration._id} is missing userId. This is a data integrity issue.`);
       }
 
+      // Enforce chat credits before processing inbound messages.
+      try {
+        const Organization = (await import('../models/Organization')).default;
+        const { usageTrackerService } = await import('../services/usage/usageTracker.service');
+        const org = await Organization.findById(integration.organizationId).populate('planId').lean();
+        if (org) {
+          const limitState = await usageTrackerService.checkLimits(integration.organizationId.toString(), (org as any).planId, org);
+          if (limitState.limits.chatMessages.exceeded) {
+            console.warn(`[WhatsApp Webhook] Skipping message for org ${integration.organizationId} due to chat credit exhaustion`);
+            return;
+          }
+        }
+      } catch (limitError: any) {
+        console.error('[WhatsApp Webhook] Failed to evaluate chat limits:', limitError.message);
+      }
+
       console.log(`[WhatsApp Webhook] ✅ Found integration with userId: ${integration.userId.toString()}`);
 
       // Find or create customer
@@ -2074,6 +2090,22 @@ export class MetaWebhookController {
       if (!userId) {
         console.error('[Instagram Webhook] ❌ CRITICAL: integration.userId is missing. Cannot proceed without userId.');
         throw new Error('integration.userId is required for data isolation. Integration is missing userId field.');
+      }
+
+      // Enforce chat credits before handling webhook messages.
+      try {
+        const Organization = (await import('../models/Organization')).default;
+        const { usageTrackerService } = await import('../services/usage/usageTracker.service');
+        const org = await Organization.findById(integration.organizationId).populate('planId').lean();
+        if (org) {
+          const limitState = await usageTrackerService.checkLimits(integration.organizationId.toString(), (org as any).planId, org);
+          if (limitState.limits.chatMessages.exceeded) {
+            console.warn(`[Instagram Webhook] Skipping message for org ${integration.organizationId} due to chat credit exhaustion`);
+            return;
+          }
+        }
+      } catch (limitError: any) {
+        console.error('[Instagram Webhook] Failed to evaluate chat limits:', limitError.message);
       }
       
       console.log('[Instagram Webhook] ✅ Using userId from integration.userId:', userId);

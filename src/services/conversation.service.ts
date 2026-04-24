@@ -1277,6 +1277,22 @@ export class ConversationService {
         throw new AppError(500, 'INVALID_ORGANIZATION_ID', `Invalid organization ID format: ${organizationId}`);
       }
 
+      // Enforce chat credits before accepting widget ingestion.
+      {
+        const organization = await Organization.findById(organizationId).populate('planId').lean();
+        if (organization) {
+          const { usageTrackerService } = await import('./usage/usageTracker.service');
+          const limitsState = await usageTrackerService.checkLimits(organizationId, (organization as any).planId, organization);
+          if (limitsState.limits.chatMessages.exceeded) {
+            throw new AppError(
+              403,
+              'PLAN_LIMIT_EXCEEDED',
+              `You have reached your plan limit of ${limitsState.limits.chatMessages.limit} chat conversations. Please upgrade your plan.`
+            );
+          }
+        }
+      }
+
       console.log('[Widget Conversation] Saving conversation with strict isolation:', {
         widgetId: data.widgetId,
         userId: userId,
@@ -1285,26 +1301,28 @@ export class ConversationService {
         threadId: data.threadId
       });
 
+      const customerName = (data.name || '').trim() || 'Visitor';
+
       // Find or create customer by name WITH organizationId (strict isolation)
       const orgObjectId = new mongoose.Types.ObjectId(organizationId);
       let customer = await Customer.findOne({
-        name: data.name,
+        name: customerName,
         organizationId: orgObjectId // CRITICAL: Scoped to organization
       });
 
       if (!customer) {
-        console.log('[Widget Conversation] Creating new customer:', data.name);
+        console.log('[Widget Conversation] Creating new customer:', customerName);
         customer = await Customer.create({
-          name: data.name,
+          name: customerName,
           source: 'widget',
           organizationId: orgObjectId // CRITICAL: Always set organizationId
         });
       } else {
         // Update customer if name was empty/missing
         if (!customer.name || customer.name === '') {
-          customer.name = data.name;
+          customer.name = customerName;
           await customer.save();
-          console.log('[Widget Conversation] Updated customer name:', data.name);
+          console.log('[Widget Conversation] Updated customer name:', customerName);
         }
       }
 
@@ -1359,6 +1377,22 @@ export class ConversationService {
       // Update conversation updatedAt
       conversation.updatedAt = new Date();
       await conversation.save();
+
+      // Notify dashboard listeners so inbox list refreshes quickly.
+      try {
+        const { emitToOrganization } = await import('../config/socket');
+        const lastMessage = data.messages[data.messages.length - 1];
+        emitToOrganization(organizationId, 'new-message', {
+          conversationId: conversation._id?.toString() || '',
+          message: lastMessage ? {
+            text: lastMessage.content,
+            sender: lastMessage.role === 'user' ? 'customer' : 'ai',
+            timestamp: lastMessage.timestamp
+          } : null
+        });
+      } catch (socketError: any) {
+        console.warn('[Widget Conversation] Failed to emit new-message event:', socketError.message);
+      }
 
       console.log('[Widget Conversation] ✅ Conversation saved successfully');
       return conversation;

@@ -608,7 +608,8 @@ export class ChatbotController {
       console.log('[Widget Chat] Params:', JSON.stringify(req.params, null, 2));
       
       const { widgetId } = req.params;
-      const { query, threadId, knowledgeBaseId } = req.body;
+      const { query, threadId, knowledgeBaseId, visitorName } = req.body;
+      const normalizedVisitorName = typeof visitorName === 'string' ? visitorName.trim().slice(0, 80) : '';
 
       // CRITICAL: Validate widgetId is present and not undefined
       if (widgetId === undefined || widgetId === null || widgetId === 'undefined' || widgetId === '') {
@@ -850,14 +851,17 @@ export class ChatbotController {
       systemPrompt += '2. Generate concise, natural language answers (4-6 sentences max) from the retrieved documents.\n';
       systemPrompt += '3. Do NOT include document labels, metadata, or raw text dumps in your answer.\n';
       systemPrompt += '4. Summarize and merge relevant information into a clean, readable response.\n';
+      if (normalizedVisitorName) {
+        systemPrompt += `5. The visitor's name is "${normalizedVisitorName}". Address them naturally when helpful.\n`;
+      }
       
       if (ecommerceCredentials && ecommerceCredentials.platform === 'woocommerce') {
-        systemPrompt += '\n5. For product-related queries (e.g., "list products", "woocommerce products", "show products", "product price", "inventory"), use the provided WooCommerce credentials to fetch real-time data from the store.\n';
-        systemPrompt += '6. For all other questions, use the knowledge base as the primary source.\n';
-        systemPrompt += '7. If WooCommerce is not connected or credentials are invalid, politely inform the user: "The store is not connected yet. Please contact support to set up the store integration."\n';
+        systemPrompt += '\n6. For product-related queries (e.g., "list products", "woocommerce products", "show products", "product price", "inventory"), use the provided WooCommerce credentials to fetch real-time data from the store.\n';
+        systemPrompt += '7. For all other questions, use the knowledge base as the primary source.\n';
+        systemPrompt += '8. If WooCommerce is not connected or credentials are invalid, politely inform the user: "The store is not connected yet. Please contact support to set up the store integration."\n';
         console.log('[Widget Chat] ✅ WooCommerce credentials found - enhanced system prompt with KB-first and WooCommerce instructions');
       } else {
-        systemPrompt += '\n5. Focus on providing accurate answers from the knowledge base.\n';
+        systemPrompt += `\n${normalizedVisitorName ? '6' : '5'}. Focus on providing accurate answers from the knowledge base.\n`;
         console.log('[Widget Chat] Enhanced system prompt with KB-first instructions');
       }
 

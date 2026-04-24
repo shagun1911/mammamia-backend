@@ -4,6 +4,7 @@ import Plan from '../models/Plan';
 import { usageTrackerService } from '../services/usage/usageTracker.service';
 import { logger } from '../utils/logger.util';
 import { AppError } from './error.middleware';
+import { getEffectiveFeatureLimits } from '../config/planLimits';
 
 /**
  * Plan Enforcement Middleware
@@ -32,18 +33,15 @@ export const enforceCallMinutesLimit = async (
       return;
     }
 
-    // Get organization with plan
     const org = await Organization.findById(organizationId).populate('planId').lean();
-    
-    if (!org || !org.planId) {
+    if (!org) {
       next();
       return;
     }
-
     const plan = org.planId as any;
+    const limits = getEffectiveFeatureLimits({ plan, organization: org as any });
 
-    // If unlimited (-1), allow
-    if (plan.features?.callMinutes === -1) {
+    if (limits.callMinutes === -1) {
       next();
       return;
     }
@@ -51,12 +49,12 @@ export const enforceCallMinutesLimit = async (
     // Get current usage
     const usage = await usageTrackerService.getOrganizationUsage(organizationId.toString());
 
-    if (usage.callMinutes >= plan.features?.callMinutes) {
+    if (usage.callMinutes >= limits.callMinutes) {
       logger.warn(`[Plan Enforcement] Organization ${organizationId} exceeded call minutes limit`);
       throw new AppError(
         403,
         'PLAN_LIMIT_EXCEEDED',
-        `You have reached your plan limit of ${plan.features?.callMinutes} call minutes. Please upgrade your plan.`
+        `You have reached your plan limit of ${limits.callMinutes} call minutes. Please upgrade your plan.`
       );
     }
 
@@ -82,18 +80,15 @@ export const enforceChatLimit = async (
       return;
     }
 
-    // Get organization with plan
     const org = await Organization.findById(organizationId).populate('planId').lean();
-    
-    if (!org || !org.planId) {
+    if (!org) {
       next();
       return;
     }
-
     const plan = org.planId as any;
+    const limits = getEffectiveFeatureLimits({ plan, organization: org as any });
 
-    // If unlimited (-1), allow
-    if (plan.features?.chatConversations === -1) {
+    if (limits.chatConversations === -1) {
       next();
       return;
     }
@@ -101,12 +96,12 @@ export const enforceChatLimit = async (
     // Get current usage
     const usage = await usageTrackerService.getOrganizationUsage(organizationId.toString());
 
-    if (usage.chatMessages >= plan.features?.chatConversations) {
+    if (usage.chatMessages >= limits.chatConversations) {
       logger.warn(`[Plan Enforcement] Organization ${organizationId} exceeded chat conversations limit`);
       throw new AppError(
         403,
         'PLAN_LIMIT_EXCEEDED',
-        `You have reached your plan limit of ${plan.features?.chatConversations} chat conversations. Please upgrade your plan.`
+        `You have reached your plan limit of ${limits.chatConversations} chat conversations. Please upgrade your plan.`
       );
     }
 
@@ -132,18 +127,15 @@ export const enforceAutomationsLimit = async (
       return;
     }
 
-    // Get organization with plan
     const org = await Organization.findById(organizationId).populate('planId').lean();
-    
-    if (!org || !org.planId) {
+    if (!org) {
       next();
       return;
     }
-
     const plan = org.planId as any;
+    const limits = getEffectiveFeatureLimits({ plan, organization: org as any });
 
-    // If unlimited (-1), allow
-    if (plan.features?.automations === -1) {
+    if (limits.automations === -1) {
       next();
       return;
     }
@@ -151,12 +143,12 @@ export const enforceAutomationsLimit = async (
     // Get current usage
     const usage = await usageTrackerService.getOrganizationUsage(organizationId.toString());
 
-    if (usage.automations >= plan.features?.automations) {
+    if (usage.automations >= limits.automations) {
       logger.warn(`[Plan Enforcement] Organization ${organizationId} exceeded automations limit`);
       throw new AppError(
         403,
         'PLAN_LIMIT_EXCEEDED',
-        `You have reached your plan limit of ${plan.features?.automations} automations. Please upgrade your plan.`
+        `You have reached your plan limit of ${limits.automations} automations. Please upgrade your plan.`
       );
     }
 
@@ -220,13 +212,13 @@ export const getUsageInfo = async (organizationId: string) => {
   try {
     const org = await Organization.findById(organizationId).populate('planId').lean();
     
-    if (!org || !org.planId) {
+    if (!org) {
       return null;
     }
 
     const plan = org.planId as any;
     const usage = await usageTrackerService.getOrganizationUsage(organizationId);
-    const limits = await usageTrackerService.checkLimits(organizationId, plan);
+    const limits = await usageTrackerService.checkLimits(organizationId, plan, org as any);
 
     return {
       usage,

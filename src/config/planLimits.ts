@@ -32,6 +32,12 @@ export const PLAN_LIMITS = {
   },
 } as const;
 
+export type EffectiveFeatureLimits = {
+  callMinutes: number;
+  chatConversations: number;
+  automations: number;
+};
+
 /**
  * Get plan limits for a plan key
  */
@@ -57,5 +63,34 @@ export function getPlanLimits(planKey: string): { conversations: number; minutes
   
   // Try direct lookup
   return PLAN_LIMITS[normalizedKey as keyof typeof PLAN_LIMITS] || null;
+}
+
+/**
+ * Resolve effective limits from plan features with fallback behavior.
+ * If plan/features are missing, fallback to org plan slug defaults and then free.
+ */
+export function getEffectiveFeatureLimits(input: {
+  plan?: { slug?: string; features?: Partial<EffectiveFeatureLimits> } | null;
+  organization?: { plan?: string | null } | null;
+}): EffectiveFeatureLimits {
+  const freeDefaults = PLAN_LIMITS.free;
+  const planFeatures = input.plan?.features;
+
+  if (planFeatures) {
+    return {
+      callMinutes: typeof planFeatures.callMinutes === 'number' ? planFeatures.callMinutes : freeDefaults.minutes,
+      chatConversations: typeof planFeatures.chatConversations === 'number' ? planFeatures.chatConversations : freeDefaults.conversations,
+      automations: typeof planFeatures.automations === 'number' ? planFeatures.automations : freeDefaults.automations
+    };
+  }
+
+  const fallbackKey = input.plan?.slug || input.organization?.plan || 'free';
+  const fallback = getPlanLimits(fallbackKey) || freeDefaults;
+
+  return {
+    callMinutes: fallback.minutes,
+    chatConversations: fallback.conversations,
+    automations: fallback.automations
+  };
 }
 
