@@ -519,6 +519,7 @@ export class SocialIntegrationController {
    * Also handles webhook verification requests that Meta may send to this URL
    */
   async oauthCallback(req: Request, res: Response, next: NextFunction) {
+    let callbackPlatform: string | undefined = req.params.platform;
     try {
       console.log('\n========== META OAUTH CALLBACK (PUBLIC ROUTE) ==========');
       console.log('[Meta OAuth Callback] Method:', req.method);
@@ -553,6 +554,7 @@ export class SocialIntegrationController {
           platform = pathMatch[1];
         }
       }
+      callbackPlatform = platform;
 
       // Check if this is actually a webhook event (Meta sometimes sends webhooks to callback URLs)
       // Reject webhook events - they should go to dedicated webhook endpoints
@@ -876,26 +878,30 @@ export class SocialIntegrationController {
 
         // Step 3: If multiple pages with Instagram accounts, ask user to pick one
         if (pagesWithInstagram.length > 1 && isRedisAvailable()) {
-          const sessionKey = randomUUID();
-          await redisClient.setEx(`oauth_pending_pages:${sessionKey}`, PENDING_PAGES_TTL, JSON.stringify({
-            userId,
-            organizationId,
-            platform: 'instagram',
-            accessToken,
-            appUserId,
-            metaUserId,
-            userName,
-            pages: pagesWithInstagram.map(p => ({
-              id: p.page.id,
-              name: p.page.name,
-              category: p.page.category || '',
-              pageAccessToken: p.pageAccessToken,
-              instagramAccountId: p.instagramAccountId,
-              instagramUsername: p.instagramUsername
-            }))
-          }));
-          const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-          return res.redirect(`${frontendUrl}/settings/socials?select_page=true&platform=instagram&session=${sessionKey}`);
+          try {
+            const sessionKey = randomUUID();
+            await redisClient.setEx(`oauth_pending_pages:${sessionKey}`, PENDING_PAGES_TTL, JSON.stringify({
+              userId,
+              organizationId,
+              platform: 'instagram',
+              accessToken,
+              appUserId,
+              metaUserId,
+              userName,
+              pages: pagesWithInstagram.map(p => ({
+                id: p.page.id,
+                name: p.page.name,
+                category: p.page.category || '',
+                pageAccessToken: p.pageAccessToken,
+                instagramAccountId: p.instagramAccountId,
+                instagramUsername: p.instagramUsername
+              }))
+            }));
+            const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+            return res.redirect(`${frontendUrl}/settings/socials?select_page=true&platform=instagram&session=${sessionKey}`);
+          } catch (redisError: any) {
+            console.warn('[Instagram OAuth] Redis unavailable during page-selection cache, auto-selecting first page:', redisError?.message || redisError);
+          }
         }
 
         // Single match (or Redis unavailable) — auto-select first
@@ -1043,24 +1049,28 @@ export class SocialIntegrationController {
 
         // If multiple pages, ask user to pick one
         if (pages.length > 1 && isRedisAvailable()) {
-          const sessionKey = randomUUID();
-          await redisClient.setEx(`oauth_pending_pages:${sessionKey}`, PENDING_PAGES_TTL, JSON.stringify({
-            userId,
-            organizationId,
-            platform: 'facebook',
-            accessToken,
-            appUserId,
-            metaUserId,
-            userName,
-            pages: pages.map(p => ({
-              id: p.id,
-              name: p.name,
-              category: p.category || '',
-              pageAccessToken: p.access_token
-            }))
-          }));
-          const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-          return res.redirect(`${frontendUrl}/settings/socials?select_page=true&platform=facebook&session=${sessionKey}`);
+          try {
+            const sessionKey = randomUUID();
+            await redisClient.setEx(`oauth_pending_pages:${sessionKey}`, PENDING_PAGES_TTL, JSON.stringify({
+              userId,
+              organizationId,
+              platform: 'facebook',
+              accessToken,
+              appUserId,
+              metaUserId,
+              userName,
+              pages: pages.map(p => ({
+                id: p.id,
+                name: p.name,
+                category: p.category || '',
+                pageAccessToken: p.access_token
+              }))
+            }));
+            const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+            return res.redirect(`${frontendUrl}/settings/socials?select_page=true&platform=facebook&session=${sessionKey}`);
+          } catch (redisError: any) {
+            console.warn('[Facebook OAuth] Redis unavailable during page-selection cache, auto-selecting first page:', redisError?.message || redisError);
+          }
         }
 
         // Single page (or Redis unavailable) — auto-select first
@@ -1176,7 +1186,7 @@ export class SocialIntegrationController {
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       const errorMessage = error.message || 'OAuth callback failed';
       res.redirect(
-        `${frontendUrl}/settings/socials?error=${encodeURIComponent(errorMessage)}&platform=${req.params.platform}`
+        `${frontendUrl}/settings/socials?error=${encodeURIComponent(errorMessage)}&platform=${callbackPlatform || 'unknown'}`
       );
     }
   }
