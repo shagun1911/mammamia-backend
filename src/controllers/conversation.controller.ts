@@ -387,8 +387,7 @@ export class ConversationController {
   // NO FALLBACKS - fails loudly if widgetId invalid or user/org not found
   saveWidgetConversation = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { widgetId, name, visitorName, threadId, collection, messages } = req.body;
-      const resolvedName = (typeof visitorName === 'string' && visitorName.trim() ? visitorName : name);
+      const { widgetId, name, threadId, collection, messages } = req.body;
 
       // CRITICAL: Validate widgetId is present
       if (!widgetId) {
@@ -398,7 +397,7 @@ export class ConversationController {
       // Service validates widgetId, resolves userId/organizationId, and ensures tenant isolation
       const conversation = await this.conversationService.saveWidgetConversation({
         widgetId,
-        name: resolvedName,
+        name,
         threadId,
         collection,
         messages

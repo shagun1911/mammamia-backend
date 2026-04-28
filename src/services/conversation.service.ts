@@ -6,6 +6,7 @@ import { AppError } from '../middleware/error.middleware';
 import socialIntegrationService from './socialIntegration.service';
 import { trackUsage } from '../middleware/profileTracking.middleware';
 import { usageService } from './usage.service';
+import { profileService } from './profile.service';
 
 export class ConversationService {
   // Get all conversations with filters and pagination
@@ -1100,13 +1101,7 @@ export class ConversationService {
         console.log(`[Conversation Service] ✅ Fetched audio from Python API (${response.data.byteLength} bytes)`);
 
         // Determine content type from response headers or default to audio/mpeg
-        const rawContentType = response.headers['content-type'];
-        const contentType =
-          typeof rawContentType === 'string'
-            ? rawContentType
-            : Array.isArray(rawContentType)
-              ? rawContentType[0] || 'audio/mpeg'
-              : 'audio/mpeg';
+        const contentType = response.headers['content-type'] || 'audio/mpeg';
 
         return {
           audioBuffer: Buffer.from(response.data),
@@ -1277,20 +1272,15 @@ export class ConversationService {
         throw new AppError(500, 'INVALID_ORGANIZATION_ID', `Invalid organization ID format: ${organizationId}`);
       }
 
-      // Enforce chat credits before accepting widget ingestion.
-      {
-        const organization = await Organization.findById(organizationId).populate('planId').lean();
-        if (organization) {
-          const { usageTrackerService } = await import('./usage/usageTracker.service');
-          const limitsState = await usageTrackerService.checkLimits(organizationId, (organization as any).planId, organization);
-          if (limitsState.limits.chatMessages.exceeded) {
-            throw new AppError(
-              403,
-              'PLAN_LIMIT_EXCEEDED',
-              `You have reached your plan limit of ${limitsState.limits.chatMessages.limit} chat conversations. Please upgrade your plan.`
-            );
-          }
-        }
+      const incomingMsgCount = Array.isArray(data.messages) ? data.messages.length : 0;
+      const creditAmount = Math.max(1, incomingMsgCount);
+      const hasChatCredit = await profileService.checkCredits(organizationId, 'chat', creditAmount, { userId });
+      if (!hasChatCredit) {
+        throw new AppError(
+          403,
+          'PLAN_LIMIT_EXCEEDED',
+          'You have reached your plan limit for conversations. Please upgrade your plan to continue.'
+        );
       }
 
       console.log('[Widget Conversation] Saving conversation with strict isolation:', {
@@ -1301,28 +1291,26 @@ export class ConversationService {
         threadId: data.threadId
       });
 
-      const customerName = (data.name || '').trim() || 'Visitor';
-
       // Find or create customer by name WITH organizationId (strict isolation)
       const orgObjectId = new mongoose.Types.ObjectId(organizationId);
       let customer = await Customer.findOne({
-        name: customerName,
+        name: data.name,
         organizationId: orgObjectId // CRITICAL: Scoped to organization
       });
 
       if (!customer) {
-        console.log('[Widget Conversation] Creating new customer:', customerName);
+        console.log('[Widget Conversation] Creating new customer:', data.name);
         customer = await Customer.create({
-          name: customerName,
+          name: data.name,
           source: 'widget',
           organizationId: orgObjectId // CRITICAL: Always set organizationId
         });
       } else {
         // Update customer if name was empty/missing
         if (!customer.name || customer.name === '') {
-          customer.name = customerName;
+          customer.name = data.name;
           await customer.save();
-          console.log('[Widget Conversation] Updated customer name:', customerName);
+          console.log('[Widget Conversation] Updated customer name:', data.name);
         }
       }
 
@@ -1378,20 +1366,25 @@ export class ConversationService {
       conversation.updatedAt = new Date();
       await conversation.save();
 
-      // Notify dashboard listeners so inbox list refreshes quickly.
+      // Notify dashboard (Conversations list) to refetch
       try {
         const { emitToOrganization } = await import('../config/socket');
-        const lastMessage = data.messages[data.messages.length - 1];
-        emitToOrganization(organizationId, 'new-message', {
-          conversationId: conversation._id?.toString() || '',
-          message: lastMessage ? {
-            text: lastMessage.content,
-            sender: lastMessage.role === 'user' ? 'customer' : 'ai',
-            timestamp: lastMessage.timestamp
-          } : null
-        });
+        const last = data.messages[data.messages.length - 1];
+        emitToOrganization(
+          organizationId,
+          'new-message',
+          {
+            conversationId: conversation._id.toString(),
+            message: {
+              conversationId: conversation._id.toString(),
+              text: last?.content || '',
+              sender: last?.role === 'user' ? 'customer' : 'ai',
+              timestamp: last?.timestamp || new Date(),
+            },
+          }
+        );
       } catch (socketError: any) {
-        console.warn('[Widget Conversation] Failed to emit new-message event:', socketError.message);
+        console.warn('[Widget Conversation] Socket emit skipped:', socketError?.message);
       }
 
       console.log('[Widget Conversation] ✅ Conversation saved successfully');

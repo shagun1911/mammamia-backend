@@ -1489,13 +1489,23 @@ const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.waba
           const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
 
           const sheetMeta = await sheets.spreadsheets.get({ spreadsheetId });
-          const sheetName = sheetMeta.data.sheets?.[0]?.properties?.title || 'Sheet1';
+          const fallbackTab = sheetMeta.data.sheets?.[0]?.properties?.title || 'Sheet1';
+          const configured =
+            typeof (config as any).sheetName === 'string' && String((config as any).sheetName).trim() !== ''
+              ? String((config as any).sheetName).trim()
+              : fallbackTab;
+          const escapeSheetTitleForA1 = (title: string): string => {
+            const t = title.trim() || 'Sheet1';
+            if (/^[A-Za-z0-9_]+$/.test(t)) return t;
+            return `'${t.replace(/'/g, "''")}'`;
+          };
+          const sheetRangePrefix = `${escapeSheetTitleForA1(configured)}!A1`;
 
           const resolvedValues = await Promise.all(values.map(v => this.resolveTemplate(String(v), context)));
 
           await sheets.spreadsheets.values.append({
             spreadsheetId,
-            range: `${sheetName}!A1`,
+            range: sheetRangePrefix,
             valueInputOption: 'USER_ENTERED',
             insertDataOption: 'INSERT_ROWS',
             requestBody: { values: [resolvedValues] }
@@ -1703,13 +1713,65 @@ const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.waba
 
         console.log(`\n[Automation Engine] 👤 Processing contact: ${contact.name} (${contact.email || 'no email'})`);
 
+        // Enrich context with conversation data (when trigger includes conversation_id)
+        // so templates can reference {{conversation.summary}}, {{conversation.transcript_text}}, etc.
+        let conversationContext: any = undefined;
+        try {
+          if (triggerData?.conversation_id) {
+            const conversation: any = await Conversation.findById(triggerData.conversation_id).lean();
+            if (conversation) {
+              const messages = await Message.find({
+                conversationId: conversation._id,
+                type: 'message'
+              })
+                .sort({ timestamp: 1 })
+                .select('sender text timestamp')
+                .lean();
+
+              const transcriptText = messages
+                .map((m: any) => {
+                  const speaker = m.sender === 'customer' ? 'User' : (m.sender === 'operator' ? 'Operator' : 'Agent');
+                  return `${speaker}: ${m.text || ''}`.trim();
+                })
+                .filter(Boolean)
+                .join('\n');
+
+              const conversationSummary =
+                conversation?.analysis?.summary ||
+                conversation?.summary ||
+                conversation?.metadata?.summary ||
+                '';
+
+              conversationContext = {
+                id: String(conversation._id),
+                status: conversation.status,
+                channel: conversation.channel,
+                summary: conversationSummary,
+                transcript: conversation.transcript || null,
+                transcript_text: transcriptText,
+                duration_seconds:
+                  conversation?.metadata?.duration_seconds ||
+                  conversation?.metadata?.call_duration_secs ||
+                  0,
+                end_reason: conversation?.metadata?.end_reason || '',
+                caller_number: conversation?.metadata?.phone_number || contact.phone || '',
+                created_at: conversation.createdAt,
+                updated_at: conversation.updatedAt
+              };
+            }
+          }
+        } catch (convErr: any) {
+          console.warn('[Automation Engine] ⚠️ Failed to enrich conversation context:', convErr.message);
+        }
+
         const context: IAutomationExecutionContext = {
           contact,
           triggerData: { ...triggerData, contactId },
           organizationId,
           userId,
           now: new Date().toISOString(),
-          appointment: triggerData.appointment
+          appointment: triggerData.appointment,
+          conversation: conversationContext
         };
 
         console.log(`[Automation Engine] 📦 Context prepared:`, {
@@ -2035,6 +2097,50 @@ const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.waba
     } catch (error: any) {
       return { success: false, error: error.message };
     }
+  }
+
+  async executeWhatsAppTemplateTest(params: {
+    organizationId: string;
+    userId: string;
+    to: string;
+    templateName: string;
+    languageCode: string;
+    phoneNumberId?: string;
+    components?: any[];
+    templateParams?: any[];
+  }) {
+    const handler = this.actions.get('whatsapp_template');
+    if (!handler) {
+      throw new Error('WhatsApp template action is not available');
+    }
+
+    const config: any = {
+      to: params.to,
+      templateName: params.templateName,
+      languageCode: params.languageCode
+    };
+
+    if (params.phoneNumberId) config.phoneNumberId = params.phoneNumberId;
+    if (params.components) config.components = params.components;
+    if (params.templateParams) config.templateParams = params.templateParams;
+
+    const triggerData = {
+      organizationId: params.organizationId
+    };
+
+    const context: IAutomationExecutionContext = {
+      contact: {
+        name: 'WhatsApp Test Recipient',
+        phone: params.to,
+        email: ''
+      },
+      triggerData,
+      organizationId: params.organizationId,
+      userId: params.userId,
+      now: new Date().toISOString()
+    };
+
+    return await handler.execute(config, triggerData, context);
   }
 
   private async performUnifiedOutboundCall(params: {
