@@ -471,6 +471,19 @@ export class BatchCallingService {
 
         try {
           // 1. Automation already triggered for this phone? skip.
+          //    Re-fetch the latest persisted set to defend against a parallel
+          //    sync cycle that may have triggered the same phone milliseconds ago.
+          if (!automationDone.has(phone)) {
+            try {
+              const latest = await BatchCall.findOne(
+                { batch_call_id: jobId },
+                { automation_triggered_phones: 1 }
+              ).lean();
+              for (const p of (latest?.automation_triggered_phones || [])) {
+                automationDone.add(p);
+              }
+            } catch (_) { /* best-effort */ }
+          }
           if (automationDone.has(phone)) {
             skipped++;
             console.log(`[Batch Calling Service] ⏭️ ${phone} – automation already triggered, skipping`);
@@ -511,6 +524,76 @@ export class BatchCallingService {
             continue;
           }
 
+          const pickFirstNonEmpty = (...vals: any[]): string => {
+            for (const v of vals) {
+              if (v === null || v === undefined) continue;
+              const s = String(v).trim();
+              if (s && s.toLowerCase() !== 'null' && s.toLowerCase() !== 'undefined') return s;
+            }
+            return '';
+          };
+
+          const audioFallbackUrl = (conversationId: string) =>
+            `${COMM_API_URL}/api/v1/conversations/${conversationId}/audio`;
+
+          // Public proxy on OUR backend — forces inline playback.
+          const backendPublicBase = (
+            process.env.BACKEND_URL ||
+            process.env.PUBLIC_API_URL ||
+            `http://localhost:${process.env.PORT || 5001}`
+          ).replace(/\/+$/, '');
+          const publicProxyUrl = (conversationId: string) =>
+            `${backendPublicBase}/api/v1/conversations/recording/${conversationId}`;
+
+          // Always return a directly-playable audio URL — never a JSON endpoint.
+          // Prefers our public proxy (inline disposition) so links play instead of
+          // downloading.
+          const normalizeRecordingUrl = (raw: string, conversationId: string): string => {
+            if (conversationId) return publicProxyUrl(conversationId);
+
+            const value = String(raw || '').trim();
+            if (!value) return audioFallbackUrl(conversationId);
+
+            // Bare id/token → use audio fallback
+            if (!value.includes('.') && !value.includes('/')) {
+              return audioFallbackUrl(conversationId);
+            }
+
+            // Path → prefix host
+            if (value.startsWith('/')) {
+              const full = `${COMM_API_URL}${value}`;
+              return /\/conversations\/[^/]+\/?$/i.test(full) ? `${full.replace(/\/$/, '')}/audio` : full;
+            }
+
+            // Add scheme if missing
+            const withScheme = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+
+            // If it points to the JSON conversation detail endpoint, append /audio so it streams.
+            if (/\/conversations\/[^/?#]+\/?(\?|#|$)/i.test(withScheme) && !/\/audio(\?|#|$)/i.test(withScheme)) {
+              return withScheme.replace(/\/conversations\/([^/?#]+)\/?/i, '/conversations/$1/audio');
+            }
+
+            return withScheme;
+          };
+
+          const rawRecordingUrl = pickFirstNonEmpty(
+            convDetail?.recording_url,
+            convDetail?.audio_url,
+            convDetail?.recordingUrl,
+            convDetail?.audioUrl,
+            convDetail?.signed_url,
+            convDetail?.signedUrl,
+            convDetail?.public_audio_url,
+            convDetail?.metadata?.recording_url,
+            convDetail?.metadata?.audio_url,
+            convDetail?.metadata?.recordingUrl,
+            convDetail?.metadata?.audioUrl,
+            convDetail?.metadata?.signed_url,
+            convDetail?.analysis?.recording_url,
+            convDetail?.analysis?.audio_url
+          );
+          const resolvedRecordingUrl = normalizeRecordingUrl(rawRecordingUrl, elevenLabsConvId);
+
           const transcript = convDetail?.transcript;
           const ready = hasMessages(transcript);
           const duration = convDetail?.metadata?.call_duration_secs || convDetail?.call_duration_secs || 0;
@@ -528,20 +611,10 @@ export class BatchCallingService {
 
           // ── Recipient completed + transcript ready → process + trigger automation ──
           const vars = recipient.conversation_initiation_client_data?.dynamic_variables || {};
-          const nameFromParts = () => {
-            const first = [vars.first_name, vars.firstname, vars.given_name, vars.nome]
-              .find((v) => typeof v === 'string' && v.trim());
-            const last = [vars.last_name, vars.lastname, vars.surname, vars.family_name, vars.cognome]
-              .find((v) => typeof v === 'string' && v.trim());
-            const parts = [first, last].filter(Boolean) as string[];
-            return parts.length ? parts.map((p) => p.trim()).join(' ').trim() : '';
-          };
-          const name =
-            (typeof vars.full_name === 'string' && vars.full_name.trim()) ||
-            (typeof vars.name === 'string' && vars.name.trim()) ||
-            (typeof vars.customer_name === 'string' && vars.customer_name.trim()) ||
-            nameFromParts() ||
-            'Unknown';
+          const firstName = vars.first_name || vars.customer_first_name;
+          const lastName = vars.last_name || vars.customer_last_name;
+          const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+          const name = fullName || vars.name || vars.customer_name || 'Unknown';
           const email = vars.email || vars.customer_email;
 
           console.log(`[Batch Calling Service] ✅ ${phone} (${name}) – completed, transcript ready (${transcriptItems.length} items, ${duration}s)`);
@@ -568,7 +641,9 @@ export class BatchCallingService {
                 'metadata.duration_seconds': duration,
                 'metadata.call_duration_secs': duration,
                 'metadata.end_reason': endReason,
-                'metadata.conversation_id': elevenLabsConvId
+                'metadata.conversation_id': elevenLabsConvId,
+                'metadata.recording_url': resolvedRecordingUrl,
+                'metadata.audio_url': resolvedRecordingUrl
               }
             });
 
@@ -634,8 +709,8 @@ export class BatchCallingService {
                 call_duration_secs: duration,
                 call_successful: true,
                 end_reason: endReason,
-                recording_url: convDetail?.recording_url || convDetail?.audio_url,
-                audio_url: convDetail?.recording_url || convDetail?.audio_url,
+                recording_url: resolvedRecordingUrl,
+                audio_url: resolvedRecordingUrl,
                 callInitiated: new Date(duration ? Date.now() - duration * 1000 : Date.now()),
                 callCompletedAt: new Date(),
                 source: 'batch'
@@ -676,6 +751,25 @@ export class BatchCallingService {
           // ── Trigger automation ─────────────────────────────────────────────
           try {
             const { automationService } = await import('./automation.service');
+            const appointmentDate =
+              vars.appointment_date ||
+              vars.preferred_date ||
+              vars.scheduled_date ||
+              vars.date ||
+              '';
+            const appointmentTime =
+              vars.appointment_time ||
+              vars.preferred_time ||
+              vars.scheduled_time ||
+              vars.time ||
+              '';
+            const recordingUrl = resolvedRecordingUrl;
+            const csvOrCallAddress =
+              vars.address ||
+              vars.full_address ||
+              vars.customer_address ||
+              vars.home_address ||
+              '';
             await automationService.triggerByEvent('batch_call_completed', {
               event: 'batch_call_completed',
               batch_id: jobId,
@@ -683,7 +777,22 @@ export class BatchCallingService {
               contactId,
               organizationId,
               source: 'batch_call',
-              freshContactData: { name, email, phone }
+              recording_url: recordingUrl,
+              audio_url: recordingUrl,
+              dynamic_variables: vars,
+              appointment: {
+                booked: Boolean(appointmentDate || appointmentTime),
+                date: appointmentDate,
+                time: appointmentTime
+              },
+              freshContactData: {
+                name,
+                first_name: firstName || '',
+                last_name: lastName || '',
+                email,
+                phone,
+                address: csvOrCallAddress
+              }
             }, { userId, organizationId });
             console.log(`[Batch Calling Service] 🚀 Automation triggered for ${phone} (${name})`);
           } catch (err: any) {
@@ -691,8 +800,21 @@ export class BatchCallingService {
             continue; // don't mark processed – retry next tick
           }
 
-          // Mark done ONLY after automation succeeds
+          // Mark done ONLY after automation succeeds.
+          // Persist immediately so a parallel sync can't re-fire it.
           automationTriggered.push(phone);
+          automationDone.add(phone);
+          try {
+            await BatchCall.updateOne(
+              { batch_call_id: jobId },
+              { $addToSet: { automation_triggered_phones: phone } }
+            );
+          } catch (persistErr: any) {
+            console.warn(
+              `[Batch Calling Service] ⚠️ Could not persist automation_triggered phone ${phone} immediately:`,
+              persistErr.message
+            );
+          }
           console.log(`[Batch Calling Service] ✅ ${phone} fully processed (conversation + automation done)`);
 
         } catch (err: any) {
