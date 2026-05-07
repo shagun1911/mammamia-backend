@@ -92,13 +92,41 @@ export class AutomationEngine {
   private triggers: Map<string, TriggerHandler>;
   private actions: Map<string, ActionHandler>;
   private whatsappService: WhatsAppService;
+  // Cooldown tracking for inbound chatbox messages to prevent duplicate notifications
+  private recentConversationTriggers: Map<string, number>;
+  private readonly COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes cooldown
 
   constructor() {
     this.triggers = new Map();
     this.actions = new Map();
     this.whatsappService = new WhatsAppService();
+    this.recentConversationTriggers = new Map();
 
     this.registerHandlers();
+
+    // Clean up old cooldown entries every hour
+    setInterval(() => {
+      this.cleanupCooldownEntries();
+    }, 60 * 60 * 1000);
+  }
+
+  /**
+   * Clean up old cooldown entries to prevent memory leaks
+   */
+  private cleanupCooldownEntries() {
+    const now = Date.now();
+    const entriesToDelete: string[] = [];
+    
+    for (const [conversationId, timestamp] of this.recentConversationTriggers.entries()) {
+      if (now - timestamp > this.COOLDOWN_MS) {
+        entriesToDelete.push(conversationId);
+      }
+    }
+    
+    entriesToDelete.forEach(id => this.recentConversationTriggers.delete(id));
+    if (entriesToDelete.length > 0) {
+      console.log(`[Automation Engine] Cleaned up ${entriesToDelete.length} expired cooldown entries`);
+    }
   }
 
   /**
@@ -171,6 +199,13 @@ export class AutomationEngine {
     const mergedAppointmentTime = mergedTime || context.triggerData?.dynamic_variables?.appointment_time || '';
     const mergedAppointmentDateTime =
       [mergedAppointmentDate, mergedAppointmentTime].filter(Boolean).join(' ').trim();
+    const parsedNow = context.now ? new Date(context.now) : new Date();
+    const formattedNow = Number.isNaN(parsedNow.getTime())
+      ? String(context.now || '')
+      : parsedNow.toLocaleString('en-US', {
+          dateStyle: 'medium',
+          timeStyle: 'short'
+        });
     const commApiBase =
       process.env.PYTHON_API_URL ||
       process.env.COMM_API_URL ||
@@ -178,7 +213,17 @@ export class AutomationEngine {
     const externalConversationId =
       context.conversation?.conversation_id ||
       context.triggerData?.conversation_id ||
+      context.conversation?.id ||
+      context.triggerData?.conversationId ||
       '';
+    const appBaseUrl = (
+      process.env.FRONTEND_URL ||
+      process.env.APP_URL ||
+      'http://localhost:3000'
+    ).replace(/\/+$/, '');
+    const conversationLink = externalConversationId
+      ? `${appBaseUrl}/conversations?conversationId=${encodeURIComponent(externalConversationId)}`
+      : '';
 
     // Public proxy URL on OUR backend — streams audio with Content-Disposition:
     // inline so the link plays in the browser instead of downloading. Used as
@@ -278,6 +323,18 @@ export class AutomationEngine {
       (contactName && String(contactName).trim()) ||
       [contactFirstName, contactLastName].filter(Boolean).join(' ').trim() ||
       'Not Provided';
+    const instagramHandle =
+      context.contact?.metadata?.instagramUsername ||
+      context.triggerData?.contact?.instagramUsername ||
+      context.triggerData?.instagramUsername ||
+      '';
+    const senderId = context.triggerData?.senderId || '';
+    const senderDisplayName =
+      instagramHandle
+        ? `@${String(instagramHandle).replace(/^@/, '')}`
+        : (resolvedName && resolvedName !== senderId
+            ? resolvedName
+            : (senderId ? `Instagram User (${senderId})` : resolvedName));
 
     const appointmentBlock = {
       ...appt,
@@ -318,8 +375,14 @@ export class AutomationEngine {
       phone_number: resolvedPhone,
       address: resolvedAddress,
       created_time: context.now,
+      formatted_now: formattedNow,
       recording_link: recordingLink,
       call_recording_link: recordingLink,
+      conversation_id: externalConversationId,
+      conversation_link: conversationLink,
+      open_conversation_url: conversationLink,
+      sender_name: senderDisplayName,
+      sender_instagram: instagramHandle ? `@${String(instagramHandle).replace(/^@/, '')}` : '',
       extracted_json: JSON.stringify(extractedBlock),
       dynamic_variables_json: JSON.stringify(context.triggerData?.dynamic_variables || {}),
       contact_name: resolvedName,
@@ -334,7 +397,12 @@ export class AutomationEngine {
       },
       appointment: appointmentBlock,
       extracted: extractedBlock,
-      conversation: context.conversation,
+      conversation: {
+        ...(context.conversation || {}),
+        id: context.conversation?.id || externalConversationId,
+        conversation_id: context.conversation?.conversation_id || externalConversationId,
+        link: conversationLink
+      },
       now: context.now
     };
 
@@ -541,6 +609,34 @@ export class AutomationEngine {
     this.triggers.set('webhook', {
       validate: async (config, data) => {
         return data.webhookId === config.webhookId;
+      }
+    });
+
+    // Inbound Chatbox Message Trigger (Unified for Facebook, Instagram, WhatsApp)
+    this.triggers.set('inbound_chatbox_message', {
+      validate: async (config, data) => {
+        // Check if this is a message_received event
+        if (data.event !== 'message_received') {
+          return false;
+        }
+
+        // Apply cooldown to prevent duplicate notifications for rapid messages in the same conversation
+        const conversationId = data.conversationId;
+        if (conversationId) {
+          const lastTriggeredAt = this.recentConversationTriggers.get(conversationId);
+          const now = Date.now();
+
+          if (lastTriggeredAt && now - lastTriggeredAt < this.COOLDOWN_MS) {
+            console.log(`[Automation Engine] ⏭️ Skipping inbound_chatbox_message trigger for conversation ${conversationId} - cooldown active (${Math.round((this.COOLDOWN_MS - (now - lastTriggeredAt)) / 1000)}s remaining)`);
+            return false;
+          }
+
+          // Mark this conversation as recently triggered
+          this.recentConversationTriggers.set(conversationId, now);
+          console.log(`[Automation Engine] ✅ inbound_chatbox_message trigger allowed for conversation ${conversationId}`);
+        }
+
+        return true;
       }
     });
 
@@ -1025,10 +1121,49 @@ export class AutomationEngine {
       execute: async (config, triggerData, context: IAutomationExecutionContext) => {
         const { subject, body, to, is_html } = config;
 
-        // 1. Resolve recipient email via dynamic template resolution
+        // 1) Resolve recipient from template/config (automation tab controls recipient).
         const resolvedTo = to ? await this.resolveTemplate(to, context) : context.contact.email;
-        if (!resolvedTo || !resolvedTo.includes('@')) {
-          console.warn(`[Automation Engine] ⏭️ Skipping Email: Invalid recipient address: ${resolvedTo}`);
+
+        // 2) Resolve connected Gmail sender account for this org/user.
+        let connectedGmailEmail = '';
+        try {
+          const googleIntegration = await GoogleIntegration.findOne({
+            status: 'active',
+            'services.gmail': true,
+            $or: [
+              { organizationId: context.organizationId },
+              { userId: context.userId }
+            ]
+          }).select('googleProfile.email').lean();
+
+          if (googleIntegration?.googleProfile?.email) {
+            connectedGmailEmail = String(googleIntegration.googleProfile.email).trim();
+          } else {
+            const gmailSocial = await SocialIntegration.findOne({
+              platform: 'gmail',
+              status: 'connected',
+              $or: [
+                { organizationId: context.organizationId },
+                { userId: context.userId }
+              ]
+            });
+            const socialEmail =
+              (gmailSocial as any)?.metadata?.email ||
+              (gmailSocial as any)?.credentials?.email ||
+              (typeof (gmailSocial as any)?.getDecryptedApiKey === 'function'
+                ? (gmailSocial as any).getDecryptedApiKey()
+                : '') ||
+              '';
+            if (socialEmail) connectedGmailEmail = String(socialEmail).trim();
+          }
+        } catch (recipientErr: any) {
+          console.warn('[Automation Engine] ⚠️ Failed to resolve connected Gmail email:', recipientErr.message);
+        }
+
+        const finalRecipient = resolvedTo || context.contact?.email || '';
+
+        if (!finalRecipient || !finalRecipient.includes('@')) {
+          console.warn(`[Automation Engine] ⏭️ Skipping Email: Invalid recipient address: ${finalRecipient}`);
           return { success: true, status: 'skipped', reason: 'Invalid email' };
         }
 
@@ -1040,30 +1175,74 @@ export class AutomationEngine {
           `extracted.time="${(context.extracted as any)?.time || ''}"`
         );
         const emailSubject = await this.resolveTemplate(subject || 'Notification', context);
-        const emailBody = await this.resolveTemplate(body || '', context);
+        let emailBody = await this.resolveTemplate(body || '', context);
+
+        // Backward-compatible cleanup for old inbound template content.
+        const isInboundChatNotification =
+          triggerData?.event === 'message_received' &&
+          ['instagram', 'facebook', 'whatsapp'].includes(String(triggerData?.platform || '').toLowerCase());
+        const appBaseUrl = (process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+        const conversationId =
+          triggerData?.conversationId ||
+          triggerData?.conversation_id ||
+          context.conversation?.id ||
+          context.conversation?.conversation_id ||
+          '';
+        const conversationLink = conversationId
+          ? `${appBaseUrl}/conversations?conversationId=${encodeURIComponent(conversationId)}`
+          : '';
+        if (conversationLink) {
+          emailBody = emailBody.replace(/https?:\/\/yourcrm\.com\/conversations\/[^\s]+/gi, conversationLink);
+        }
+        if (isInboundChatNotification && /You have received a new inbound message\./i.test(emailBody)) {
+          const senderName = (await this.resolveTemplate('{{sender_name}}', context)).trim() || 'Unknown';
+          const contactPhone = (await this.resolveTemplate('{{contact.phone}}', context)).trim() || 'Not Provided';
+          const formattedNow = (await this.resolveTemplate('{{formatted_now}}', context)).trim() || new Date().toLocaleString();
+          const platform = String(triggerData?.platform || 'chat');
+          const messageText = String(triggerData?.messageText || '').trim() || 'No message text';
+          emailBody =
+            `Hello,\n\n` +
+            `New inbound chat message received.\n\n` +
+            `- Platform: ${platform}\n` +
+            `- Sender: ${senderName}\n` +
+            `- Contact: ${contactPhone}\n` +
+            `- Message: ${messageText}\n` +
+            `- Time: ${formattedNow}\n` +
+            `- Conversation: ${conversationLink || 'Not available'}\n\n` +
+            `Please respond as soon as possible.\n\n` +
+            `Thanks,\nYour Automation System`;
+        }
+
         const bodyPreview = emailBody.length > 200 ? emailBody.slice(0, 200) + '…' : emailBody;
         console.log(`[Automation Engine] ✉️  Resolved subject: "${emailSubject}"`);
         console.log(`[Automation Engine] ✉️  Resolved body preview: ${bodyPreview}`);
 
         try {
-          const fromEmail = process.env.EMAIL_FROM || undefined;
-          const emailResult = await emailService.sendEmail({
-            to: resolvedTo,
-            subject: emailSubject,
-            ...(is_html ? { html: emailBody } : { text: emailBody }),
-            from: fromEmail
-          });
-
-          if (!emailResult.success) throw new Error(emailResult.error || 'SMTP delivery failed');
+          if (connectedGmailEmail && connectedGmailEmail.includes('@')) {
+            await gmailOAuthService.sendEmail(connectedGmailEmail, {
+              to: finalRecipient,
+              subject: emailSubject,
+              body: emailBody
+            });
+          } else {
+            const fromEmail = process.env.EMAIL_FROM || undefined;
+            const emailResult = await emailService.sendEmail({
+              to: finalRecipient,
+              subject: emailSubject,
+              ...(is_html ? { html: emailBody } : { text: emailBody }),
+              from: fromEmail
+            });
+            if (!emailResult.success) throw new Error(emailResult.error || 'SMTP delivery failed');
+          }
 
           return {
             success: true,
             status: 'completed',
-            recipient: resolvedTo,
-            messageId: emailResult.messageId
+            recipient: finalRecipient,
+            sender: connectedGmailEmail || process.env.EMAIL_FROM || process.env.SMTP_USER || 'unknown'
           };
         } catch (error: any) {
-          console.error(`[Automation Engine] ❌ Email to ${resolvedTo} failed:`, error.message);
+          console.error(`[Automation Engine] ❌ Email to ${finalRecipient} failed:`, error.message);
           return { success: true, status: 'failed', error: error.message };
         }
       }
@@ -2418,20 +2597,25 @@ const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.waba
 
       console.log(`[Automation Engine] ✅ Trigger validated: ${triggerNode.service}`);
 
-      const triggerConfig = this.convertConfigToPlainObject(triggerNode.config);
-      if (!(await triggerHandler.validate(triggerConfig, triggerData))) {
-        console.log(`[Automation Engine] ❌ Trigger criteria not met`);
-        execution.status = 'failed';
-        execution.errorMessage = 'Trigger criteria not met';
-        execution.actionData = {
-          humanSummary: {
-            headline: 'Automation did not run because trigger conditions were not met.',
-            event: triggerData?.event || 'unknown',
-            contacts: 0
-          }
-        };
-        await execution.save();
-        return;
+      const skipTriggerValidation = externalContext?.skipTriggerValidation === true;
+      if (skipTriggerValidation) {
+        console.log('[Automation Engine] ⏭️ Skipping trigger re-validation (already validated at event dispatch)');
+      } else {
+        const triggerConfig = this.convertConfigToPlainObject(triggerNode.config);
+        if (!(await triggerHandler.validate(triggerConfig, triggerData))) {
+          console.log(`[Automation Engine] ❌ Trigger criteria not met`);
+          execution.status = 'failed';
+          execution.errorMessage = 'Trigger criteria not met';
+          execution.actionData = {
+            humanSummary: {
+              headline: 'Automation did not run because trigger conditions were not met.',
+              event: triggerData?.event || 'unknown',
+              contacts: 0
+            }
+          };
+          await execution.save();
+          return;
+        }
       }
 
       const contactIds = Array.isArray(triggerData.contactIds) ? triggerData.contactIds : [triggerData.contactId].filter(Boolean);
@@ -2805,7 +2989,10 @@ const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.waba
           console.log(`[Automation Engine] 🚀 Starting async execution...`);
 
           const automationId = (automation._id as any).toString();
-          this.executeAutomation(automationId, eventData, context).catch(err => {
+          this.executeAutomation(automationId, eventData, {
+            ...(context || {}),
+            skipTriggerValidation: true
+          }).catch(err => {
             console.error(`[Automation Engine] ❌ Async failure for ${automation.name}:`, err.message);
           });
           results.push({ automationId, name: automation.name });
