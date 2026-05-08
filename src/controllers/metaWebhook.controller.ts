@@ -935,6 +935,41 @@ export class MetaWebhookController {
         }
       });
 
+      // Trigger WhatsApp and unified inbound chatbox automations immediately on inbound message.
+      // Keep this independent from AI reply flow so automations still run even if AI is disabled/errors.
+      try {
+        const { automationEngine } = await import('../services/automationEngine.service');
+        const automationData = {
+          event: 'message_received',
+          platform: 'whatsapp',
+          phoneNumberId,
+          messageText,
+          contactId: customer._id.toString(),
+          conversationId: conversation._id.toString(),
+          organizationId: integration.organizationId.toString(),
+          userId: integration.userId.toString(),
+          contact: {
+            name: customer.name,
+            email: customer.email,
+            phone: customer.phone,
+            tags: customer.tags || []
+          }
+        };
+        const context = {
+          organizationId: integration.organizationId.toString(),
+          userId: integration.userId.toString()
+        };
+
+        automationEngine
+          .triggerByEvent('whatsapp_message', automationData, context)
+          .catch(err => console.error('[WhatsApp Webhook] WhatsApp automation trigger error:', err));
+        automationEngine
+          .triggerByEvent('inbound_chatbox_message', automationData, context)
+          .catch(err => console.error('[WhatsApp Webhook] Inbound chatbox automation trigger error:', err));
+      } catch (triggerError: any) {
+        console.error('[WhatsApp Webhook] Failed to initialize automation trigger:', triggerError.message);
+      }
+
       // Generate chatbot reply using Settings + AIBehavior ONLY
       if (conversation.isAiManaging) {
         // CRITICAL: userId MUST come from integration.userId (SINGLE SOURCE OF TRUTH)
@@ -1543,15 +1578,21 @@ export class MetaWebhookController {
         return; // Exit after sending fallback
       }
 
-      // 2. CHECK FOR ACTIVE AUTOMATIONS - If active, AI should collect contact details
+      // 2. CHECK FOR ACTIVE AUTOMATIONS
       const Automation = (await import('../models/Automation')).default;
-      const activeAutomation = await Automation.findOne({
+      const activeFacebookAutomation = await Automation.findOne({
         userId: new mongoose.Types.ObjectId(userId),
         isActive: true,
         'nodes.service': 'facebook_message'
       });
+      const activeInboundChatboxAutomation = await Automation.findOne({
+        userId: new mongoose.Types.ObjectId(userId),
+        isActive: true,
+        'nodes.service': 'inbound_chatbox_message'
+      });
 
-      console.log('[Messenger Webhook] Active facebook_message automation:', activeAutomation ? 'YES' : 'NO');
+      console.log('[Messenger Webhook] Active facebook_message automation:', activeFacebookAutomation ? 'YES' : 'NO');
+      console.log('[Messenger Webhook] Active inbound_chatbox_message automation:', activeInboundChatboxAutomation ? 'YES' : 'NO');
 
       // 3. SYSTEM PROMPT: Fetch from AIBehavior using userId ONLY
       const aiBehavior = await aiBehaviorService.get(userId);
@@ -1568,8 +1609,8 @@ export class MetaWebhookController {
       const hasDate = !!existingExtractedData.appointmentDate;
       const hasTime = !!existingExtractedData.appointmentTime;
 
-      // If automation is active, modify system prompt to collect required information
-      if (activeAutomation) {
+      // If Facebook-specific automation is active, modify system prompt to collect required information
+      if (activeFacebookAutomation) {
         console.log('[Messenger Webhook] 🤖 Automation is active - AI will collect contact details');
         console.log('[Messenger Webhook] Existing data:', {
           hasName,
@@ -1737,8 +1778,40 @@ export class MetaWebhookController {
         }
       });
 
-      // If automation is active, extract contact data and trigger automation when ready
-      if (activeAutomation) {
+      const hasAnyAutomation = Boolean(activeFacebookAutomation || activeInboundChatboxAutomation);
+
+      // Trigger inbound chatbox automation immediately on each inbound message.
+      // This trigger is generic and should not wait for contact extraction completeness.
+      if (activeInboundChatboxAutomation) {
+        const { automationEngine } = await import('../services/automationEngine.service');
+        const inboundAutomationData = {
+          event: 'message_received',
+          platform: 'facebook',
+          pageId: pageId,
+          senderPsid: senderPsid,
+          messageText: messageText,
+          contactId: customer._id.toString(),
+          conversationId: conversation._id.toString(),
+          organizationId: conversation.organizationId.toString(),
+          userId: integration.userId.toString(),
+          contact: {
+            name: customer.name,
+            email: customer.email,
+            phone: customer.phone,
+            tags: customer.tags || []
+          }
+        };
+        const inboundContext = {
+          organizationId: conversation.organizationId.toString(),
+          userId: integration.userId.toString()
+        };
+        automationEngine
+          .triggerByEvent('inbound_chatbox_message', inboundAutomationData, inboundContext)
+          .catch(err => console.error('[Messenger Webhook] Inbound chatbox automation trigger error:', err));
+      }
+
+      // For Facebook-specific automation, extract contact data and trigger only when ready.
+      if (activeFacebookAutomation) {
         console.log('[Messenger Webhook] 📊 Extracting contact data from conversation...');
         
         const conversationExtractionService = (await import('../services/conversationExtraction.service')).default;
@@ -1767,8 +1840,9 @@ export class MetaWebhookController {
           console.log('[Messenger Webhook] ✅ Customer updated with extracted data');
 
           // Trigger automation with complete data
-          automationEngine.triggerByEvent('facebook_message', {
+          const automationData = {
             event: 'message_received',
+            platform: 'facebook',
             pageId: pageId,
             senderPsid: senderPsid,
             messageText: messageText,
@@ -1786,15 +1860,22 @@ export class MetaWebhookController {
             appointmentDate: extractedData.appointmentDate,
             appointmentTime: extractedData.appointmentTime,
             extractedData: extractedData
-          }, {
+          };
+
+          const context = {
             organizationId: conversation.organizationId.toString(),
             userId: integration.userId.toString()
-          }).catch(err => console.error('[Messenger Webhook] Automation trigger error:', err));
+          };
+
+          // Trigger Facebook-specific automation when contact extraction is complete.
+          automationEngine.triggerByEvent('facebook_message', automationData, context).catch(err => console.error('[Messenger Webhook] Facebook automation trigger error:', err));
         } else {
-          console.log('[Messenger Webhook] ⏳ Waiting for complete data before triggering automation...');
+          console.log('[Messenger Webhook] ⏳ Waiting for complete data before triggering facebook_message automation...');
         }
       } else {
-        console.log('[Messenger Webhook] No active automation - skipping trigger');
+        if (!hasAnyAutomation) {
+          console.log('[Messenger Webhook] No active automation - skipping trigger');
+        }
       }
 
     } catch (error: any) {
@@ -2055,6 +2136,38 @@ export class MetaWebhookController {
         }
       });
 
+      // Trigger both specific Instagram and unified inbound chatbox automations
+      const { automationEngine } = await import('../services/automationEngine.service');
+      const automationData = {
+        event: 'message_received',
+        platform: 'instagram',
+        instagramAccountId,
+        senderId,
+        messageText,
+        contactId: customer._id.toString(),
+        conversationId: conversation._id.toString(),
+        organizationId: customerOrgId.toString(),
+        userId,
+        contact: {
+          name: customer.name,
+          email: customer.email,
+          phone: customer.phone,
+          tags: customer.tags || []
+        }
+      };
+      const automationContext = {
+        organizationId: customerOrgId.toString(),
+        userId
+      };
+
+      console.log('[Instagram Webhook] Triggering automations for message received...');
+      automationEngine.triggerByEvent('instagram_message', automationData, automationContext).catch(err =>
+        console.error('[Instagram Webhook] Instagram automation trigger error:', err)
+      );
+      automationEngine.triggerByEvent('inbound_chatbox_message', automationData, automationContext).catch(err =>
+        console.error('[Instagram Webhook] Inbound chatbox automation trigger error:', err)
+      );
+
       // Generate chatbot reply using Settings + AIBehavior ONLY
       // userId is already set above (from integration.userId)
       
@@ -2270,13 +2383,14 @@ export class MetaWebhookController {
         console.warn(`[Instagram Webhook] Could not check token permissions:`, debugError.message);
       }
 
-      // Build endpoint URL with access_token as query param (matches working test script)
-      // Instagram API uses graph.instagram.com
-      // Token is passed as query parameter (NOT Authorization header)
-      const graphHost = process.env.INSTAGRAM_GRAPH_HOST || 'https://graph.instagram.com';
-      const endpointUrl = new URL(`${graphHost}/v21.0/me/messages`);
-      endpointUrl.searchParams.set('access_token', accessToken);
-      console.log(`[Instagram Webhook] Endpoint: ${graphHost}/v21.0/me/messages?access_token=***`);
+      // Build candidate endpoints with access_token as query param.
+      // Primary host can be configured; if Meta returns transient OAuthException
+      // errors, fall back to the alternate Graph host.
+      const primaryGraphHost = process.env.INSTAGRAM_GRAPH_HOST || 'https://graph.instagram.com';
+      const fallbackGraphHost = primaryGraphHost.includes('graph.instagram.com')
+        ? 'https://graph.facebook.com'
+        : 'https://graph.instagram.com';
+      const endpointCandidates = [primaryGraphHost, fallbackGraphHost];
       console.log(`[Instagram Webhook] Recipient ID: ${senderId}`);
       console.log(`[Instagram Webhook] Message length: ${messageText.length} characters`);
 
@@ -2292,18 +2406,37 @@ export class MetaWebhookController {
 
       console.log(`[Instagram Webhook] Payload:`, JSON.stringify(payload, null, 2));
 
-      // Send message via Instagram Business Graph API
-      // POST /v21.0/me/messages?access_token=TOKEN
-      // Uses instagram_manage_messages permission (not instagram_business_manage_messages)
-      const response = await axios.post(
-        endpointUrl.toString(),
-        payload,
-        {
-          headers: {
-            'Content-Type': 'application/json'
+      // Send message via Instagram Business Graph API with host fallback.
+      let response: any;
+      let lastError: any;
+      for (let i = 0; i < endpointCandidates.length; i++) {
+        const graphHost = endpointCandidates[i];
+        const endpointUrl = new URL(`${graphHost}/v21.0/me/messages`);
+        endpointUrl.searchParams.set('access_token', accessToken);
+        console.log(`[Instagram Webhook] Endpoint attempt ${i + 1}/${endpointCandidates.length}: ${graphHost}/v21.0/me/messages?access_token=***`);
+
+        try {
+          response = await axios.post(
+            endpointUrl.toString(),
+            payload,
+            {
+              headers: {
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+          break;
+        } catch (sendErr: any) {
+          lastError = sendErr;
+          const code = sendErr?.response?.data?.error?.code;
+          const msg = sendErr?.response?.data?.error?.message || sendErr.message;
+          console.warn(`[Instagram Webhook] Send attempt ${i + 1} failed (code: ${code ?? 'N/A'}): ${msg}`);
+          if (i < endpointCandidates.length - 1) {
+            console.warn('[Instagram Webhook] Retrying with alternate Graph host...');
           }
         }
-      );
+      }
+      if (!response) throw lastError;
 
       console.log(`[Instagram Webhook] ✅ Instagram reply sent successfully`);
       console.log(`[Instagram Webhook] Response:`, JSON.stringify(response.data, null, 2));
@@ -2342,6 +2475,7 @@ export class MetaWebhookController {
     integration: any,
     pageId: string
   ) {
+    console.log('[Instagram Webhook] 🔥🔥🔥 NEW CODE v2 LOADED - Starting message processing');
     try {
       const messageId = message.mid;
       const messageText = message.text || '[Attachment]';
@@ -2451,6 +2585,38 @@ export class MetaWebhookController {
           timestamp
         }
       });
+
+      // Trigger automations for instagram_message (non-blocking)
+      const { automationEngine } = await import('../services/automationEngine.service');
+      
+      console.log('[Instagram Webhook] Triggering automations for message received...');
+      
+      const automationData = {
+        event: 'message_received',
+        platform: 'instagram',
+        instagramAccountId: recipientId,
+        senderId: senderId,
+        messageText: messageText,
+        contactId: customer._id.toString(),
+        conversationId: conversation._id.toString(),
+        organizationId: integration.organizationId.toString(),
+        userId: integration.userId.toString(),
+        contact: {
+          name: customer.name,
+          email: customer.email,
+          phone: customer.phone,
+          tags: customer.tags || []
+        }
+      };
+
+      const context = {
+        organizationId: integration.organizationId.toString(),
+        userId: integration.userId.toString()
+      };
+
+      // Trigger both specific Instagram and unified inbound chatbox automations
+      automationEngine.triggerByEvent('instagram_message', automationData, context).catch(err => console.error('[Instagram Webhook] Instagram automation trigger error:', err));
+      automationEngine.triggerByEvent('inbound_chatbox_message', automationData, context).catch(err => console.error('[Instagram Webhook] Inbound chatbox automation trigger error:', err));
 
       // Generate chatbot reply using Settings + AIBehavior ONLY
       if (conversation.isAiManaging) {
@@ -2585,30 +2751,6 @@ export class MetaWebhookController {
           // Don't throw - we don't want to break the webhook flow
         }
       }
-
-      // Trigger automations for instagram_message (non-blocking)
-      const { automationEngine } = await import('../services/automationEngine.service');
-      
-      console.log('[Instagram Webhook] Triggering automations for message received...');
-      automationEngine.triggerByEvent('instagram_message', {
-        event: 'message_received',
-        instagramAccountId: recipientId,
-        senderId: senderId,
-        messageText: messageText,
-        contactId: customer._id.toString(),
-        conversationId: conversation._id.toString(),
-        organizationId: integration.organizationId.toString(),
-        userId: integration.userId.toString(),
-        contact: {
-          name: customer.name,
-          email: customer.email,
-          phone: customer.phone,
-          tags: customer.tags || []
-        }
-      }, {
-        organizationId: integration.organizationId.toString(),
-        userId: integration.userId.toString()
-      }).catch(err => console.error('[Instagram Webhook] Automation trigger error:', err));
 
     } catch (error) {
       console.error('[Instagram Webhook] Error handling message:', error);

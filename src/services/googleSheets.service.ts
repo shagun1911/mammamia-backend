@@ -208,9 +208,13 @@ export class GoogleSheetsService {
 
       const response = await drive.files.list({
         q: "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
-        fields: 'files(id, name)',
+        fields: 'files(id, name), nextPageToken',
         orderBy: 'modifiedTime desc',
-        pageSize: 50
+        pageSize: 100,
+        spaces: 'drive',
+        corpora: 'user',
+        includeItemsFromAllDrives: true,
+        supportsAllDrives: true
       });
 
       // Return only { id, name } as requested
@@ -222,6 +226,69 @@ export class GoogleSheetsService {
       console.error('List spreadsheets error:', error);
       throw new AppError(500, 'INTEGRATION_ERROR', error.message || 'Failed to list spreadsheets');
     }
+  }
+
+  /**
+   * Read the first row of a tab as column labels (for automation mapping UI).
+   * sheetName is the tab title as shown in Google Sheets (e.g. "Sheet1", "Leads").
+   */
+  async getHeaderRow(
+    userId: string,
+    organizationId: string,
+    spreadsheetId: string,
+    sheetName: string = 'Sheet1'
+  ): Promise<string[]> {
+    try {
+      const integration = await GoogleIntegration.findOne({
+        userId,
+        organizationId,
+        status: 'active',
+        'services.sheets': true
+      });
+
+      if (!integration) {
+        throw new AppError(404, 'NOT_FOUND', 'Google Sheets integration not found');
+      }
+
+      const oauth2Client = this.getOAuth2Client(integration.accessToken, integration.refreshToken);
+      const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
+
+      const requestedTab = (sheetName || 'Sheet1').trim() || 'Sheet1';
+      const meta = await sheets.spreadsheets.get({ spreadsheetId });
+      const availableTabs = (meta.data.sheets || [])
+        .map((s: any) => String(s?.properties?.title || '').trim())
+        .filter(Boolean);
+      const fallbackTab = availableTabs[0] || 'Sheet1';
+      const resolvedTab = availableTabs.includes(requestedTab) ? requestedTab : fallbackTab;
+
+      if (resolvedTab !== requestedTab) {
+        console.warn(
+          `Google Sheets getHeaderRow: tab "${requestedTab}" not found, using "${resolvedTab}" instead`
+        );
+      }
+
+      const range = `${this.escapeSheetTitleForA1(resolvedTab)}!1:1`;
+
+      const response = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range
+      });
+
+      const row = response.data.values?.[0] || [];
+      return row.map((cell: unknown) => (cell === null || cell === undefined ? '' : String(cell)));
+    } catch (error: any) {
+      console.error('Google Sheets getHeaderRow error:', error);
+      const msg = error?.response?.data?.error?.message || error?.message || 'Failed to read sheet headers';
+      throw new AppError(500, 'INTEGRATION_ERROR', msg);
+    }
+  }
+
+  /** A1 range sheet title: quote if non-alphanumeric (Google Sheets rules). */
+  private escapeSheetTitleForA1(title: string): string {
+    if (/^[A-Za-z0-9_]+$/.test(title)) {
+      return title;
+    }
+    return `'${title.replace(/'/g, "''")}'`;
   }
 
   /**

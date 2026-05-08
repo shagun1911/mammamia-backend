@@ -292,6 +292,20 @@ export class AutomationEngine {
     const resolvedAddress =
       fallbackAddressCandidates.length > 0 ? String(fallbackAddressCandidates[0]) : 'Not Provided';
 
+    const fallbackCityCandidates = [
+      ex.city,
+      ex.customer_city,
+      ex.home_city,
+      context.triggerData?.dynamic_variables?.city,
+      context.triggerData?.dynamic_variables?.customer_city,
+      context.triggerData?.freshContactData?.city,
+      context.contact?.customProperties?.city,
+      context.contact?.metadata?.city,
+      context.contact?.city
+    ].filter(isMeaningful);
+    const resolvedCity =
+      fallbackCityCandidates.length > 0 ? String(fallbackCityCandidates[0]) : 'Not Provided';
+
     const fallbackEmailCandidates = [
       contactEmail,
       ex.email,
@@ -374,6 +388,7 @@ export class AutomationEngine {
       phone: resolvedPhone,
       phone_number: resolvedPhone,
       address: resolvedAddress,
+      city: resolvedCity,
       created_time: context.now,
       formatted_now: formattedNow,
       recording_link: recordingLink,
@@ -587,6 +602,19 @@ export class AutomationEngine {
 
         // If instagramAccountId is configured, match it
         if (config.instagramAccountId && data.instagramAccountId !== config.instagramAccountId) return false;
+
+        return true;
+      }
+    });
+
+    // WhatsApp Message Trigger
+    this.triggers.set('whatsapp_message', {
+      validate: async (config, data) => {
+        // Trigger fires when a message is received on WhatsApp
+        if (data.event !== 'message_received') return false;
+
+        // If phoneNumberId is configured, match it
+        if (config.phoneNumberId && data.phoneNumberId !== config.phoneNumberId) return false;
 
         return true;
       }
@@ -2093,6 +2121,7 @@ const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.waba
         const FIXED_COLUMNS: { header: string; template: string }[] = [
           { header: 'Name', template: '{{name}}' },
           { header: 'Address', template: '{{address}}' },
+          { header: 'City', template: '{{city}}' },
           { header: 'Email', template: '{{email}}' },
           { header: 'Phone Number', template: '{{phone}}' },
           { header: 'Appointment Date & Time', template: '{{appointment_datetime}}' },
@@ -2109,6 +2138,9 @@ const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.waba
           'full_address',
           'customer_address',
           'home_address',
+          'city',
+          'customer_city',
+          'home_city',
           'email',
           'customer_email',
           'phone',
@@ -2164,10 +2196,21 @@ const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.waba
 
           const sheetMeta = await sheets.spreadsheets.get({ spreadsheetId });
           const fallbackTab = sheetMeta.data.sheets?.[0]?.properties?.title || 'Sheet1';
-          const configured =
+          const configuredRaw =
             typeof (config as any).sheetName === 'string' && String((config as any).sheetName).trim() !== ''
               ? String((config as any).sheetName).trim()
               : fallbackTab;
+          const availableTabs = new Set(
+            (sheetMeta.data.sheets || [])
+              .map((s: any) => String(s?.properties?.title || '').trim())
+              .filter(Boolean)
+          );
+          const configured = availableTabs.has(configuredRaw) ? configuredRaw : fallbackTab;
+          if (configured !== configuredRaw) {
+            console.warn(
+              `[Automation Engine] ⚠️ Configured sheet tab "${configuredRaw}" not found in spreadsheet; falling back to "${configured}".`
+            );
+          }
           const escapeSheetTitleForA1 = (title: string): string => {
             const t = title.trim() || 'Sheet1';
             if (/^[A-Za-z0-9_]+$/.test(t)) return t;
@@ -2216,6 +2259,7 @@ const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.waba
               appointment_time: 'Appointment Time',
               appointment_datetime: 'Appointment Date & Time',
               address: 'Address',
+              city: 'City',
               email: 'Email',
               phone: 'Phone Number',
               phone_number: 'Phone Number',
@@ -2241,16 +2285,28 @@ const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.waba
           let rowPlan: { header: string; template: string }[];
           if (useFixedFormat) {
             // Strict: only the user-selected extra fields get appended.
-            // The 6 fixed columns are always there; nothing else is added unless
+            // The fixed columns are always there; nothing else is added unless
             // the user explicitly ticks it in the "Extra extracted fields" panel.
             const allExtraKeys = Array.from(new Set<string>(extraExtractedKeys))
               .filter((k) => k && !COVERED_EXTRACTED_KEYS.has(String(k).toLowerCase()));
+
+            // Dynamic variable keys selected by the user when uploading the CSV for a batch call.
+            // These are appended after the fixed + extracted columns and read from the per-recipient
+            // dynamic_variables that were stored at call time.
+            const selectedDynVarKeys: string[] = Array.isArray(context.triggerData?.selected_dynamic_variable_keys)
+              ? (context.triggerData.selected_dynamic_variable_keys as string[])
+                  .filter((k: string) => k && !COVERED_EXTRACTED_KEYS.has(String(k).toLowerCase()))
+              : [];
 
             rowPlan = [
               ...FIXED_COLUMNS,
               ...allExtraKeys.map((k) => ({
                 header: `Extracted ${titleCase(k)}`,
                 template: `{{extracted.${k}}}`
+              })),
+              ...selectedDynVarKeys.map((k) => ({
+                header: titleCase(k),
+                template: `{{dynamic_variables.${k}}}`
               }))
             ];
           } else {
@@ -2282,7 +2338,8 @@ const metaUrl = `https://graph.facebook.com/v21.0/${integration.credentials.waba
             'email',
             'phone number',
             'appointment date & time',
-            'call recording'
+            'call recording',
+            'city'
           ]);
           const existingNormalized = existingHeaders
             .map((h: any) => normalize(String(h || '')))
